@@ -115,7 +115,10 @@ func (e *Engine) canAskSlot(c *conn, file wire.Hash) bool {
 // connection and swaps the peer to another download, one on the connection
 // or one that knows the peer, that it was not swapped away from within
 // PURGESOURCESWAPSTOP (aMule PartFile.cpp:1559-1573,
-// SwapToAnotherFile(false, false, false)).
+// SwapToAnotherFile(false, false, false)). Without a download to swap to the
+// peer stays a source of this one, as aMule keeps a DS_NONEEDEDPARTS client
+// in m_SrcList: a part its blocks completed may still fail its hash and need
+// the peer's AICH recovery data (PartFile.cpp:3838-3846).
 func (e *Engine) onNoNeededParts(c *conn, file wire.Hash) {
 	r := e.downloadByHash(file)
 	if r == nil || len(c.files) == 0 || c.files[0] != file {
@@ -124,11 +127,12 @@ func (e *Engine) onNoNeededParts(c *conn, file wire.Hash) {
 	r.transfer.OnNoNeededParts(c.id)
 	user := c.session.UserHash()
 	target := e.swapTarget(c, user, file, false)
-	if target != nil {
-		e.a4afClientByUser(user).suspended[file] = e.now().Add(swapSuspendTime)
+	if target == nil {
+		return
 	}
+	e.a4afClientByUser(user).suspended[file] = e.now().Add(swapSuspendTime)
 	e.removeFile(c, file, "no needed parts")
-	if target != nil && !c.isClosed {
+	if !c.isClosed {
 		e.addFile(c, target)
 	}
 }
