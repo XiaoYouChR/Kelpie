@@ -171,7 +171,7 @@ func (k *Kad) Run(ctx context.Context) error {
 		UDPPort: uint16(conn.Port()), UDPKey: k.cfg.State.UDPKey, Rand: k.cfg.Rand,
 	}, now)
 	for _, n := range k.cfg.State.Nodes {
-		c.addNodes([]Node{toNode(n)}, now)
+		c.addNodes([]Node{{ID: n.ID, Addr: n.Addr, Version: n.Version}}, now)
 	}
 	c.addNodes(k.cfg.Nodes, now)
 	ticker := k.cfg.Clock.CreateTicker(tickInterval)

@@ -71,8 +71,8 @@ func ParseNodes(data []byte) ([]Node, error) {
 	return nodes, r.Err()
 }
 
-func toNode(n store.KadNode) Node {
-	return Node{ID: n.ID, Addr: n.Addr, Version: n.Version}
+func toNode(ct kadwire.Contact) Node {
+	return Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}
 }
 
 func toStoreNode(n Node) store.KadNode {

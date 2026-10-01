@@ -465,7 +465,7 @@ func (c *core) onBootstrapRes(from netip.AddrPort, p kadwire.BootstrapRes, now t
 	}
 	c.table.add(Node{ID: p.ID, Addr: from, TCPPort: p.TCPPort, Version: p.Version}, true, now)
 	for _, ct := range p.Contacts {
-		c.table.add(Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}, false, now)
+		c.table.add(toNode(ct), false, now)
 	}
 }
 
