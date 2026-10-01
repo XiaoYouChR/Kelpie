@@ -89,6 +89,8 @@ func ParseUDP(protocol, opcode byte, body []byte) (wire.Packet, error) {
 		p = FileNotFound{}
 	case opQueueFull:
 		p = QueueFull{}
+	case opReaskCallbackUDP:
+		p = ReaskCallbackUDP{BuddyID: r.Hash(), Ping: parseReaskFilePing(r)}
 	default:
 		return wire.Unknown{Proto: protocol, Op: opcode, Body: body}, nil
 	}
@@ -182,6 +184,14 @@ func parseEMule(r *wire.Reader, opcode byte) wire.Packet {
 	case opIPv6Changed:
 		// emule-qt accepts it under either protocol byte; so do we.
 		return IPv6Changed{Addr: r.IPv6()}
+	case opCallback:
+		return parseCallback(r)
+	case opReaskCallbackTCP:
+		return parseReaskCallbackTCP(r)
+	case opBuddyPing:
+		return BuddyPing{}
+	case opBuddyPong:
+		return BuddyPong{}
 	case opFirewallCheckUDPReq:
 		return FirewallCheckUDPReq{InternPort: r.Uint16(), ExternPort: r.Uint16(), Key: r.Uint32()}
 	case opKadFirewallAck:

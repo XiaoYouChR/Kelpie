@@ -38,7 +38,9 @@ type Config struct {
 	UDPPort    uint16
 	KadPort    uint16
 	KadVersion byte
-	Server     netip.AddrPort
+	// Buddy is our Kad buddy's IP and UDP port while it serves us.
+	Buddy  netip.AddrPort
+	Server netip.AddrPort
 	// Pipeline is how many blocks a download keeps in flight.
 	Pipeline int
 	Random   *rand.Rand
@@ -81,6 +83,7 @@ type Session struct {
 	userHash     wire.Hash
 	caps         Capabilities
 	lastActive   time.Time
+	idleTimeout  time.Duration
 	// earlyEmuleInfo is an OP_EMULEINFO that came before the peer's Hello.
 	earlyEmuleInfo *client.EmuleInfo
 
@@ -108,12 +111,13 @@ func BuildIncoming(cfg Config, remote netip.AddrPort, now time.Time) *Session {
 
 func buildSession(cfg Config, remote netip.AddrPort, now time.Time) *Session {
 	return &Session{
-		cfg:        cfg,
-		remote:     netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port()),
-		lastActive: now,
-		down:       downloadState{files: map[wire.Hash]*download{}},
-		up:         uploadState{sizes: map[wire.Hash]int64{}, blocks: map[uploadBlock]bool{}},
-		sx:         sourceState{asked: map[wire.Hash]bool{}, answers: map[wire.Hash]byte{}},
+		cfg:         cfg,
+		remote:      netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port()),
+		lastActive:  now,
+		idleTimeout: connectionTimeout,
+		down:        downloadState{files: map[wire.Hash]*download{}},
+		up:          uploadState{sizes: map[wire.Hash]int64{}, blocks: map[uploadBlock]bool{}},
+		sx:          sourceState{asked: map[wire.Hash]bool{}, answers: map[wire.Hash]byte{}},
 	}
 }
 
@@ -206,11 +210,18 @@ func (s *Session) OnSent(now time.Time) {
 	s.lastActive = now
 }
 
+// SetIdleTimeout sets how long the connection may be silent before it
+// counts as dead; aMule gives a Kad buddy link longer than other
+// connections (ClientTCPSocket.cpp:144).
+func (s *Session) SetIdleTimeout(d time.Duration) {
+	s.idleTimeout = d
+}
+
 // OnTick closes an idle connection and gives up a slot that stopped
 // delivering.
 func (s *Session) OnTick(now time.Time) Output {
 	var out Output
-	if now.Sub(s.lastActive) > connectionTimeout {
+	if now.Sub(s.lastActive) > s.idleTimeout {
 		out.Close = CloseTimeout
 		return out
 	}

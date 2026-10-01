@@ -123,12 +123,14 @@ type core struct {
 		from netip.AddrPort
 		key  uint32
 	}
-	table    *table
-	rpcs     rpcs
-	lookups  []*lookup
-	index    index
-	firewall firewall
-	udp      udpCheck
+	table       *table
+	rpcs        rpcs
+	lookups     []*lookup
+	index       index
+	firewall    firewall
+	udp         udpCheck
+	buddy       Buddy
+	buddySearch buddySearch
 	// publicIP is our address as the last KADEMLIA_FIREWALLED_RES said.
 	publicIP    netip.Addr
 	seeds       []netip.AddrPort
@@ -150,10 +152,11 @@ type core struct {
 func buildCore(cfg coreConfig, now time.Time) *core {
 	return &core{
 		id: cfg.ID, userHash: cfg.UserHash, tcpPort: cfg.TCPPort, udpPort: cfg.UDPPort, udpKey: cfg.UDPKey, rng: cfg.Rand,
-		table:    buildTable(cfg.ID, now),
-		index:    index{files: map[wire.Hash]map[wire.Hash]indexed{}},
-		firewall: firewall{isLastFirewalled: true, asked: map[netip.Addr]bool{}},
-		udp:      buildUDPCheck(),
+		table:       buildTable(cfg.ID, now),
+		index:       index{files: map[wire.Hash]map[wire.Hash]indexed{}},
+		firewall:    firewall{isLastFirewalled: true, asked: map[netip.Addr]bool{}},
+		udp:         buildUDPCheck(),
+		buddySearch: buddySearch{next: now.Add(firstBuddySearch)},
 	}
 }
 
@@ -223,7 +226,7 @@ func (c *core) requestCallback(cb Callback) output {
 	if cb.Buddy.Addr().Is4() {
 		// Plain, as aMule sends it: we do not know the buddy's Kad version
 		// (BaseClient.cpp:1568).
-		c.sendPlain(cb.Buddy, callbackReq{BuddyID: cb.BuddyID, Hash: cb.Hash, TCPPort: c.tcpPort})
+		c.sendPlain(cb.Buddy, kadwire.CallbackReq{BuddyID: cb.BuddyID, Hash: cb.Hash, TCPPort: c.tcpPort})
 	}
 	out := c.out
 	c.out = output{}
@@ -268,7 +271,25 @@ func (c *core) buildHello() kadwire.Hello {
 }
 
 func (c *core) status() Status {
-	return Status{Nodes: c.table.verifiedCount(), IsFirewalled: c.firewall.isFirewalled()}
+	return Status{
+		Nodes:           c.table.verifiedCount(),
+		IsFirewalled:    c.firewall.isFirewalled(),
+		IsUDPFirewalled: c.udp.isFirewalledNow(),
+		IsUDPVerified:   c.udp.isVerified,
+	}
+}
+
+// isReachable: other clients can connect to us, directly or through our
+// buddy.
+func (c *core) isReachable() bool {
+	return !c.firewall.isFirewalled() || c.buddy.Addr.IsValid()
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 // send obfuscates with the key to's node gave us: the one on the packet we
@@ -385,6 +406,12 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 		c.onPong(from, p)
 	case kadwire.FirewalledUDP:
 		c.onFirewalledUDP(from, p)
+	case kadwire.FindBuddyReq:
+		c.onFindBuddyReq(from, p)
+	case kadwire.FindBuddyRes:
+		c.onFindBuddyRes(from, p)
+	case kadwire.CallbackReq:
+		c.onCallbackReq(from, p)
 	case wire.Unknown:
 		if p.Op == opFirewalledAck && len(p.Body) == 0 {
 			c.onFirewallAck(from.Addr())
@@ -506,6 +533,7 @@ func (c *core) runMaintenance(now time.Time) {
 	c.runRandomLookups(now)
 	c.runFirewallCheck(now)
 	c.runUDPCheck(now)
+	c.runBuddySearch(now)
 }
 
 // runRandomLookups is CKademlia::Process's big timer: every
@@ -546,6 +574,8 @@ func (c *core) runFirewallCheck(now time.Time) {
 	if !now.Before(f.next) {
 		f.start(now)
 		c.recheckUDP(now)
+		c.buddySearch.isDue = false
+		c.buddySearch.next = later(c.buddySearch.next, now.Add(buddyRecheckDelay))
 	}
 	if f.responses+c.rpcs.count(rpcFirewall) >= firewallChecks {
 		return
@@ -567,8 +597,8 @@ func (c *core) runFirewallCheck(now time.Time) {
 
 // runWanted starts at most one source search and one publish a tick, at
 // eMule's pace. A publish waits for the first self lookup to finish
-// (CSearchManager sets the publish flag then) and for an open firewall
-// verdict: a firewalled source needs a buddy, which Kelpie does not have.
+// (CSearchManager sets the publish flag then) and for a way in: an open
+// firewall verdict or a buddy (CKnownFile::PublishSrc).
 func (c *core) runWanted(now time.Time) {
 	if !now.Before(c.nextFileSearch) && c.lookupCount(sourceSearch) < maxFileSearches {
 		for _, f := range c.finds {
@@ -586,7 +616,7 @@ func (c *core) runWanted(now time.Time) {
 			break
 		}
 	}
-	if !c.canPublish || c.firewall.isFirewalled() || now.Before(c.nextPublish) || c.lookupCount(sourcePublish) >= maxPublishes {
+	if !c.canPublish || !c.isReachable() || now.Before(c.nextPublish) || c.lookupCount(sourcePublish) >= maxPublishes {
 		return
 	}
 	c.nextPublish = now.Add(publishGap)

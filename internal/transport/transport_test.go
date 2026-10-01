@@ -222,6 +222,23 @@ func TestFakeUnreachableDropsDatagrams(t *testing.T) {
 	}
 }
 
+func TestFakeUDPFirewalledHearsOnlyPeersItSentTo(t *testing.T) {
+	network := BuildNetwork()
+	a := network.AddHost(v4a)
+	b := network.AddHost(v4b)
+	sa, _ := a.OpenUDP(4672)
+	sb, _ := b.OpenUDP(4672)
+	b.SetUDPFirewalled(true)
+	sa.WriteTo([]byte("lost"), netip.AddrPortFrom(v4b, 4672))
+	sb.WriteTo([]byte("out"), netip.AddrPortFrom(v4a, 4672))
+	sa.WriteTo([]byte("kept"), netip.AddrPortFrom(v4b, 4672))
+	buf := make([]byte, 8)
+	n, _, _ := sb.ReadFrom(buf)
+	if string(buf[:n]) != "kept" {
+		t.Fatalf("got %q", buf[:n])
+	}
+}
+
 func TestFakeHostCloseClosesEverything(t *testing.T) {
 	network := BuildNetwork()
 	server := network.AddHost(v4a)

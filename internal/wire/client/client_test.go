@@ -61,6 +61,7 @@ func TestTCPRoundTrip(t *testing.T) {
 		ModName:      "Kelpie 0.1",
 		UDPPort:      4672,
 		KadPort:      4673,
+		Buddy:        netip.MustParseAddrPort("7.7.7.7:4672"),
 		Misc1:        MiscOptions1{IsUnicode: true, UDPVersion: 4, DataCompressionVersion: 1, SecureIdentVersion: 2, SourceExchange1Version: 3, ExtendedRequestsVersion: ExtendedRequestsVersion, HasMultiPacket: true, IsSharedFilesHidden: true},
 		Misc2:        MiscOptions2{HasLargeFiles: true, HasExtMultiPacket: true, HasSourceExchange2: true, HasCaptcha: true},
 		EmuleVersion: 0x00002000,
@@ -125,6 +126,12 @@ func TestTCPRoundTrip(t *testing.T) {
 			FileStatus{Hash: fileHash, Parts: parts(false, true)},
 		}},
 		IPv6Changed{Addr: netip.MustParseAddr("2a01:4f8::1")},
+		FirewallCheckUDPReq{InternPort: 4672, ExternPort: 30000, Key: 0xDEADBEEF},
+		KadFirewallAck{},
+		Callback{BuddyID: userHash, File: fileHash, Endpoint: netip.MustParseAddrPort("1.2.3.4:4662")},
+		ReaskCallbackTCP{Endpoint: netip.MustParseAddrPort("1.2.3.4:4672"), Ping: ReaskFilePing{Hash: fileHash, HasParts: true, Parts: parts(true), HasCompleteSources: true, CompleteSources: 2}},
+		BuddyPing{},
+		BuddyPong{},
 	}
 	for _, p := range packets {
 		roundTrip(t, p, Parse)
@@ -141,6 +148,7 @@ func TestUDPRoundTrip(t *testing.T) {
 		ReaskAck{HasParts: true, Parts: parts(), Rank: 12},
 		FileNotFound{},
 		QueueFull{},
+		ReaskCallbackUDP{BuddyID: userHash, Ping: ReaskFilePing{Hash: fileHash, HasCompleteSources: true, CompleteSources: 4}},
 	}
 	for _, p := range packets {
 		raw := wire.BuildPacketDatagram(nil, p)
@@ -279,5 +287,20 @@ func TestShortBodiesFail(t *testing.T) {
 		if _, err := Parse(wire.ProtocolEDonkey, op, []byte{1}); err == nil {
 			t.Errorf("opcode %#x: want error", op)
 		}
+	}
+}
+
+// TestCallbackGolden: OP_CALLBACK carries the IDs in Kad's word order and
+// the downloader's IP as Kad's host-order integer (ClientTCPSocket.cpp:1590).
+func TestCallbackGolden(t *testing.T) {
+	var id wire.Hash
+	for i := range id {
+		id[i] = byte(i)
+	}
+	got := Callback{BuddyID: id, File: id, Endpoint: netip.MustParseAddrPort("1.2.3.4:4662")}.Build(nil)
+	want := []byte{3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12}
+	want = append(append(want, want...), 4, 3, 2, 1, 0x36, 0x12)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("OP_CALLBACK body %x, want %x", got, want)
 	}
 }

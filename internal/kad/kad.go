@@ -11,8 +11,8 @@
 //
 // Every method other than Run is safe to call from another goroutine and
 // never blocks: inputs and outputs drop when full, as a hub's sends to the
-// other hub must (ADR-0005). SetWanted and Statuses hold only the latest
-// value.
+// other hub must (ADR-0005). SetWanted, SetBuddy and Statuses hold only
+// the latest value.
 package kad
 
 import (
@@ -64,6 +64,7 @@ type Datagram struct {
 type Kad struct {
 	cfg       Config
 	wanted    chan Wanted
+	buddies   chan Buddy
 	sends     chan Datagram
 	callbacks chan Callback
 	acks      chan netip.Addr
@@ -92,6 +93,7 @@ func BuildKad(cfg Config) *Kad {
 	k := &Kad{
 		cfg:       cfg,
 		wanted:    make(chan Wanted, 1),
+		buddies:   make(chan Buddy, 1),
 		sends:     make(chan Datagram, queueSize),
 		callbacks: make(chan Callback, queueSize),
 		acks:      make(chan netip.Addr, queueSize),
@@ -116,6 +118,21 @@ func (k *Kad) SetWanted(w Wanted) {
 		}
 		select {
 		case <-k.wanted:
+		default:
+		}
+	}
+}
+
+// SetBuddy replaces what Kad knows of the engine's buddy link.
+func (k *Kad) SetBuddy(b Buddy) {
+	for {
+		select {
+		case k.buddies <- b:
+			return
+		default:
+		}
+		select {
+		case <-k.buddies:
 		default:
 		}
 	}
@@ -232,6 +249,8 @@ func (k *Kad) Run(ctx context.Context) error {
 			isTick = true
 		case w := <-k.wanted:
 			c.setWanted(w, k.cfg.Clock.Now())
+		case b := <-k.buddies:
+			c.setBuddy(b)
 		case d := <-k.sends:
 			conn.WriteTo(d.Data, d.Addr)
 		case cb := <-k.callbacks:

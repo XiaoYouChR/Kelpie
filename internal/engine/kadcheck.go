@@ -31,6 +31,12 @@ func (e *Engine) onKadRequest(r kad.Request) {
 		e.startFirewallCheck(r)
 	case kad.UDPCheck:
 		e.startUDPCheck(r)
+	case kad.BuddyFound:
+		e.onBuddyFound(r)
+	case kad.BuddyRequested:
+		e.buddy.incoming[r.Addr.Addr()] = incomingBuddy{user: r.UserHash, id: r.BuddyID, added: e.now()}
+	case kad.CallbackRequested:
+		e.onCallbackRequested(r)
 	}
 }
 
@@ -115,9 +121,9 @@ func (e *Engine) onKadConnClosed(c *conn) {
 	}
 }
 
-// onKadPacket takes the Kad packets a peer connection carries and reports
-// whether p was one.
-func (e *Engine) onKadPacket(c *conn, p wire.Packet) bool {
+// onKadPacket acts on the Kad packets a peer connection carries. The
+// session sees them too, as activity.
+func (e *Engine) onKadPacket(c *conn, p wire.Packet) {
 	switch p := p.(type) {
 	case client.KadFirewallAck:
 		if e.kad != nil {
@@ -130,8 +136,13 @@ func (e *Engine) onKadPacket(c *conn, p wire.Packet) bool {
 				IsKnown: len(c.files) > 0 || c.isUploading,
 			})
 		}
-	default:
-		return false
+	case client.BuddyPing:
+		e.onBuddyPing(c)
+	case client.BuddyPong:
+		e.onBuddyPong(c)
+	case client.Callback:
+		e.onCallback(p)
+	case client.ReaskCallbackTCP:
+		e.onReaskCallbackTCP(c, p)
 	}
-	return true
 }

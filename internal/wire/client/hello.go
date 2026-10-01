@@ -14,6 +14,8 @@ const (
 	tagVersion      byte = 0x11
 	tagModVersion   byte = 0x55
 	tagUDPPorts     byte = 0xF9
+	tagBuddyIP      byte = 0xFC
+	tagBuddyUDP     byte = 0xFD
 	tagMiscOptions1 byte = 0xFA
 	tagEmuleVersion byte = 0xFB
 	tagMiscOptions2 byte = 0xFE
@@ -53,6 +55,9 @@ type Hello struct {
 	Misc2        MiscOptions2
 	EmuleVersion uint32
 	ModMisc      uint32
+	// Buddy is the IP and UDP port of the sender's Kad buddy, set while
+	// the sender is firewalled and has one.
+	Buddy netip.AddrPort
 	// YourIP is the address the sender sees us at, a vote rather than a
 	// fact (ipv6-spec §3.1).
 	YourIP netip.Addr
@@ -105,6 +110,10 @@ func setHelloField(h *Hello, t wire.Tag) bool {
 	case t.ID == tagUDPPorts && isUint:
 		h.KadPort = uint16(t.Uint >> 16)
 		h.UDPPort = uint16(t.Uint)
+	case t.ID == tagBuddyIP && isUint:
+		h.Buddy = netip.AddrPortFrom(wire.ToAddr(uint32(t.Uint)), h.Buddy.Port())
+	case t.ID == tagBuddyUDP && isUint:
+		h.Buddy = netip.AddrPortFrom(h.Buddy.Addr(), uint16(t.Uint))
 	case t.ID == tagMiscOptions1 && isUint:
 		h.Misc1 = ParseMiscOptions1(uint32(t.Uint))
 	case t.ID == tagMiscOptions2 && isUint:
@@ -148,6 +157,8 @@ func buildHello(b []byte, h Hello) []byte {
 	addString(tagName, h.Name)
 	addUint(tagVersion, h.Version)
 	addUint(tagUDPPorts, uint32(h.KadPort)<<16|uint32(h.UDPPort))
+	addAddr(tagBuddyIP, h.Buddy.Addr())
+	addUint(tagBuddyUDP, uint32(h.Buddy.Port()))
 	addUint(tagMiscOptions1, h.Misc1.ToUint32())
 	addUint(tagMiscOptions2, h.Misc2.ToUint32())
 	addUint(tagEmuleVersion, h.EmuleVersion)

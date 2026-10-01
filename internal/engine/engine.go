@@ -108,6 +108,8 @@ type Engine struct {
 	kadCancel context.CancelFunc
 	kadDone   chan struct{}
 	kadStatus kad.Status
+	kadID     wire.Hash
+	buddy     buddy
 	listener  transport.Listener
 	udp       transport.PacketConn
 	tcpPort   int
@@ -207,6 +209,7 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		sourceLowIDs:    map[lowIDKey]map[wire.Hash]bool{},
 		uploadEndpoints: map[uploadKey]uploadTarget{},
 		kadChecks:       map[uint64]kadCheck{},
+		buddy:           buddy{incoming: map[netip.Addr]incomingBuddy{}},
 	}
 	if config.PacketLog != nil {
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)
@@ -372,6 +375,7 @@ func (e *Engine) startKad(nodes []kad.Node) {
 		Rand:      rand.New(rand.NewPCG(random.Uint64(), random.Uint64())),
 	})
 	e.kadStatus = kad.Status{IsFirewalled: true}
+	e.kadID = e.kad.State().ID
 	ctx, cancel := context.WithCancel(e.ctx)
 	e.kadCancel = cancel
 	e.kadDone = make(chan struct{})
@@ -568,6 +572,7 @@ func (e *Engine) onTick() {
 	}
 	e.runTransfers(now)
 	e.runServer(e.server.OnTick(now, e.buildServerWanted()))
+	e.runBuddy(now)
 	if e.kad != nil {
 		e.kad.SetWanted(e.buildKadWanted())
 	}

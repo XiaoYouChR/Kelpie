@@ -1,7 +1,6 @@
 package kad
 
 import (
-	"encoding/binary"
 	"net/netip"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -66,6 +65,10 @@ type SourcesFound struct {
 type Status struct {
 	Nodes        int
 	IsFirewalled bool
+	// IsUDPFirewalled is the UDP test's verdict, or the last one while a
+	// test runs; IsUDPVerified says a test has ever finished.
+	IsUDPFirewalled bool
+	IsUDPVerified   bool
 }
 
 // Callback asks a firewalled source's buddy to have the source connect to
@@ -137,37 +140,26 @@ func toSource(e kadwire.Entry, isFirewalled bool) (Source, bool) {
 }
 
 // eMule writes TAG_BUDDYHASH as the hex of the buddy ID's in-memory words,
-// which is its Kad wire form; BuddyID holds the hash form like every other
-// ID here, so buildCallback can encode it back.
+// which is its Kad wire form (eMule Search.cpp:765); BuddyID holds the hash
+// form like every other ID here, so the callback request can encode it
+// back. aMule writes and reads the hash form instead (Search.cpp:626, 909),
+// so eMule and aMule cannot call back each other's firewalled sources; we
+// follow eMule, the larger part of the network.
+func buildBuddyHash(id wire.Hash) string {
+	return wire.Hash(kadwire.BuildID(nil, id)).String()
+}
+
 func parseBuddyID(t wire.Tag) (wire.Hash, bool) {
 	raw, err := wire.ParseHash(t.String)
 	if t.Type != wire.TagString || err != nil {
 		return wire.Hash{}, false
 	}
-	return parseID(&wire.Reader{Rest: raw[:]}), true
+	return kadwire.ParseID(&wire.Reader{Rest: raw[:]}), true
 }
 
-// opCallbackReq is KADEMLIA_CALLBACK_REQ and opFirewalledAck
-// KADEMLIA_FIREWALLED_ACK_RES; wire/kad does not decode either.
-const (
-	opCallbackReq   byte = 0x52
-	opFirewalledAck byte = 0x59
-)
-
-// callbackReq is what CUpDownClient::TryToConnect sends a firewalled
-// source's buddy: buddy ID, file hash, our TCP port. The buddy forwards it
-// as OP_CALLBACK over its TCP link to the source.
-type callbackReq struct {
-	BuddyID wire.Hash
-	Hash    wire.Hash
-	TCPPort uint16
-}
-
-func (callbackReq) Protocol() byte { return wire.ProtocolKad }
-func (callbackReq) Opcode() byte   { return opCallbackReq }
-func (p callbackReq) Build(b []byte) []byte {
-	return binary.LittleEndian.AppendUint16(buildID(buildID(b, p.BuddyID), p.Hash), p.TCPPort)
-}
+// opFirewalledAck is KADEMLIA_FIREWALLED_ACK_RES, which wire/kad does not
+// decode.
+const opFirewalledAck byte = 0x59
 
 // firewalledAck is KADEMLIA_FIREWALLED_ACK_RES, sent to a node older than
 // Kad version 7 whose TCP port we reached (ClientList.cpp:600).

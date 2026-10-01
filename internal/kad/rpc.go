@@ -20,6 +20,7 @@ const (
 	rpcPublish
 	rpcFirewall
 	rpcPing
+	rpcFindBuddy
 )
 
 // responseTimeout is how long a contact has to answer before it counts as

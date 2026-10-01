@@ -75,6 +75,10 @@ func TestRoundTrip(t *testing.T) {
 		FirewalledUDP{ErrorCode: 1, Port: 4662},
 		Ping{},
 		Pong{UDPPort: 4672},
+		FindBuddyReq{Target: idA, UserHash: idB, TCPPort: 4662},
+		FindBuddyRes{Target: idA, UserHash: idB, TCPPort: 4662},
+		FindBuddyRes{Target: idA, UserHash: idB, TCPPort: 4662, HasOptions: true, Options: 3},
+		CallbackReq{BuddyID: idA, Hash: idB, TCPPort: 4662},
 	}
 	for _, p := range packets {
 		roundTrip(t, p)
@@ -83,8 +87,8 @@ func TestRoundTrip(t *testing.T) {
 
 // Ported from goed2k protocol/kad/types_test.go.
 func TestIDRoundTrip(t *testing.T) {
-	r := &wire.Reader{Rest: buildID(nil, idA)}
-	if got := parseID(r); got != idA {
+	r := &wire.Reader{Rest: BuildID(nil, idA)}
+	if got := ParseID(r); got != idA {
 		t.Fatalf("id = %s", got)
 	}
 }
@@ -95,7 +99,7 @@ func TestIDGolden(t *testing.T) {
 		id[i] = byte(i)
 	}
 	want := "03020100070605040b0a09080f0e0d0c"
-	if got := hex.EncodeToString(buildID(nil, id)); got != want {
+	if got := hex.EncodeToString(BuildID(nil, id)); got != want {
 		t.Fatalf("id = %s, want %s", got, want)
 	}
 }
@@ -159,15 +163,15 @@ func TestCompressedPacketParses(t *testing.T) {
 }
 
 func TestParseRejectsImpossibleCounts(t *testing.T) {
-	body := append(buildID(nil, idA), 0x01, 0x00, Version, 0xFF, 0xFF)
+	body := append(BuildID(nil, idA), 0x01, 0x00, Version, 0xFF, 0xFF)
 	if _, err := Parse(wire.ProtocolKad, opBootstrapRes, body); err == nil {
 		t.Fatal("want error")
 	}
 }
 
 func TestUnknownOpcodesSurvive(t *testing.T) {
-	got, err := Parse(wire.ProtocolKad, 0x51, []byte{1, 2})
-	if err != nil || !reflect.DeepEqual(got, wire.Unknown{Proto: wire.ProtocolKad, Op: 0x51, Body: []byte{1, 2}}) {
+	got, err := Parse(wire.ProtocolKad, 0x45, []byte{1, 2})
+	if err != nil || !reflect.DeepEqual(got, wire.Unknown{Proto: wire.ProtocolKad, Op: 0x45, Body: []byte{1, 2}}) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 }

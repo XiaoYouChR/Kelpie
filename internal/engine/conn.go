@@ -207,6 +207,9 @@ func (e *Engine) buildPeerConfig() peer.Config {
 	if e.kad != nil {
 		cfg.KadPort = uint16(e.udpPort)
 		cfg.KadVersion = kadVersion
+		if e.isFirewalled() {
+			cfg.Buddy = e.buddyAddr()
+		}
 	}
 	return cfg
 }
@@ -341,6 +344,7 @@ func (e *Engine) closeConn(c *conn, reason string) {
 	}
 	e.queue.OnConnectionGone(c.id)
 	e.onKadConnClosed(c)
+	e.onBuddyConnClosed(c)
 	for _, h := range c.files {
 		r := e.runByHash[h]
 		if r == nil || r.transfer == nil {
@@ -389,7 +393,8 @@ func (e *Engine) onPacket(id uint64, p wire.Packet) {
 		e.runServer(e.server.OnPacket(c.remote, p, e.now()))
 		return
 	}
-	if e.onKadPacket(c, p) {
+	e.onKadPacket(c, p)
+	if c.isClosed {
 		return
 	}
 	e.runSession(c, c.session.OnPacket(p, e.shareByHash, e.now()))
@@ -496,6 +501,7 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	e.startFirstFile(c)
 	if !c.isClosed {
 		e.onKadHandshake(c)
+		e.onBuddyHandshake(c)
 	}
 	if !c.isClosed {
 		e.runQueueActions(e.queue.OnConnected(c.id, toUploadPeer(c), e.now()))

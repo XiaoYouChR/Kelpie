@@ -186,6 +186,8 @@ func (e *Engine) onDatagram(from netip.AddrPort, data []byte) {
 		switch p := p.(type) {
 		case client.ReaskFilePing:
 			e.onReask(from, p)
+		case client.ReaskCallbackUDP:
+			e.onReaskCallbackUDP(from, p)
 		case client.ReaskAck:
 			for _, r := range slices.Clone(e.runList) {
 				if e.downloadByHash(r.file.Hash) != nil {

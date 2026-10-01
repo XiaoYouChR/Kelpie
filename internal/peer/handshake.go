@@ -39,6 +39,7 @@ func (s *Session) buildHello() client.Hello {
 		Version:  client.EDonkeyVersion,
 		UDPPort:  s.cfg.UDPPort,
 		KadPort:  s.cfg.KadPort,
+		Buddy:    s.cfg.Buddy,
 		Misc1: client.MiscOptions1{
 			IsUnicode:               true,
 			UDPVersion:              udpVersion,
