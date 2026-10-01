@@ -40,11 +40,10 @@ type Frame struct {
 	Body     []byte
 }
 
-// Packet is anything with a wire form: one struct per opcode.
+// Packet is anything with a wire form: one struct per opcode. Build appends
+// the packet as a datagram carries it: protocol byte, opcode, body.
+// BuildPacket puts the same bytes in a TCP frame.
 type Packet interface {
-	Protocol() byte
-	Opcode() byte
-	// Build appends the body, without the frame header, to b.
 	Build(b []byte) []byte
 }
 
@@ -56,9 +55,7 @@ type Unknown struct {
 	Body  []byte
 }
 
-func (u Unknown) Protocol() byte        { return u.Proto }
-func (u Unknown) Opcode() byte          { return u.Op }
-func (u Unknown) Build(b []byte) []byte { return append(b, u.Body...) }
+func (u Unknown) Build(b []byte) []byte { return append(append(b, u.Proto, u.Op), u.Body...) }
 
 // ParseFrame reads one TCP frame from the front of b and returns it with the
 // number of bytes consumed. n == 0 with a nil error means b does not yet hold
@@ -112,40 +109,33 @@ func ParseDatagram(b []byte) (Frame, error) {
 	return toFrame(b[0], b[1], b[2:])
 }
 
-func BuildFrame(b []byte, protocol, opcode byte, body []byte) []byte {
+func buildFrame(b []byte, protocol, opcode byte, body []byte) []byte {
 	b = append(b, protocol)
 	b = binary.LittleEndian.AppendUint32(b, uint32(len(body)+1))
 	b = append(b, opcode)
 	return append(b, body...)
 }
 
-// BuildPackedFrame zlib-compresses body under 0xD4. Whether packing pays off
-// is the sender's call.
-func BuildPackedFrame(b []byte, opcode byte, body []byte) []byte {
-	return BuildFrame(b, ProtocolPacked, opcode, toDeflated(body))
+// buildPackedFrame zlib-compresses body under 0xD4. Kelpie sends nothing
+// packed; the tests use it to build what other clients send.
+func buildPackedFrame(b []byte, opcode byte, body []byte) []byte {
+	return buildFrame(b, ProtocolPacked, opcode, toDeflated(body))
 }
 
-func buildDatagram(b []byte, protocol, opcode byte, body []byte) []byte {
-	b = append(b, protocol, opcode)
-	return append(b, body...)
-}
-
-// BuildPackedDatagram compresses body under the packed counterpart of
+// buildPackedDatagram compresses body under the packed counterpart of
 // protocol: 0xE5 for Kad, 0xD4 otherwise.
-func BuildPackedDatagram(b []byte, protocol, opcode byte, body []byte) []byte {
+func buildPackedDatagram(b []byte, protocol, opcode byte, body []byte) []byte {
 	packed := ProtocolPacked
 	if protocol == ProtocolKad {
 		packed = ProtocolKadPacked
 	}
-	return buildDatagram(b, packed, opcode, toDeflated(body))
+	return append(append(b, packed, opcode), toDeflated(body)...)
 }
 
+// BuildPacket appends p as a TCP frame.
 func BuildPacket(b []byte, p Packet) []byte {
-	return BuildFrame(b, p.Protocol(), p.Opcode(), p.Build(nil))
-}
-
-func BuildPacketDatagram(b []byte, p Packet) []byte {
-	return buildDatagram(b, p.Protocol(), p.Opcode(), p.Build(nil))
+	d := p.Build(nil)
+	return buildFrame(b, d[0], d[1], d[2:])
 }
 
 func parseHeader(head []byte) (int, error) {

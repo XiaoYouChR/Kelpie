@@ -90,7 +90,7 @@ func TestRoundTrip(t *testing.T) {
 	if _, ok := in.(*cipherConn); !ok {
 		t.Fatalf("incoming is %T", in)
 	}
-	hello := wire.BuildFrame(nil, wire.ProtocolEDonkey, 0x01, []byte("hello"))
+	hello := wire.BuildPacket(nil, wire.Unknown{Proto: wire.ProtocolEDonkey, Op: 0x01, Body: []byte("hello")})
 	out.Write(hello)
 	got := make([]byte, len(hello))
 	if _, err := io.ReadFull(in, got); err != nil || !bytes.Equal(got, hello) {
@@ -105,7 +105,7 @@ func TestRoundTrip(t *testing.T) {
 
 func TestIncomingPlainPassesThrough(t *testing.T) {
 	a, b := buildPair(t)
-	hello := wire.BuildFrame(nil, wire.ProtocolEDonkey, 0x01, []byte("hello"))
+	hello := wire.BuildPacket(nil, wire.Unknown{Proto: wire.ProtocolEDonkey, Op: 0x01, Body: []byte("hello")})
 	a.Write(hello)
 	in, err := OpenIncoming(b, user)
 	if err != nil {

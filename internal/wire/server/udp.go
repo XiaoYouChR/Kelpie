@@ -10,10 +10,8 @@ import (
 // files by hash alone, for servers without OP_GLOBGETSOURCES2.
 type GlobGetSources struct{ Files []wire.Hash }
 
-func (GlobGetSources) Protocol() byte { return wire.ProtocolEDonkey }
-func (GlobGetSources) Opcode() byte   { return opGlobGetSources }
-
 func (g GlobGetSources) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opGlobGetSources)
 	for _, h := range g.Files {
 		b = append(b, h[:]...)
 	}
@@ -32,10 +30,8 @@ func parseGlobGetSources(r *wire.Reader) GlobGetSources {
 // files, each with its size.
 type GlobGetSources2 struct{ Files []GetSources }
 
-func (GlobGetSources2) Protocol() byte { return wire.ProtocolEDonkey }
-func (GlobGetSources2) Opcode() byte   { return opGlobGetSources2 }
-
 func (g GlobGetSources2) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opGlobGetSources2)
 	for _, f := range g.Files {
 		b = buildSizedHash(b, f.Hash, f.Size)
 	}
@@ -55,10 +51,8 @@ func parseGlobGetSources2(r *wire.Reader) GlobGetSources2 {
 // several files; each after the first is preceded by 0xE3 0x9B again.
 type GlobFoundSources struct{ Files []FoundSources }
 
-func (GlobFoundSources) Protocol() byte { return wire.ProtocolEDonkey }
-func (GlobFoundSources) Opcode() byte   { return opGlobFoundSources }
-
 func (g GlobFoundSources) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opGlobFoundSources)
 	for i, f := range g.Files {
 		if i > 0 {
 			b = append(b, wire.ProtocolEDonkey, opGlobFoundSources)
@@ -83,39 +77,33 @@ func parseGlobFoundSources(r *wire.Reader) GlobFoundSources {
 // Challenge.
 type GlobServStatReq struct{ Challenge uint32 }
 
-func (GlobServStatReq) Protocol() byte { return wire.ProtocolEDonkey }
-func (GlobServStatReq) Opcode() byte   { return opGlobServStatReq }
 func (g GlobServStatReq) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opGlobServStatReq)
 	return binary.LittleEndian.AppendUint32(b, g.Challenge)
 }
 
 // Server UDP flags (GlobServStatRes.UDPFlags).
 const (
 	UDPFlagGetSources     uint32 = 0x0001
-	UDPFlagGetFiles       uint32 = 0x0002
 	UDPFlagNewTags        uint32 = 0x0008
 	UDPFlagUnicode        uint32 = 0x0010
 	UDPFlagGetSources2    uint32 = 0x0020
 	UDPFlagLargeFiles     uint32 = 0x0100
 	UDPFlagUDPObfuscation uint32 = 0x0200
 	UDPFlagTCPObfuscation uint32 = 0x0400
-	UDPFlagIPv6           uint32 = 0x4000
 )
 
 // ObfuscatedPing is aMule's obfuscated status ping (ServerList.cpp:297-322),
 // sent to the server's TCP port plus 12: a bare challenge and padding, with
-// no protocol byte or opcode, so Protocol and Opcode are the challenge's
-// first two bytes. The server answers OP_GLOBSERVSTATRES obfuscated with
-// the challenge as key.
+// no protocol byte or opcode. The server answers OP_GLOBSERVSTATRES
+// obfuscated with the challenge as key.
 type ObfuscatedPing struct {
 	Challenge uint32
 	Padding   []byte
 }
 
-func (p ObfuscatedPing) Protocol() byte { return byte(p.Challenge) }
-func (p ObfuscatedPing) Opcode() byte   { return byte(p.Challenge >> 8) }
 func (p ObfuscatedPing) Build(b []byte) []byte {
-	return append(append(b, byte(p.Challenge>>16), byte(p.Challenge>>24)), p.Padding...)
+	return append(binary.LittleEndian.AppendUint32(b, p.Challenge), p.Padding...)
 }
 
 // GlobServStatRes is the UDP OP_GLOBSERVSTATRES. Older servers stop after
@@ -134,10 +122,8 @@ type GlobServStatRes struct {
 	UDPKey             uint32
 }
 
-func (GlobServStatRes) Protocol() byte { return wire.ProtocolEDonkey }
-func (GlobServStatRes) Opcode() byte   { return opGlobServStatRes }
-
 func (g GlobServStatRes) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opGlobServStatRes)
 	for _, v := range []uint32{g.Challenge, g.Users, g.Files, g.MaxUsers, g.SoftFiles, g.HardFiles, g.UDPFlags, g.LowIDUsers} {
 		b = binary.LittleEndian.AppendUint32(b, v)
 	}

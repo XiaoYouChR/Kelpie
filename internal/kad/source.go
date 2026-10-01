@@ -169,6 +169,4 @@ const opFirewalledAck byte = 0x59
 // Kad version 7 whose TCP port we reached (ClientList.cpp:600).
 type firewalledAck struct{}
 
-func (firewalledAck) Protocol() byte        { return wire.ProtocolKad }
-func (firewalledAck) Opcode() byte          { return opFirewalledAck }
-func (firewalledAck) Build(b []byte) []byte { return b }
+func (firewalledAck) Build(b []byte) []byte { return append(b, wire.ProtocolKad, opFirewalledAck) }

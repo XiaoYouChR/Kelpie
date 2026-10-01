@@ -17,12 +17,12 @@ func FuzzMatchRecovery(f *testing.F) {
 	tree := buildTree(buildData(size))
 	for part := range piece.PartCount(size) {
 		answer := client.AICHAnswer{HasData: true, Part: uint16(part), Root: tree.Root(), Entries: tree.BuildRecovery(part)}
-		f.Add(int64(0), uint16(part), answer.Build(nil))
+		f.Add(int64(0), uint16(part), answer.Build(nil)[2:])
 	}
 	long := client.AICHAnswer{HasData: true, Part: 700, HasLongIdents: true, Entries: []client.AICHEntry{{Ident: 0x10000}}}
-	f.Add(int64(maxSize), uint16(700), long.Build(nil))
+	f.Add(int64(maxSize), uint16(700), long.Build(nil)[2:])
 	f.Fuzz(func(t *testing.T, fileSize int64, part uint16, body []byte) {
-		p, err := client.Parse(wire.ProtocolEMule, long.Opcode(), body)
+		p, err := client.Parse(wire.ProtocolEMule, long.Build(nil)[1], body)
 		if err != nil {
 			return
 		}

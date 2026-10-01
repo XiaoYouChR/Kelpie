@@ -392,8 +392,6 @@ func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) []A
 	switch p := p.(type) {
 	case serverwire.FoundSources:
 		s.addSources(p.Hash, p.Sources, sender.Endpoint, false, &out)
-	case serverwire.FoundSourcesObfu:
-		s.addSources(p.Hash, p.Sources, sender.Endpoint, false, &out)
 	case serverwire.CallbackRequested:
 		if p.Addr.IsValid() && p.Addr.Port() != 0 {
 			out = append(out, Callback{
@@ -621,12 +619,8 @@ func (s *Server) runSourceRequests(now time.Time, out *[]Action) {
 	}
 	slices.SortStableFunc(due, func(a, b Wanted) int { return s.askedAt[a.File].Compare(s.askedAt[b.File]) })
 	for _, w := range due[:min(len(due), sourceFilesPerFrame)] {
-		request := serverwire.GetSources{Hash: w.File, Size: w.Size}
-		if s.current.tcpFlags&serverwire.FlagTCPObfuscation != 0 {
-			s.send(serverwire.GetSourcesObfu(request), out)
-		} else {
-			s.send(request, out)
-		}
+		isObfu := s.current.tcpFlags&serverwire.FlagTCPObfuscation != 0
+		s.send(serverwire.GetSources{Hash: w.File, Size: w.Size, IsObfu: isObfu}, out)
 		s.askedAt[w.File] = now
 	}
 	s.nextSourceFrame = now.Add(sourceFrameTime)

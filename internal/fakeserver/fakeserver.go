@@ -222,7 +222,7 @@ func (s *Server) runConn(ctx context.Context, conn net.Conn) {
 		case serverwire.OfferFiles:
 			s.onOfferFiles(c, p)
 		case serverwire.GetSources:
-			c.send(serverwire.FoundSources{Hash: p.Hash, Sources: s.sourcesByFile(p.Hash, c)})
+			c.send(serverwire.FoundSources{Hash: p.Hash, Sources: s.sourcesByFile(p.Hash, c), IsObfu: p.IsObfu})
 		case serverwire.CallbackRequest:
 			s.onCallbackRequest(c, p)
 		}
@@ -355,7 +355,7 @@ func (s *Server) runUDP(ctx context.Context, conn transport.PacketConn, isObfusc
 				data = plain
 			} else if n >= 4 {
 				key = binary.LittleEndian.Uint32(data)
-				data = wire.BuildPacketDatagram(nil, serverwire.GlobServStatReq{Challenge: key})
+				data = serverwire.GlobServStatReq{Challenge: key}.Build(nil)
 			} else {
 				continue
 			}
@@ -367,7 +367,7 @@ func (s *Server) runUDP(ctx context.Context, conn transport.PacketConn, isObfusc
 		if !s.runDelay(ctx) {
 			return
 		}
-		answer := wire.BuildPacketDatagram(nil, reply)
+		answer := reply.Build(nil)
 		if key != 0 {
 			answer = sealDatagram(answer, key)
 		}

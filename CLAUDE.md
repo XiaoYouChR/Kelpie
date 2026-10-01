@@ -65,8 +65,9 @@
 ## Go
 
 - 导出名 PascalCase，未导出名 camelCase；动词同样取自上表（`OnPacket`、`ParseMet`、`SetWanted`）
-- 纯状态机（`peer`、`transfer`、`upload`、`server`、`piece`）不做 I/O、不起 goroutine、不 import `engine`；对事件的反应命名为 `On*`，返回要执行的动作
-- 只有 `engine` 和 `kad` 两个持状态 actor；阻塞发送只能流向它们（ADR-0005）
+- 纯状态机（`peer`、`transfer`、`upload`、`server`）不做 I/O、不起 goroutine、不 import `engine`；对事件的反应命名为 `On*`，返回要执行的动作
+- 只有 `engine` 和 `kad` 两个持状态 actor，消息都经 `Post` 进去，Engine 只从 `engine.Start` 启动；阻塞发送只能流向这两个 actor（ADR-0005）
+- `wire` 编解码：一个包一个 struct，`Build` 写出协议字节、opcode 和正文，各族 `Parse` 解码
 - 外部依赖只经 `transport`、`disk`、`clock` 三个接缝；测试用它们的 fake，不 mock 其他东西
 - 测试跑 `go test -race ./...`；碰真实网络的测试只在 `KELPIE_NETWORK=1` 时运行
 - 从 goed2k 搬来的代码保留 MIT 出处（见 NOTICE）；eMule、aMule（GPL）只提供协议知识，不抄代码

@@ -330,7 +330,7 @@ func TestRequestCallbackReachesBuddy(t *testing.T) {
 	if len(out.datagrams) != 1 || out.datagrams[0].to != buddy {
 		t.Fatalf("callback datagrams %+v", out.datagrams)
 	}
-	got := wire.BuildPacketDatagram(nil, out.datagrams[0].packet)
+	got := (out.datagrams[0].packet).Build(nil)
 	want := []byte{wire.ProtocolKad, 0x52}
 	buddyWire := mustHash(buddyHashText(buddyID))
 	want = append(want, buddyWire[:]...)

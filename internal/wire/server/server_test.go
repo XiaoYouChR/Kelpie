@@ -36,19 +36,17 @@ func unhex(t *testing.T, s string) []byte {
 
 func samplePackets() []wire.Packet {
 	return []wire.Packet{
-		Login{UserHash: userHash, Port: 4662, Name: "Kelpie", Version: 0x3C, Flags: CapZlib | CapNewTags | CapUnicode | CapLargeFiles | CapIPv6, EmuleVersion: 0x2000, IPv6: v6, Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x0F, Uint: 4662}}},
-		IDChange{ClientID: 0x04030201, Flags: FlagCompression | FlagRelatedSearch | FlagIPv6, Reserved: 4661, ReportedIP: netip.MustParseAddr("1.2.3.4")},
+		Login{UserHash: userHash, Port: 4662, Name: "Kelpie", Version: 0x3C, Flags: CapZlib | CapNewTags | CapUnicode | CapLargeFiles | 0x1000, EmuleVersion: 0x2000, IPv6: v6, Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x0F, Uint: 4662}}},
+		IDChange{ClientID: 0x04030201, Flags: FlagCompression | FlagLargeFiles | FlagIPv6, Reserved: 4661, ReportedIP: netip.MustParseAddr("1.2.3.4")},
 		IDChange{ClientID: 0x04030201, Flags: FlagTCPObfuscation, ReportedIP: netip.MustParseAddr("1.2.3.4"), ObfuscationPort: 4665},
 		ServerMessage{Text: "server version 17.15\nwelcome"},
 		ServerStatus{Users: 1000, Files: 200000},
-		ServerIdent{Hash: fileHash, Addr: netip.MustParseAddrPort("1.2.3.4:4661"), Name: "eMule Security", Description: "desc", YourIP: v6, IPv6Status: IPv6StatusHave | IPv6StatusReachable | IPv6StatusProbed, IPv6: netip.MustParseAddr("2a01:4f8::2"), Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x87, Uint: 9}}},
-		GetServerList{},
-		ServerList{Servers: []netip.AddrPort{netip.MustParseAddrPort("1.2.3.4:4661"), netip.MustParseAddrPort("[2a01:4f8::1]:4661")}},
-		ServerList{Servers: []netip.AddrPort{netip.MustParseAddrPort("1.2.3.4:4661")}},
+		ServerIdent{Hash: fileHash, Addr: netip.MustParseAddrPort("1.2.3.4:4661"), Name: "eMule Security", Description: "desc", YourIP: v6, IPv6Status: 0x07, IPv6: netip.MustParseAddr("2a01:4f8::2"), Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x87, Uint: 9}}},
 		GetSources{Hash: fileHash, Size: 9728000},
 		GetSources{Hash: fileHash, Size: 5 << 30},
+		GetSources{Hash: fileHash, Size: 9728000, IsObfu: true},
 		FoundSources{Hash: fileHash, Sources: []Source{{ClientID: 0x04030201, Port: 4662}, {ClientID: wire.IPv6Sentinel, Port: 4663, IPv6: v6}, {ClientID: 5, Port: 6}}},
-		FoundSourcesObfu{Hash: fileHash, Sources: []Source{{ClientID: 1, Port: 2, CryptOptions: 0x01}, {ClientID: wire.IPv6Sentinel, Port: 3, CryptOptions: wire.CryptHasUserHash | 0x03, UserHash: userHash, IPv6: v6}}},
+		FoundSources{Hash: fileHash, Sources: []Source{{ClientID: 1, Port: 2, CryptOptions: 0x01}, {ClientID: wire.IPv6Sentinel, Port: 3, CryptOptions: wire.CryptHasUserHash | 0x03, UserHash: userHash, IPv6: v6}}, IsObfu: true},
 		CallbackRequest{ClientID: 12345},
 		CallbackRequested{Addr: netip.MustParseAddrPort("1.2.3.4:4662")},
 		CallbackRequested{Addr: netip.MustParseAddrPort("1.2.3.4:4662"), CryptOptions: 0x83, UserHash: userHash},
@@ -93,7 +91,7 @@ func sampleUDPPackets() []wire.Packet {
 
 func TestUDPRoundTrip(t *testing.T) {
 	for _, p := range sampleUDPPackets() {
-		frame, err := wire.ParseDatagram(wire.BuildPacketDatagram(nil, p))
+		frame, err := wire.ParseDatagram(p.Build(nil))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -109,14 +107,14 @@ func TestUDPRoundTrip(t *testing.T) {
 
 // ipv6-spec §4.4: the IPv6 bytes come last, after the obfuscation fields.
 func TestFoundSourcesSentinelGolden(t *testing.T) {
-	f := FoundSourcesObfu{Hash: fileHash, Sources: []Source{
+	f := FoundSources{Hash: fileHash, Sources: []Source{
 		{ClientID: wire.IPv6Sentinel, Port: 4662, CryptOptions: 0x81, UserHash: userHash, IPv6: v6},
 		{ClientID: 0x04030201, Port: 4662, CryptOptions: 0},
-	}}
+	}, IsObfu: true}
 	want := unhex(t, "31d6cfe0d16ae931b73c59d7e0c089c0 02"+
 		"ffffffff 3612 81 23a8ceff57a7a32d562d649ed7893796 2a0104f8000000000000000000000001"+
 		"01020304 3612 00")
-	if got := f.Build(nil); !bytes.Equal(got, want) {
+	if got := f.Build(nil)[2:]; !bytes.Equal(got, want) {
 		t.Fatalf("sources =\n %x\nwant\n %x", got, want)
 	}
 }
@@ -129,30 +127,23 @@ func TestFoundSourcesTruncatedSentinelFails(t *testing.T) {
 }
 
 func TestGetSourcesGolden(t *testing.T) {
-	small := GetSources{Hash: fileHash, Size: 0x01020304}.Build(nil)
+	small := GetSources{Hash: fileHash, Size: 0x01020304}.Build(nil)[2:]
 	if !bytes.Equal(small[16:], unhex(t, "04030201")) {
 		t.Fatalf("small = %x", small[16:])
 	}
-	large := GetSources{Hash: fileHash, Size: 0x0102030405}.Build(nil)
+	large := GetSources{Hash: fileHash, Size: 0x0102030405}.Build(nil)[2:]
 	if !bytes.Equal(large[16:], unhex(t, "00000000 0504030201000000")) {
 		t.Fatalf("large = %x", large[16:])
 	}
 }
 
 func TestLoginGolden(t *testing.T) {
-	got := Login{UserHash: userHash, ClientID: 0, Port: 4662, Flags: CapIPv6, IPv6: v6}.Build(nil)
+	got := Login{UserHash: userHash, ClientID: 0, Port: 4662, Flags: 0x1000, IPv6: v6}.Build(nil)[2:]
 	want := unhex(t, "23a8ceff57a7a32d562d649ed7893796 00000000 3612 02000000"+
 		"03010020 00100000"+
 		"010100ae 2a0104f8000000000000000000000001")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("login =\n %x\nwant\n %x", got, want)
-	}
-}
-
-func TestServerListWithoutIPv6BlockHasNoTrailingByte(t *testing.T) {
-	got := ServerList{Servers: []netip.AddrPort{netip.MustParseAddrPort("1.2.3.4:4661")}}.Build(nil)
-	if !bytes.Equal(got, unhex(t, "01 01020304 3512")) {
-		t.Fatalf("list = %x", got)
 	}
 }
 
@@ -168,13 +159,10 @@ func TestShortStatusDecodesOldServers(t *testing.T) {
 	}
 }
 
+// A packed server frame (0xD4) reaches Parse as 0xC5 once wire inflates it.
 func TestPackedServerFrameParses(t *testing.T) {
-	body := ServerStatus{Users: 1, Files: 2}.Build(nil)
-	frame, _, err := wire.ParseFrame(wire.BuildPackedFrame(nil, opServerStatus, body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := Parse(frame.Protocol, frame.Opcode, frame.Body)
+	body := ServerStatus{Users: 1, Files: 2}.Build(nil)[2:]
+	got, err := Parse(wire.ProtocolEMule, opServerStatus, body)
 	if err != nil || got != (ServerStatus{Users: 1, Files: 2}) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
@@ -192,7 +180,7 @@ func TestUnknownOpcodesSurvive(t *testing.T) {
 }
 
 func TestObfuscatedPingIsBare(t *testing.T) {
-	got := wire.BuildPacketDatagram(nil, ObfuscatedPing{Challenge: 0x04030201, Padding: []byte{9, 9}})
+	got := ObfuscatedPing{Challenge: 0x04030201, Padding: []byte{9, 9}}.Build(nil)
 	if want := []byte{1, 2, 3, 4, 9, 9}; !bytes.Equal(got, want) {
 		t.Fatalf("got %x, want %x", got, want)
 	}

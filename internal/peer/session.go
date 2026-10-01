@@ -191,11 +191,7 @@ func (s *Session) OnPacket(p wire.Packet, now time.Time) Output {
 		s.stopSlot(&out)
 	case client.SendingPart:
 		s.onPart(p.Hash, int64(p.Start), p.Data, now, &out)
-	case client.SendingPart64:
-		s.onPart(p.Hash, int64(p.Start), p.Data, now, &out)
 	case client.CompressedPart:
-		s.onCompressedPart(p.Hash, int64(p.Start), p.PackedSize, p.Data, now, &out)
-	case client.CompressedPart64:
 		s.onCompressedPart(p.Hash, int64(p.Start), p.PackedSize, p.Data, now, &out)
 	case client.AICHFileHashAnswer:
 		s.onRoot(p.Hash, p.Root, &out)
@@ -219,9 +215,7 @@ func (s *Session) OnPacket(p wire.Packet, now time.Time) Output {
 	case client.StartUploadRequest:
 		s.onUploadRequest(p.Hash, &out)
 	case client.RequestParts:
-		s.onPartsRequest(p.Hash, toBlocks32(p), &out)
-	case client.RequestParts64:
-		s.onPartsRequest(p.Hash, toBlocks64(p), &out)
+		s.onPartsRequest(p.Hash, toBlocks(p), &out)
 	case client.CancelTransfer:
 		s.onUploadCancelled(&out)
 	case client.AICHFileHashRequest:

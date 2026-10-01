@@ -31,9 +31,8 @@ type FirewallCheckUDPReq struct {
 	Key        uint32
 }
 
-func (FirewallCheckUDPReq) Protocol() byte { return wire.ProtocolEMule }
-func (FirewallCheckUDPReq) Opcode() byte   { return opFirewallCheckUDPReq }
 func (p FirewallCheckUDPReq) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opFirewallCheckUDPReq)
 	b = binary.LittleEndian.AppendUint16(b, p.InternPort)
 	b = binary.LittleEndian.AppendUint16(b, p.ExternPort)
 	return binary.LittleEndian.AppendUint32(b, p.Key)
@@ -43,9 +42,7 @@ func (p FirewallCheckUDPReq) Build(b []byte) []byte {
 // our TCP port reached it.
 type KadFirewallAck struct{}
 
-func (KadFirewallAck) Protocol() byte        { return wire.ProtocolEMule }
-func (KadFirewallAck) Opcode() byte          { return opKadFirewallAck }
-func (KadFirewallAck) Build(b []byte) []byte { return b }
+func (KadFirewallAck) Build(b []byte) []byte { return append(b, wire.ProtocolEMule, opKadFirewallAck) }
 
 // Callback is OP_CALLBACK: a buddy tells the firewalled client it serves
 // that the downloader at Endpoint wants File. BuddyID is the ID the client
@@ -56,9 +53,8 @@ type Callback struct {
 	Endpoint netip.AddrPort
 }
 
-func (Callback) Protocol() byte { return wire.ProtocolEMule }
-func (Callback) Opcode() byte   { return opCallback }
 func (p Callback) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opCallback)
 	b = kadwire.BuildID(kadwire.BuildID(b, p.BuddyID), p.File)
 	b = binary.LittleEndian.AppendUint32(b, kadwire.ToUint32(p.Endpoint.Addr()))
 	return binary.LittleEndian.AppendUint16(b, p.Endpoint.Port())
@@ -77,11 +73,10 @@ type ReaskCallbackTCP struct {
 	Ping     ReaskFilePing
 }
 
-func (ReaskCallbackTCP) Protocol() byte { return wire.ProtocolEMule }
-func (ReaskCallbackTCP) Opcode() byte   { return opReaskCallbackTCP }
 func (p ReaskCallbackTCP) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opReaskCallbackTCP)
 	b = binary.LittleEndian.AppendUint32(b, wire.ToClientID(p.Endpoint.Addr()))
-	return p.Ping.Build(binary.LittleEndian.AppendUint16(b, p.Endpoint.Port()))
+	return buildFileRequest(binary.LittleEndian.AppendUint16(b, p.Endpoint.Port()), FileRequest(p.Ping))
 }
 
 func parseReaskCallbackTCP(r *wire.Reader) ReaskCallbackTCP {
@@ -98,24 +93,19 @@ type ReaskCallbackUDP struct {
 	Ping    ReaskFilePing
 }
 
-func (ReaskCallbackUDP) Protocol() byte { return wire.ProtocolEMule }
-func (ReaskCallbackUDP) Opcode() byte   { return opReaskCallbackUDP }
 func (p ReaskCallbackUDP) Build(b []byte) []byte {
-	return p.Ping.Build(append(b, p.BuddyID[:]...))
+	b = append(b, wire.ProtocolEMule, opReaskCallbackUDP)
+	return buildFileRequest(append(b, p.BuddyID[:]...), FileRequest(p.Ping))
 }
 
 // BuddyPing keeps a buddy link open; the buddy answers with BuddyPong.
 type BuddyPing struct{}
 
-func (BuddyPing) Protocol() byte        { return wire.ProtocolEMule }
-func (BuddyPing) Opcode() byte          { return opBuddyPing }
-func (BuddyPing) Build(b []byte) []byte { return b }
+func (BuddyPing) Build(b []byte) []byte { return append(b, wire.ProtocolEMule, opBuddyPing) }
 
 type BuddyPong struct{}
 
-func (BuddyPong) Protocol() byte        { return wire.ProtocolEMule }
-func (BuddyPong) Opcode() byte          { return opBuddyPong }
-func (BuddyPong) Build(b []byte) []byte { return b }
+func (BuddyPong) Build(b []byte) []byte { return append(b, wire.ProtocolEMule, opBuddyPong) }
 
 // DirectCallbackReq is OP_DIRECTCALLBACKREQ: a downloader asks a
 // firewalled client that others reach over UDP to connect to TCPPort.
@@ -125,9 +115,8 @@ type DirectCallbackReq struct {
 	ConnectOptions byte
 }
 
-func (DirectCallbackReq) Protocol() byte { return wire.ProtocolEMule }
-func (DirectCallbackReq) Opcode() byte   { return opDirectCallbackReq }
 func (p DirectCallbackReq) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opDirectCallbackReq)
 	b = binary.LittleEndian.AppendUint16(b, p.TCPPort)
 	return append(append(b, p.UserHash[:]...), p.ConnectOptions)
 }

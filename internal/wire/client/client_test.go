@@ -95,15 +95,13 @@ func samplePackets() []wire.Packet {
 		OutOfParts{},
 		QueueRank{Rank: 70000},
 		QueueRanking{Rank: 42},
-		RequestParts{Hash: fileHash, Starts: [3]uint32{0, 10, 0}, Ends: [3]uint32{10, 20, 0}},
-		RequestParts64{Hash: fileHash, Starts: [3]uint64{1 << 33, 0, 0}, Ends: [3]uint64{1<<33 + 10, 0, 0}},
+		RequestParts{Hash: fileHash, Starts: [3]uint64{0, 10, 0}, Ends: [3]uint64{10, 20, 0}},
+		RequestParts{Hash: fileHash, Starts: [3]uint64{1 << 33, 0, 0}, Ends: [3]uint64{1<<33 + 10, 0, 0}, IsLarge: true},
 		SendingPart{Hash: fileHash, Start: 100, End: 103, Data: []byte{1, 2, 3}},
-		SendingPart64{Hash: fileHash, Start: 1 << 33, End: 1<<33 + 2, Data: []byte{1, 2}},
+		SendingPart{Hash: fileHash, Start: 1 << 33, End: 1<<33 + 2, Data: []byte{1, 2}, IsLarge: true},
 		CompressedPart{Hash: fileHash, Start: 100, PackedSize: 50, Data: []byte{9, 9}},
-		CompressedPart64{Hash: fileHash, Start: 1 << 33, PackedSize: 50, Data: []byte{9, 9}},
+		CompressedPart{Hash: fileHash, Start: 1 << 33, PackedSize: 50, Data: []byte{9, 9}, IsLarge: true},
 		RequestSources{Hash: fileHash},
-		AnswerSources{Hash: fileHash, Sources: []Source{{ClientID: 1, Port: 2, Server: netip.MustParseAddrPort("1.2.3.4:5")}}},
-		AnswerSources{Hash: fileHash, HasUserHash: true, Sources: []Source{{ClientID: 1, Port: 2, UserHash: userHash}}},
 		RequestSources2{Version: SourceExchange2Version, Hash: fileHash},
 		AnswerSources2{Version: 4, Hash: fileHash, Sources: []Source{{ClientID: 0x0100000A, Port: 4662, Server: netip.MustParseAddrPort("1.2.3.4:4661"), UserHash: userHash, CryptOptions: 0x81}}},
 		AnswerSources2{Version: 2, Hash: fileHash, Sources: []Source{{ClientID: 3, Port: 4, UserHash: userHash}}},
@@ -180,7 +178,7 @@ func sampleUDPPackets() []wire.Packet {
 
 func TestUDPRoundTrip(t *testing.T) {
 	for _, p := range sampleUDPPackets() {
-		raw := wire.BuildPacketDatagram(nil, p)
+		raw := p.Build(nil)
 		frame, err := wire.ParseDatagram(raw)
 		if err != nil {
 			t.Fatal(err)
@@ -217,13 +215,13 @@ func TestHelloGolden(t *testing.T) {
 	hello := Hello{UserHash: userHash, ClientID: 0x04030201, Port: 4662, ModMisc: ModMiscExtendedSources | ModMiscIPv6}
 	want := unhex(t, "10"+"23a8ceff57a7a32d562d649ed7893796"+"01020304"+"3612"+
 		"01000000"+"030100aa05000000"+"000000000000")
-	if got := hello.Build(nil); !bytes.Equal(got, want) {
+	if got := hello.Build(nil)[2:]; !bytes.Equal(got, want) {
 		t.Fatalf("hello =\n %x\nwant\n %x", got, want)
 	}
 }
 
 func TestHelloIgnoresTrailingBytes(t *testing.T) {
-	body := append(HelloAnswer{UserHash: userHash}.Build(nil), 'K', 'D', 'L', 'M')
+	body := append(HelloAnswer{UserHash: userHash}.Build(nil)[2:], 'K', 'D', 'L', 'M')
 	got, err := Parse(wire.ProtocolEDonkey, opHelloAnswer, body)
 	if err != nil || got.(HelloAnswer).UserHash != userHash {
 		t.Fatalf("got %+v, %v", got, err)
@@ -232,14 +230,14 @@ func TestHelloIgnoresTrailingBytes(t *testing.T) {
 
 func TestMiscOptionsBits(t *testing.T) {
 	m1 := MiscOptions1{AICHVersion: 1, IsUnicode: true, UDPVersion: 4, DataCompressionVersion: 1, SecureIdentVersion: 3, SourceExchange1Version: 3, ExtendedRequestsVersion: 2, AcceptCommentVersion: 1, IsSharedFilesHidden: true, HasMultiPacket: true, HasPreview: true}
-	if v := m1.ToUint32(); v != 0x34133217 {
+	if v := m1.toUint32(); v != 0x34133217 {
 		t.Fatalf("misc1 = %#x", v)
 	}
 	if parseMiscOptions1(0x34133217) != m1 {
 		t.Fatal("misc1 parse")
 	}
 	m2 := MiscOptions2{KadVersion: 9, HasLargeFiles: true, HasExtMultiPacket: true, HasSourceExchange2: true, HasCaptcha: true}
-	if v := m2.ToUint32(); v != 0x0C39 {
+	if v := m2.toUint32(); v != 0x0C39 {
 		t.Fatalf("misc2 = %#x", v)
 	}
 	if parseMiscOptions2(0x0C39) != m2 {
@@ -258,7 +256,7 @@ func TestExtendedSourceGolden(t *testing.T) {
 	}}}
 	want := append(append([]byte{1}, fileHash[:]...), 1, 0)
 	want = append(want, record...)
-	if got := answer.Build(nil); !bytes.Equal(got, want) {
+	if got := answer.Build(nil)[2:]; !bytes.Equal(got, want) {
 		t.Fatalf("answer =\n %x\nwant\n %x", got, want)
 	}
 	got, err := Parse(wire.ProtocolEMule, opAnswerSources2, want)
@@ -279,15 +277,6 @@ func TestExtendedSourceSkipsUnknownTags(t *testing.T) {
 	}
 }
 
-// Ported from goed2k protocol/client/source_exchange_test.go.
-func TestAnswerSourcesRejectsWrongEntrySize(t *testing.T) {
-	body := append(append([]byte(nil), fileHash[:]...), 1, 0)
-	body = append(body, make([]byte, 27)...)
-	if _, err := Parse(wire.ProtocolEMule, opAnswerSources, body); err == nil {
-		t.Fatal("want error")
-	}
-}
-
 func TestAnswerSources2RejectsWrongEntrySize(t *testing.T) {
 	body := append([]byte{4}, fileHash[:]...)
 	body = append(body, 1, 0)
@@ -298,7 +287,7 @@ func TestAnswerSources2RejectsWrongEntrySize(t *testing.T) {
 }
 
 func TestSendingPartRejectsLengthMismatch(t *testing.T) {
-	body := SendingPart{Hash: fileHash, Start: 0, End: 10, Data: []byte{1}}.Build(nil)
+	body := SendingPart{Hash: fileHash, Start: 0, End: 10, Data: []byte{1}}.Build(nil)[2:]
 	if _, err := Parse(wire.ProtocolEDonkey, opSendingPart, body); err == nil {
 		t.Fatal("want error")
 	}
@@ -325,19 +314,19 @@ func TestAICHAnswerGolden(t *testing.T) {
 	root := hex.EncodeToString(aichRoot[:])
 	short := AICHAnswer{Hash: fileHash, HasData: true, Part: 1, Root: aichRoot, Entries: []AICHEntry{{Ident: 6, Hash: aichRoot}}}
 	want := unhex(t, "31d6cfe0d16ae931b73c59d7e0c089c0"+"0100"+root+"0100"+"0600"+root+"0000")
-	if got := short.Build(nil); !bytes.Equal(got, want) {
+	if got := short.Build(nil)[2:]; !bytes.Equal(got, want) {
 		t.Fatalf("16-bit answer =\n %x\nwant\n %x", got, want)
 	}
 	long := short
 	long.HasLongIdents = true
 	want = unhex(t, "31d6cfe0d16ae931b73c59d7e0c089c0"+"0100"+root+"0000"+"0100"+"06000000"+root)
-	if got := long.Build(nil); !bytes.Equal(got, want) {
+	if got := long.Build(nil)[2:]; !bytes.Equal(got, want) {
 		t.Fatalf("32-bit answer =\n %x\nwant\n %x", got, want)
 	}
 }
 
 func TestAICHAnswerRejectsShortList(t *testing.T) {
-	body := AICHAnswer{Hash: fileHash, HasData: true, Root: aichRoot, Entries: []AICHEntry{{Ident: 2}}}.Build(nil)
+	body := AICHAnswer{Hash: fileHash, HasData: true, Root: aichRoot, Entries: []AICHEntry{{Ident: 2}}}.Build(nil)[2:]
 	body = body[:len(body)-4]
 	if _, err := Parse(wire.ProtocolEMule, opAICHAnswer, body); err == nil {
 		t.Fatal("want error for a truncated hash list")
@@ -351,7 +340,7 @@ func TestCallbackGolden(t *testing.T) {
 	for i := range id {
 		id[i] = byte(i)
 	}
-	got := Callback{BuddyID: id, File: id, Endpoint: netip.MustParseAddrPort("1.2.3.4:4662")}.Build(nil)
+	got := Callback{BuddyID: id, File: id, Endpoint: netip.MustParseAddrPort("1.2.3.4:4662")}.Build(nil)[2:]
 	want := []byte{3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12}
 	want = append(append(want, want...), 4, 3, 2, 1, 0x36, 0x12)
 	if !bytes.Equal(got, want) {

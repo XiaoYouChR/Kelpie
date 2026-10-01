@@ -373,11 +373,11 @@ func TestFileWithEnoughSourcesIsNotAsked(t *testing.T) {
 func TestObfuscationServerGetsObfuRequest(t *testing.T) {
 	wanted := downloads(1)
 	_, out := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, serverwire.FlagTCPObfuscation, wanted)
-	if got := sent[serverwire.GetSourcesObfu](out); len(got) != 1 || got[0].Hash != wanted[0].File || len(sent[serverwire.GetSources](out)) != 0 {
+	if got := sent[serverwire.GetSources](out); len(got) != 1 || got[0].Hash != wanted[0].File || !got[0].IsObfu {
 		t.Fatalf("sent %+v", out.Send)
 	}
 	_, out = loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, 0, wanted)
-	if len(sent[serverwire.GetSources](out)) != 1 || len(sent[serverwire.GetSourcesObfu](out)) != 0 {
+	if got := sent[serverwire.GetSources](out); len(got) != 1 || got[0].IsObfu {
 		t.Fatalf("sent %+v", out.Send)
 	}
 }
@@ -403,7 +403,7 @@ func TestFoundSources(t *testing.T) {
 		t.Fatalf("events = %+v\nwant %+v", out.Events, want)
 	}
 
-	obfu := serverwire.FoundSourcesObfu{Hash: fileHash(0), Sources: []serverwire.Source{{ClientID: 77, Port: 4662, CryptOptions: 0x80, UserHash: userHash}}}
+	obfu := serverwire.FoundSources{Hash: fileHash(0), Sources: []serverwire.Source{{ClientID: 77, Port: 4662, CryptOptions: 0x80, UserHash: userHash}}, IsObfu: true}
 	if out := byKind(s.OnPacket(first, obfu, start)); len(out.Events) != 1 || out.Events[0].(SourcesFound).Sources[0].UserHash != userHash ||
 		out.Events[0].(SourcesFound).Sources[0].CanObfuscate {
 		t.Fatalf("obfuscated variant: %+v", out.Events)

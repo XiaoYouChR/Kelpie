@@ -107,7 +107,7 @@ func TestKadSharesItsSocketWithTheEngine(t *testing.T) {
 		t.Fatalf("engine datagram arrived as %v %x", from, data)
 	}
 
-	peer.WriteTo(wire.BuildPacketDatagram(nil, kadwire.Ping{}), kadAddr)
+	peer.WriteTo(kadwire.Ping{}.Build(nil), kadAddr)
 	_, data := readFrom(t, peer)
 	if p, ok := parsePacket(data); !ok || p != (kadwire.Pong{UDPPort: 4672}) {
 		t.Fatalf("Kad answered a ping with %x", data)
@@ -119,7 +119,7 @@ func TestKadSharesItsSocketWithTheEngine(t *testing.T) {
 	}
 
 	k.Post(Callback{Buddy: netip.MustParseAddrPort("10.0.0.2:4672"), BuddyID: fileHash, Hash: fileHash})
-	if _, data := readFrom(t, peer); len(data) != 36 || data[0] != wire.ProtocolKad || data[1] != (kadwire.CallbackReq{}).Opcode() {
+	if _, data := readFrom(t, peer); len(data) != 36 || data[0] != wire.ProtocolKad || data[1] != (kadwire.CallbackReq{}).Build(nil)[1] {
 		t.Fatalf("callback request %x", data)
 	}
 }

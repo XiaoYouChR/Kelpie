@@ -150,17 +150,9 @@ func (s *Session) Request(file wire.Hash, blocks []piece.Block) Output {
 		d.inFlight = append(d.inFlight, &inFlight{block: b})
 	}
 	for group := range slices.Chunk(blocks, 3) {
-		if d.size > largeFileSize {
-			p := client.RequestParts64{Hash: file}
-			for i, b := range group {
-				p.Starts[i], p.Ends[i] = uint64(b.Begin), uint64(b.End)
-			}
-			out.send(p)
-			continue
-		}
-		p := client.RequestParts{Hash: file}
+		p := client.RequestParts{Hash: file, IsLarge: d.size > largeFileSize}
 		for i, b := range group {
-			p.Starts[i], p.Ends[i] = uint32(b.Begin), uint32(b.End)
+			p.Starts[i], p.Ends[i] = uint64(b.Begin), uint64(b.End)
 		}
 		out.send(p)
 	}

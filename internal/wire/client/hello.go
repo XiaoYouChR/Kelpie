@@ -68,17 +68,12 @@ type Hello struct {
 // HelloAnswer has the same body as Hello minus the leading hash length.
 type HelloAnswer Hello
 
-func (Hello) Protocol() byte       { return wire.ProtocolEDonkey }
-func (Hello) Opcode() byte         { return opHello }
-func (HelloAnswer) Protocol() byte { return wire.ProtocolEDonkey }
-func (HelloAnswer) Opcode() byte   { return opHelloAnswer }
-
 func (h Hello) Build(b []byte) []byte {
-	return buildHello(append(b, 16), h)
+	return buildHello(append(b, wire.ProtocolEDonkey, opHello, 16), h)
 }
 
 func (h HelloAnswer) Build(b []byte) []byte {
-	return buildHello(b, Hello(h))
+	return buildHello(append(b, wire.ProtocolEDonkey, opHelloAnswer), Hello(h))
 }
 
 func parseHello(r *wire.Reader) Hello {
@@ -159,8 +154,8 @@ func buildHello(b []byte, h Hello) []byte {
 	addUint(tagUDPPorts, uint32(h.KadPort)<<16|uint32(h.UDPPort))
 	addAddr(tagBuddyIP, h.Buddy.Addr())
 	addUint(tagBuddyUDP, uint32(h.Buddy.Port()))
-	addUint(tagMiscOptions1, h.Misc1.ToUint32())
-	addUint(tagMiscOptions2, h.Misc2.ToUint32())
+	addUint(tagMiscOptions1, h.Misc1.toUint32())
+	addUint(tagMiscOptions2, h.Misc2.toUint32())
 	addUint(tagEmuleVersion, h.EmuleVersion)
 	addString(tagModVersion, h.ModName)
 	addUint(tagModMiscOptions, h.ModMisc)
@@ -207,7 +202,7 @@ func parseMiscOptions1(v uint32) MiscOptions1 {
 	}
 }
 
-func (m MiscOptions1) ToUint32() uint32 {
+func (m MiscOptions1) toUint32() uint32 {
 	return uint32(m.AICHVersion&0x07)<<29 |
 		toBit(m.IsUnicode)<<28 |
 		uint32(m.UDPVersion&0x0F)<<24 |
@@ -250,7 +245,7 @@ func parseMiscOptions2(v uint32) MiscOptions2 {
 	}
 }
 
-func (m MiscOptions2) ToUint32() uint32 {
+func (m MiscOptions2) toUint32() uint32 {
 	return uint32(m.KadVersion&0x0F) |
 		toBit(m.HasLargeFiles)<<4 |
 		toBit(m.HasExtMultiPacket)<<5 |
@@ -290,17 +285,17 @@ const (
 	InfoFeatures         byte = 0x27
 )
 
-func (EmuleInfo) Protocol() byte       { return wire.ProtocolEMule }
-func (EmuleInfo) Opcode() byte         { return opEmuleInfo }
-func (EmuleInfoAnswer) Protocol() byte { return wire.ProtocolEMule }
-func (EmuleInfoAnswer) Opcode() byte   { return opEmuleInfoAnswer }
-
 func (e EmuleInfo) Build(b []byte) []byte {
-	b = append(b, e.Version, e.ProtocolVersion)
-	return wire.BuildTags(b, e.Tags)
+	return buildEmuleInfo(append(b, wire.ProtocolEMule, opEmuleInfo), e)
 }
 
-func (e EmuleInfoAnswer) Build(b []byte) []byte { return EmuleInfo(e).Build(b) }
+func (e EmuleInfoAnswer) Build(b []byte) []byte {
+	return buildEmuleInfo(append(b, wire.ProtocolEMule, opEmuleInfoAnswer), EmuleInfo(e))
+}
+
+func buildEmuleInfo(b []byte, e EmuleInfo) []byte {
+	return wire.BuildTags(append(b, e.Version, e.ProtocolVersion), e.Tags)
+}
 
 func parseEmuleInfo(r *wire.Reader) EmuleInfo {
 	e := EmuleInfo{Version: r.Uint8(), ProtocolVersion: r.Uint8()}

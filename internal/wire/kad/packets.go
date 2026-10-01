@@ -261,9 +261,7 @@ func parseTags(r *wire.Reader, count int) []wire.Tag {
 
 type BootstrapReq struct{}
 
-func (BootstrapReq) Protocol() byte        { return wire.ProtocolKad }
-func (BootstrapReq) Opcode() byte          { return opBootstrapReq }
-func (BootstrapReq) Build(b []byte) []byte { return b }
+func (BootstrapReq) Build(b []byte) []byte { return append(b, wire.ProtocolKad, opBootstrapReq) }
 
 type BootstrapRes struct {
 	ID       wire.Hash
@@ -272,10 +270,8 @@ type BootstrapRes struct {
 	Contacts []Contact
 }
 
-func (BootstrapRes) Protocol() byte { return wire.ProtocolKad }
-func (BootstrapRes) Opcode() byte   { return opBootstrapRes }
-
 func (p BootstrapRes) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opBootstrapRes)
 	b = binary.LittleEndian.AppendUint16(BuildID(b, p.ID), p.TCPPort)
 	b = binary.LittleEndian.AppendUint16(append(b, p.Version), uint16(len(p.Contacts)))
 	for _, c := range p.Contacts {
@@ -296,12 +292,14 @@ type HelloReq Hello
 
 type HelloRes Hello
 
-func (HelloReq) Protocol() byte          { return wire.ProtocolKad }
-func (HelloReq) Opcode() byte            { return opHelloReq }
-func (h HelloReq) Build(b []byte) []byte { return buildHello(b, Hello(h)) }
-func (HelloRes) Protocol() byte          { return wire.ProtocolKad }
-func (HelloRes) Opcode() byte            { return opHelloRes }
-func (h HelloRes) Build(b []byte) []byte { return buildHello(b, Hello(h)) }
+func (h HelloReq) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opHelloReq)
+	return buildHello(b, Hello(h))
+}
+func (h HelloRes) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opHelloRes)
+	return buildHello(b, Hello(h))
+}
 
 func buildHello(b []byte, h Hello) []byte {
 	b = binary.LittleEndian.AppendUint16(BuildID(b, h.ID), h.TCPPort)
@@ -329,9 +327,10 @@ type HelloResAck struct {
 	Tags []wire.Tag
 }
 
-func (HelloResAck) Protocol() byte          { return wire.ProtocolKad }
-func (HelloResAck) Opcode() byte            { return opHelloResAck }
-func (p HelloResAck) Build(b []byte) []byte { return buildEntry(b, Entry(p)) }
+func (p HelloResAck) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opHelloResAck)
+	return buildEntry(b, Entry(p))
+}
 
 type Req struct {
 	SearchType byte
@@ -339,9 +338,8 @@ type Req struct {
 	Receiver   wire.Hash
 }
 
-func (Req) Protocol() byte { return wire.ProtocolKad }
-func (Req) Opcode() byte   { return opReq }
 func (p Req) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opReq)
 	return BuildID(BuildID(append(b, p.SearchType), p.Target), p.Receiver)
 }
 
@@ -350,9 +348,8 @@ type Res struct {
 	Contacts []Contact
 }
 
-func (Res) Protocol() byte { return wire.ProtocolKad }
-func (Res) Opcode() byte   { return opRes }
 func (p Res) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opRes)
 	b = append(BuildID(b, p.Target), byte(len(p.Contacts)))
 	for _, c := range p.Contacts {
 		b = buildContact(b, c)
@@ -366,9 +363,8 @@ type SearchSourcesReq struct {
 	Size     uint64
 }
 
-func (SearchSourcesReq) Protocol() byte { return wire.ProtocolKad }
-func (SearchSourcesReq) Opcode() byte   { return opSearchSourcesReq }
 func (p SearchSourcesReq) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opSearchSourcesReq)
 	b = binary.LittleEndian.AppendUint16(BuildID(b, p.Target), p.StartPos)
 	return binary.LittleEndian.AppendUint64(b, p.Size)
 }
@@ -379,9 +375,8 @@ type SearchRes struct {
 	Results []Entry
 }
 
-func (SearchRes) Protocol() byte { return wire.ProtocolKad }
-func (SearchRes) Opcode() byte   { return opSearchRes }
 func (p SearchRes) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opSearchRes)
 	b = BuildID(BuildID(b, p.Source), p.Target)
 	b = binary.LittleEndian.AppendUint16(b, uint16(len(p.Results)))
 	for _, e := range p.Results {
@@ -395,9 +390,8 @@ type PublishSourcesReq struct {
 	Source Entry
 }
 
-func (PublishSourcesReq) Protocol() byte { return wire.ProtocolKad }
-func (PublishSourcesReq) Opcode() byte   { return opPublishSourcesReq }
 func (p PublishSourcesReq) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opPublishSourcesReq)
 	return buildEntry(BuildID(b, p.FileID), p.Source)
 }
 
@@ -408,16 +402,16 @@ type PublishRes struct {
 	Load   byte
 }
 
-func (PublishRes) Protocol() byte          { return wire.ProtocolKad }
-func (PublishRes) Opcode() byte            { return opPublishRes }
-func (p PublishRes) Build(b []byte) []byte { return append(BuildID(b, p.FileID), p.Load) }
+func (p PublishRes) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opPublishRes)
+	return append(BuildID(b, p.FileID), p.Load)
+}
 
 // LegacyFirewalledReq is the Kad 1 firewall check, still sent by old nodes.
 type LegacyFirewalledReq struct{ TCPPort uint16 }
 
-func (LegacyFirewalledReq) Protocol() byte { return wire.ProtocolKad }
-func (LegacyFirewalledReq) Opcode() byte   { return opLegacyFirewalledReq }
 func (p LegacyFirewalledReq) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opLegacyFirewalledReq)
 	return binary.LittleEndian.AppendUint16(b, p.TCPPort)
 }
 
@@ -429,18 +423,18 @@ type FirewalledReq struct {
 	Options byte
 }
 
-func (FirewalledReq) Protocol() byte { return wire.ProtocolKad }
-func (FirewalledReq) Opcode() byte   { return opFirewalledReq }
 func (p FirewalledReq) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opFirewalledReq)
 	return append(BuildID(binary.LittleEndian.AppendUint16(b, p.TCPPort), p.ID), p.Options)
 }
 
 // FirewalledRes tells us the address the node sees us at.
 type FirewalledRes struct{ Addr netip.Addr }
 
-func (FirewalledRes) Protocol() byte          { return wire.ProtocolKad }
-func (FirewalledRes) Opcode() byte            { return opFirewalledRes }
-func (p FirewalledRes) Build(b []byte) []byte { return buildAddr(b, p.Addr) }
+func (p FirewalledRes) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opFirewalledRes)
+	return buildAddr(b, p.Addr)
+}
 
 // FirewalledUDP is the answer to a UDP firewall test: Port is the UDP port
 // it was sent to; a non-zero ErrorCode says the tester knew us already, so
@@ -450,24 +444,22 @@ type FirewalledUDP struct {
 	Port      uint16
 }
 
-func (FirewalledUDP) Protocol() byte { return wire.ProtocolKad }
-func (FirewalledUDP) Opcode() byte   { return opFirewalledUDP }
 func (p FirewalledUDP) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opFirewalledUDP)
 	return binary.LittleEndian.AppendUint16(append(b, p.ErrorCode), p.Port)
 }
 
 type Ping struct{}
 
-func (Ping) Protocol() byte        { return wire.ProtocolKad }
-func (Ping) Opcode() byte          { return opPing }
-func (Ping) Build(b []byte) []byte { return b }
+func (Ping) Build(b []byte) []byte { return append(b, wire.ProtocolKad, opPing) }
 
 // Pong reports the UDP port the node saw our ping come from.
 type Pong struct{ UDPPort uint16 }
 
-func (Pong) Protocol() byte          { return wire.ProtocolKad }
-func (Pong) Opcode() byte            { return opPong }
-func (p Pong) Build(b []byte) []byte { return binary.LittleEndian.AppendUint16(b, p.UDPPort) }
+func (p Pong) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opPong)
+	return binary.LittleEndian.AppendUint16(b, p.UDPPort)
+}
 
 // FindBuddyReq asks an open node to be our buddy. Target is the ID our
 // lookup looked for, our Kad ID inverted, which callbacks will carry.
@@ -477,9 +469,8 @@ type FindBuddyReq struct {
 	TCPPort  uint16
 }
 
-func (FindBuddyReq) Protocol() byte { return wire.ProtocolKad }
-func (FindBuddyReq) Opcode() byte   { return opFindBuddyReq }
 func (p FindBuddyReq) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opFindBuddyReq)
 	return binary.LittleEndian.AppendUint16(BuildID(BuildID(b, p.Target), p.UserHash), p.TCPPort)
 }
 
@@ -493,9 +484,8 @@ type FindBuddyRes struct {
 	Options    byte
 }
 
-func (FindBuddyRes) Protocol() byte { return wire.ProtocolKad }
-func (FindBuddyRes) Opcode() byte   { return opFindBuddyRes }
 func (p FindBuddyRes) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opFindBuddyRes)
 	b = binary.LittleEndian.AppendUint16(BuildID(BuildID(b, p.Target), p.UserHash), p.TCPPort)
 	if p.HasOptions {
 		b = append(b, p.Options)
@@ -520,8 +510,7 @@ type CallbackReq struct {
 	TCPPort uint16
 }
 
-func (CallbackReq) Protocol() byte { return wire.ProtocolKad }
-func (CallbackReq) Opcode() byte   { return opCallbackReq }
 func (p CallbackReq) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolKad, opCallbackReq)
 	return binary.LittleEndian.AppendUint16(BuildID(BuildID(b, p.BuddyID), p.Hash), p.TCPPort)
 }

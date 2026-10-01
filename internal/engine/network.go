@@ -48,7 +48,7 @@ func (e *Engine) runServer(actions []server.Action) {
 				e.sendPacket(c, a.Packet, wire.Hash{}, 0)
 			}
 		case server.Datagram:
-			data := wire.BuildPacketDatagram(nil, a.Packet)
+			data := a.Packet.Build(nil)
 			if a.Key != 0 {
 				data = obfuscation.BuildServerDatagram(data, a.Key, e.ports.Rand.Uint32())
 			}
@@ -312,7 +312,7 @@ func (e *Engine) onReask(from netip.AddrPort, ping client.ReaskFilePing) {
 // we always request obfuscation, so that is aMule's
 // ShouldReceiveCryptUDPPackets (BaseClient.cpp:2609, MuleUDPSocket.cpp:269).
 func (e *Engine) sendPeerDatagram(to netip.AddrPort, p wire.Packet, user wire.Hash, canObfuscate bool) {
-	data := wire.BuildPacketDatagram(nil, p)
+	data := p.Build(nil)
 	if canObfuscate && user != (wire.Hash{}) && e.publicIP.Is4() {
 		data = obfuscation.BuildPeerDatagram(data, user, e.publicIP, e.ports.Rand.Uint32())
 	}
