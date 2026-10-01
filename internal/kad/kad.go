@@ -5,9 +5,9 @@
 // eMule serves Kad and eD2k UDP (reasks, server UDP) on one port, so Kad
 // owns that socket for both. Datagrams whose first byte is not a Kad
 // protocol byte (0xE4, 0xE5) go to the engine through Received; the engine
-// sends its own datagrams through Send. Obfuscated eD2k datagrams start with
-// a random byte and are forwarded the same way; obfuscated Kad is not
-// spoken, so we announce Kad version 5, which peers talk to in plain text.
+// sends its own datagrams through Send. Kad datagrams may be obfuscated
+// (obfuscation.ParseKadDatagram); a datagram Kad cannot read either way,
+// such as an obfuscated eD2k one, is forwarded unchanged.
 //
 // Every method other than Run is safe to call from another goroutine and
 // never blocks: inputs and outputs drop when full, as a hub's sends to the
@@ -18,6 +18,7 @@ package kad
 import (
 	"context"
 	crand "crypto/rand"
+	"encoding/binary"
 	"math/rand/v2"
 	"net/netip"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/clock"
+	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
 	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -77,6 +79,11 @@ func BuildKad(cfg Config) *Kad {
 	if cfg.State.ID == (wire.Hash{}) {
 		crand.Read(cfg.State.ID[:])
 	}
+	for cfg.State.UDPKey == 0 {
+		var key [4]byte
+		crand.Read(key[:])
+		cfg.State.UDPKey = binary.LittleEndian.Uint32(key[:])
+	}
 	if cfg.Rand == nil {
 		var seed [32]byte
 		crand.Read(seed[:])
@@ -94,7 +101,7 @@ func BuildKad(cfg Config) *Kad {
 		received:  make(chan Datagram, queueSize),
 		statuses:  make(chan Status, 1),
 	}
-	state := store.Kad{ID: cfg.State.ID, IsFirewalled: true, Nodes: cfg.State.Nodes}
+	state := store.Kad{ID: cfg.State.ID, IsFirewalled: true, UDPKey: cfg.State.UDPKey, Nodes: cfg.State.Nodes}
 	k.state.Store(&state)
 	return k
 }
@@ -191,7 +198,7 @@ func (k *Kad) Run(ctx context.Context) error {
 	now := k.cfg.Clock.Now()
 	c := buildCore(coreConfig{
 		ID: k.cfg.State.ID, UserHash: k.cfg.UserHash, TCPPort: k.cfg.TCPPort,
-		UDPPort: uint16(conn.Port()), Rand: k.cfg.Rand,
+		UDPPort: uint16(conn.Port()), UDPKey: k.cfg.State.UDPKey, Rand: k.cfg.Rand,
 	}, now)
 	for _, n := range k.cfg.State.Nodes {
 		c.addNodes([]Node{toNode(n)}, now)
@@ -210,9 +217,9 @@ func (k *Kad) Run(ctx context.Context) error {
 			k.saveState(c)
 			return nil
 		case d := <-reads:
-			if len(d.Data) > 0 && (d.Data[0] == wire.ProtocolKad || d.Data[0] == wire.ProtocolKadPacked) {
-				if p, ok := parsePacket(d.Data); ok {
-					out = c.onPacket(d.Addr, p, k.cfg.Clock.Now())
+			if p, senderKey, isKad := c.parseDatagram(d); isKad {
+				if p != nil {
+					out = c.onPacket(d.Addr, p, senderKey, k.cfg.Clock.Now())
 				}
 			} else {
 				select {
@@ -235,7 +242,7 @@ func (k *Kad) Run(ctx context.Context) error {
 			out = c.onMessage(m)
 		}
 		for _, d := range out.datagrams {
-			conn.WriteTo(wire.BuildPacketDatagram(nil, d.packet), d.to)
+			conn.WriteTo(c.buildDatagram(d), d.to)
 		}
 		for _, f := range out.found {
 			select {
@@ -283,11 +290,46 @@ func (k *Kad) setStatus(s Status) {
 }
 
 func (k *Kad) saveState(c *core) {
-	state := store.Kad{ID: c.id, IsFirewalled: c.firewall.isFirewalled()}
+	state := store.Kad{ID: c.id, IsFirewalled: c.firewall.isFirewalled(), UDPKey: c.udpKey}
 	for _, n := range c.table.nodes() {
 		state.Nodes = append(state.Nodes, toStoreNode(n))
 	}
 	k.state.Store(&state)
+}
+
+// buildDatagram is a datagram's wire form, obfuscated as d asks.
+func (c *core) buildDatagram(d datagram) []byte {
+	data := wire.BuildPacketDatagram(nil, d.packet)
+	if d.nodeID == (wire.Hash{}) && d.receiverKey == 0 {
+		return data
+	}
+	var nodeID []byte
+	if d.nodeID != (wire.Hash{}) {
+		nodeID = buildID(nil, d.nodeID)
+	}
+	return obfuscation.BuildKadDatagram(obfuscation.KadDatagram{Packet: data, ReceiverKey: d.receiverKey, SenderKey: d.senderKey}, nodeID, c.rng.Uint32())
+}
+
+// parseDatagram reads a plain or obfuscated Kad datagram. isKad is false
+// for datagrams that belong to the engine; p is nil for a Kad datagram that
+// does not decode.
+func (c *core) parseDatagram(d Datagram) (p wire.Packet, senderKey uint32, isKad bool) {
+	data := d.Data
+	if len(data) == 0 {
+		return nil, 0, false
+	}
+	if data[0] != wire.ProtocolKad && data[0] != wire.ProtocolKadPacked {
+		kd, ok := obfuscation.ParseKadDatagram(data, buildID(nil, c.id), obfuscation.BuildKadVerifyKey(c.udpKey, d.Addr.Addr()))
+		if !ok || (kd.Packet[0] != wire.ProtocolKad && kd.Packet[0] != wire.ProtocolKadPacked) {
+			return nil, 0, false
+		}
+		data, senderKey = kd.Packet, kd.SenderKey
+	}
+	p, ok := parsePacket(data)
+	if !ok {
+		return nil, 0, true
+	}
+	return p, senderKey, true
 }
 
 // parsePacket decodes a Kad datagram, inflating 0xE5 packets.

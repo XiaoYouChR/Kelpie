@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
 )
@@ -36,10 +37,19 @@ const (
 	versionFirewalled2 = 7
 )
 
+// datagram is a packet to send. It is obfuscated with nodeID when that is
+// set, else with receiverKey when that is set, and sent plain otherwise.
 type datagram struct {
-	to     netip.AddrPort
-	packet wire.Packet
+	to          netip.AddrPort
+	packet      wire.Packet
+	nodeID      wire.Hash
+	receiverKey uint32
+	senderKey   uint32
 }
+
+// Kad version 6 is the first that reads obfuscated datagrams
+// (KademliaUDPListener.cpp:205).
+const versionObfuscation = 6
 
 type output struct {
 	datagrams []datagram
@@ -93,7 +103,9 @@ type coreConfig struct {
 	UserHash wire.Hash
 	TCPPort  uint16
 	UDPPort  uint16
-	Rand     *rand.Rand
+	// UDPKey is the secret behind our verify keys.
+	UDPKey uint32
+	Rand   *rand.Rand
 }
 
 // core is Kad's protocol state: the routing table, requests in flight,
@@ -103,13 +115,20 @@ type coreConfig struct {
 type core struct {
 	id, userHash     wire.Hash
 	tcpPort, udpPort uint16
+	udpKey           uint32
 	rng              *rand.Rand
-	table            *table
-	rpcs             rpcs
-	lookups          []*lookup
-	index            index
-	firewall         firewall
-	udp              udpCheck
+	// reply is the sender of the packet being handled and the key it asked
+	// us to answer with.
+	reply struct {
+		from netip.AddrPort
+		key  uint32
+	}
+	table    *table
+	rpcs     rpcs
+	lookups  []*lookup
+	index    index
+	firewall firewall
+	udp      udpCheck
 	// publicIP is our address as the last KADEMLIA_FIREWALLED_RES said.
 	publicIP    netip.Addr
 	seeds       []netip.AddrPort
@@ -130,7 +149,7 @@ type core struct {
 
 func buildCore(cfg coreConfig, now time.Time) *core {
 	return &core{
-		id: cfg.ID, userHash: cfg.UserHash, tcpPort: cfg.TCPPort, udpPort: cfg.UDPPort, rng: cfg.Rand,
+		id: cfg.ID, userHash: cfg.UserHash, tcpPort: cfg.TCPPort, udpPort: cfg.UDPPort, udpKey: cfg.UDPKey, rng: cfg.Rand,
 		table:    buildTable(cfg.ID, now),
 		index:    index{files: map[wire.Hash]map[wire.Hash]indexed{}},
 		firewall: firewall{isLastFirewalled: true, asked: map[netip.Addr]bool{}},
@@ -202,7 +221,9 @@ func (c *core) cancelLookup(l *lookup) {
 // connect to our TCP port.
 func (c *core) requestCallback(cb Callback) output {
 	if cb.Buddy.Addr().Is4() {
-		c.send(cb.Buddy, callbackReq{BuddyID: cb.BuddyID, Hash: cb.Hash, TCPPort: c.tcpPort})
+		// Plain, as aMule sends it: we do not know the buddy's Kad version
+		// (BaseClient.cpp:1568).
+		c.sendPlain(cb.Buddy, callbackReq{BuddyID: cb.BuddyID, Hash: cb.Hash, TCPPort: c.tcpPort})
 	}
 	out := c.out
 	c.out = output{}
@@ -224,7 +245,7 @@ func (c *core) onMessage(m any) output {
 	switch m := m.(type) {
 	case firewallAck:
 		if m.to.Addr().Is4() {
-			c.send(m.to, firewalledAck{})
+			c.sendPlain(m.to, firewalledAck{})
 		}
 	case FirewallUDP:
 		c.onFirewallUDP(m)
@@ -236,17 +257,68 @@ func (c *core) onMessage(m any) output {
 	return out
 }
 
+// buildHello is SendMyDetails (KademliaUDPListener.cpp:114): our UDP port
+// is named only once a UDP test chose it over the one our NAT shows.
+func (c *core) buildHello() kadwire.Hello {
+	h := kadwire.Hello{ID: c.id, TCPPort: c.tcpPort, Version: kadwire.Version}
+	if !c.udp.useExternPort {
+		h.Tags = []wire.Tag{{Type: wire.TagUint16, ID: kadwire.TagSourceUPort, Uint: uint64(c.udpPort)}}
+	}
+	return h
+}
+
 func (c *core) status() Status {
 	return Status{Nodes: c.table.verifiedCount(), IsFirewalled: c.firewall.isFirewalled()}
 }
 
+// send obfuscates with the key to's node gave us: the one on the packet we
+// answer, or the one its contact last sent. aMule answers with the
+// request's sender key and never with the node ID.
 func (c *core) send(to netip.AddrPort, p wire.Packet) {
+	key := c.reply.key
+	if to != c.reply.from {
+		key = 0
+		if ct := c.table.byAddr[to]; ct != nil {
+			key = ct.udpKey
+		}
+	}
+	c.sendKeyed(datagram{to: to, packet: p, receiverKey: key})
+}
+
+// sendTo obfuscates with the node's ID when its version reads obfuscation,
+// as aMule's requests to contacts do.
+func (c *core) sendTo(n Node, p wire.Packet) {
+	d := datagram{to: n.Addr, packet: p}
+	if ct := c.table.byAddr[n.Addr]; ct != nil {
+		d.receiverKey = ct.udpKey
+	}
+	if n.Version >= versionObfuscation {
+		d.nodeID = n.ID
+	}
+	c.sendKeyed(d)
+}
+
+func (c *core) sendKeyed(d datagram) {
+	if d.nodeID != (wire.Hash{}) || d.receiverKey != 0 {
+		d.senderKey = obfuscation.BuildKadVerifyKey(c.udpKey, d.to.Addr())
+	}
+	c.out.datagrams = append(c.out.datagrams, d)
+}
+
+func (c *core) sendPlain(to netip.AddrPort, p wire.Packet) {
 	c.out.datagrams = append(c.out.datagrams, datagram{to: to, packet: p})
 }
 
-func (c *core) onPacket(from netip.AddrPort, p wire.Packet, now time.Time) output {
+// onPacket handles a packet from from; senderKey is the key from wants
+// answers obfuscated with, 0 for a plain datagram.
+func (c *core) onPacket(from netip.AddrPort, p wire.Packet, senderKey uint32, now time.Time) output {
 	if from.Addr().Is4() {
+		c.reply.from, c.reply.key = from, senderKey
 		c.runPacket(from, p, now)
+		c.reply.from, c.reply.key = netip.AddrPort{}, 0
+		if ct := c.table.byAddr[from]; ct != nil && senderKey != 0 {
+			ct.udpKey = senderKey
+		}
 	}
 	out := c.out
 	c.out = output{}
@@ -266,8 +338,13 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 			c.table.add(Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}, false, now)
 		}
 	case kadwire.HelloReq:
-		c.table.add(Node{ID: p.ID, Addr: from, TCPPort: p.TCPPort, Version: p.Version}, false, now)
-		c.send(from, kadwire.HelloRes{ID: c.id, TCPPort: c.tcpPort, Version: kadwire.Version})
+		n := Node{ID: p.ID, Addr: from, TCPPort: p.TCPPort, Version: p.Version}
+		c.table.add(n, false, now)
+		d := datagram{to: from, packet: kadwire.HelloRes(c.buildHello()), receiverKey: c.reply.key}
+		if n.Version >= versionObfuscation {
+			d.nodeID = n.ID
+		}
+		c.sendKeyed(d)
 	case kadwire.HelloRes:
 		if c.rpcs.match(from, rpcHello, wire.Hash{}) != nil {
 			c.table.add(Node{ID: p.ID, Addr: from, TCPPort: p.TCPPort, Version: p.Version}, true, now)
@@ -416,7 +493,7 @@ func (c *core) runBucketChecks(now time.Time) {
 				continue
 			}
 			ct.isHelloed = true
-			c.send(ct.Addr, kadwire.HelloReq{ID: c.id, TCPPort: c.tcpPort, Version: kadwire.Version})
+			c.sendTo(ct.Node, kadwire.HelloReq(c.buildHello()))
 			c.rpcs.add(&rpc{kind: rpcHello, node: ct.Node, sent: now})
 		}
 	}

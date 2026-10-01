@@ -24,9 +24,12 @@ type contact struct {
 	// isVerified is set once the contact answered a request of ours.
 	isVerified bool
 	isHelloed  bool
-	failures   int
-	lastSeen   time.Time
-	leaf       int
+	// udpKey is the sender verify key the contact last sent, which our
+	// obfuscated packets to it carry back.
+	udpKey   uint32
+	failures int
+	lastSeen time.Time
+	leaf     int
 }
 
 type bucket struct {

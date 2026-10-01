@@ -25,6 +25,7 @@ type stateFile struct {
 type kadFile struct {
 	ID           hashText      `json:"id"`
 	IsFirewalled bool          `json:"isFirewalled"`
+	UDPKey       uint32        `json:"udpKey,omitempty"`
 	Nodes        []kadNodeFile `json:"nodes"`
 }
 
@@ -84,7 +85,7 @@ func toFile(state State) stateFile {
 		Version:    version,
 		UserHash:   hashText(state.Identity.UserHash),
 		PrivateKey: state.Identity.PrivateKey,
-		Kad:        kadFile{ID: hashText(state.Kad.ID), IsFirewalled: state.Kad.IsFirewalled, Nodes: []kadNodeFile{}},
+		Kad:        kadFile{ID: hashText(state.Kad.ID), IsFirewalled: state.Kad.IsFirewalled, UDPKey: state.Kad.UDPKey, Nodes: []kadNodeFile{}},
 		Credits:    []creditFile{},
 		Transfers:  []transferFile{},
 	}
@@ -131,7 +132,7 @@ func parse(raw []byte) (State, error) {
 	}
 	state := buildState()
 	state.Identity = Identity{UserHash: wire.Hash(file.UserHash), PrivateKey: file.PrivateKey}
-	state.Kad = Kad{ID: wire.Hash(file.Kad.ID), IsFirewalled: file.Kad.IsFirewalled}
+	state.Kad = Kad{ID: wire.Hash(file.Kad.ID), IsFirewalled: file.Kad.IsFirewalled, UDPKey: file.Kad.UDPKey}
 	for _, node := range file.Kad.Nodes {
 		state.Kad.Nodes = append(state.Kad.Nodes, KadNode{ID: wire.Hash(node.ID), Addr: node.Addr, Version: node.Version})
 	}

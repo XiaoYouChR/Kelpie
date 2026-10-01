@@ -16,6 +16,15 @@ type simNode struct {
 	c     *core
 	addr  netip.AddrPort
 	found []SourcesFound
+	// isUDPFirewalled nodes only hear datagrams from IPs they sent to, as
+	// behind a NAT.
+	isUDPFirewalled bool
+	sentTo          map[netip.Addr]bool
+}
+
+type simEnded struct {
+	asker *simNode
+	ip    netip.Addr
 }
 
 type simDatagram struct {
@@ -34,6 +43,11 @@ type sim struct {
 	nodes  []*simNode
 	byAddr map[netip.AddrPort]*simNode
 	queue  []simDatagram
+	// ended are UDP checks whose connection closes after the test packets
+	// had their chance to arrive.
+	ended []simEnded
+	// isObfuscated: some datagram went out obfuscated.
+	isObfuscated bool
 }
 
 // buildSim makes a node for each ID; every node but the first knows only
@@ -44,8 +58,8 @@ func buildSim(t *testing.T, ids []wire.Hash) *sim {
 		var user wire.Hash
 		user[0], user[14], user[15] = 0xEE, byte(i>>8), byte(i)
 		addr := netip.MustParseAddrPort(fmt.Sprintf("10.0.%d.%d:4672", i/250, i%250+1))
-		n := &simNode{addr: addr, c: buildCore(coreConfig{
-			ID: id, UserHash: user, TCPPort: 4662, UDPPort: 4672, Rand: rand.New(rand.NewPCG(uint64(i), 3)),
+		n := &simNode{addr: addr, sentTo: map[netip.Addr]bool{}, c: buildCore(coreConfig{
+			ID: id, UserHash: user, TCPPort: 4662, UDPPort: 4672, UDPKey: uint32(i)*7919 + 1, Rand: rand.New(rand.NewPCG(uint64(i), 3)),
 		}, s.now)}
 		s.nodes = append(s.nodes, n)
 		s.byAddr[addr] = n
@@ -79,7 +93,8 @@ func buildIDs(count int, isNearFile bool) []wire.Hash {
 func (s *sim) record(n *simNode, out output) {
 	n.found = append(n.found, out.found...)
 	for _, d := range out.datagrams {
-		s.queue = append(s.queue, simDatagram{from: n.addr, to: d.to, data: wire.BuildPacketDatagram(nil, d.packet)})
+		n.sentTo[d.to.Addr()] = true
+		s.queue = append(s.queue, simDatagram{from: n.addr, to: d.to, data: n.c.buildDatagram(d)})
 	}
 	for _, r := range out.requests {
 		switch r := r.(type) {
@@ -91,6 +106,7 @@ func (s *sim) record(n *simNode, out output) {
 			if tester := s.nodeByIP(r.Addr.Addr()); tester != nil {
 				s.record(tester, tester.c.onMessage(FirewallUDP{IP: n.addr.Addr(), InternPort: r.InternPort, ExternPort: r.ExternPort, Key: r.Key}))
 			}
+			s.ended = append(s.ended, simEnded{n, r.Addr.Addr()})
 		}
 	}
 }
@@ -109,14 +125,15 @@ func (s *sim) drain() {
 		d := s.queue[0]
 		s.queue = s.queue[1:]
 		to := s.byAddr[d.to]
-		if to == nil {
+		if to == nil || to.isUDPFirewalled && !to.sentTo[d.from.Addr()] {
 			continue
 		}
-		p, ok := parsePacket(d.data)
-		if !ok {
+		p, senderKey, isKad := to.c.parseDatagram(Datagram{Addr: d.from, Data: d.data})
+		if !isKad || p == nil {
 			s.t.Fatalf("undecodable datagram %x", d.data)
 		}
-		s.record(to, to.c.onPacket(d.from, p, s.now))
+		s.isObfuscated = s.isObfuscated || d.data[0] != wire.ProtocolKad
+		s.record(to, to.c.onPacket(d.from, p, senderKey, s.now))
 	}
 }
 
@@ -127,12 +144,21 @@ func (s *sim) run(d time.Duration) {
 			s.record(n, n.c.onTick(s.now))
 			s.drain()
 		}
+		for len(s.ended) > 0 {
+			e := s.ended[0]
+			s.ended = s.ended[1:]
+			s.record(e.asker, e.asker.c.onMessage(UDPCheckEnded{IP: e.ip}))
+			s.drain()
+		}
 	}
 }
 
 func TestSimulatedNetwork(t *testing.T) {
 	s := buildSim(t, buildIDs(12, true))
 	s.run(10 * time.Minute)
+	if !s.isObfuscated {
+		t.Fatal("no datagram was obfuscated")
+	}
 
 	for i, n := range s.nodes {
 		if got := n.c.status(); got.Nodes < 6 || got.IsFirewalled {
@@ -190,8 +216,8 @@ func TestNewcomerFillsItsTable(t *testing.T) {
 	ids := buildIDs(400, false)
 	s := buildSim(t, ids[:len(ids)-1])
 	s.run(15 * time.Minute)
-	newcomer := &simNode{addr: netip.MustParseAddrPort("10.9.9.9:4672"), c: buildCore(coreConfig{
-		ID: ids[len(ids)-1], UserHash: wire.Hash{0xEF}, TCPPort: 4662, UDPPort: 4672, Rand: rand.New(rand.NewPCG(9, 9)),
+	newcomer := &simNode{addr: netip.MustParseAddrPort("10.9.9.9:4672"), sentTo: map[netip.Addr]bool{}, c: buildCore(coreConfig{
+		ID: ids[len(ids)-1], UserHash: wire.Hash{0xEF}, TCPPort: 4662, UDPPort: 4672, UDPKey: 99, Rand: rand.New(rand.NewPCG(9, 9)),
 	}, s.now)}
 	s.nodes = append(s.nodes, newcomer)
 	s.byAddr[newcomer.addr] = newcomer
@@ -207,5 +233,30 @@ func TestNewcomerFillsItsTable(t *testing.T) {
 	}
 	if contacts < 150 || verified < 50 {
 		t.Fatalf("newcomer knows %d contacts, %d verified, after 3 minutes", contacts, verified)
+	}
+}
+
+// TestSimulatedUDPCheck: nodes find test clients among strangers; a test
+// confirms the open nodes and never one behind a NAT.
+func TestSimulatedUDPCheck(t *testing.T) {
+	s := buildSim(t, buildIDs(120, false))
+	for i, n := range s.nodes {
+		n.isUDPFirewalled = i%10 == 5
+	}
+	s.run(10 * time.Minute)
+	open, closed := 0, 0
+	for i, n := range s.nodes {
+		u := &n.c.udp
+		switch {
+		case n.isUDPFirewalled && u.isOpen():
+			t.Fatalf("node %d behind a NAT verified open", i)
+		case n.isUDPFirewalled && u.isVerified && u.isFirewalledNow():
+			closed++
+		case !n.isUDPFirewalled && u.isOpen():
+			open++
+		}
+	}
+	if open < 90 || closed < 8 {
+		t.Fatalf("%d of 108 open nodes verified open, %d of 12 behind a NAT verified firewalled", open, closed)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
 )
@@ -117,7 +118,7 @@ func (c *core) runUDPCheck(now time.Time) {
 	u.nextExternPing = now.Add(externPortGap)
 	for _, ct := range c.table.closestContacts(buildRandomID(c.id, 0, 0, c.rng), len(c.table.byID), true) {
 		if ct.Version >= versionPingRange {
-			c.send(ct.Addr, kadwire.Ping{})
+			c.sendTo(ct.Node, kadwire.Ping{})
 			c.rpcs.add(&rpc{kind: rpcPing, node: ct.Node, sent: now})
 			return
 		}
@@ -168,6 +169,7 @@ func (c *core) queryUDPCheck() {
 			Addr:       netip.AddrPortFrom(ip, n.TCPPort),
 			InternPort: c.udpPort,
 			ExternPort: u.externPort,
+			Key:        obfuscation.BuildKadVerifyKey(c.udpKey, ip),
 		})
 		return
 	}
@@ -235,8 +237,8 @@ func (c *core) onFirewallUDP(r FirewallUDP) {
 	if r.IsKnown || c.table.hasIP(r.IP) {
 		code = 1
 	}
-	c.send(netip.AddrPortFrom(r.IP, r.InternPort), kadwire.FirewalledUDP{ErrorCode: code, Port: r.InternPort})
+	c.sendKeyed(datagram{to: netip.AddrPortFrom(r.IP, r.InternPort), packet: kadwire.FirewalledUDP{ErrorCode: code, Port: r.InternPort}, receiverKey: r.Key})
 	if r.ExternPort != 0 && r.ExternPort != r.InternPort {
-		c.send(netip.AddrPortFrom(r.IP, r.ExternPort), kadwire.FirewalledUDP{ErrorCode: code, Port: r.ExternPort})
+		c.sendKeyed(datagram{to: netip.AddrPortFrom(r.IP, r.ExternPort), packet: kadwire.FirewalledUDP{ErrorCode: code, Port: r.ExternPort}, receiverKey: r.Key})
 	}
 }

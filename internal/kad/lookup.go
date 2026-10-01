@@ -202,7 +202,7 @@ func (c *core) startLookup(kind lookupKind, target wire.Hash, size uint64, now t
 
 func (c *core) sendFind(l *lookup, cand *candidate, now time.Time) {
 	cand.isTried = true
-	c.send(cand.Addr, kadwire.Req{SearchType: l.requestCount(), Target: l.target, Receiver: cand.ID})
+	c.sendTo(cand.Node, kadwire.Req{SearchType: l.requestCount(), Target: l.target, Receiver: cand.ID})
 	c.rpcs.add(&rpc{kind: rpcFind, node: cand.Node, target: l.target, sent: now, lookup: l})
 }
 
@@ -302,7 +302,7 @@ func (c *core) sendAction(l *lookup, cand *candidate, now time.Time) {
 		if cand.Version < versionSearchSources {
 			return
 		}
-		c.send(cand.Addr, kadwire.SearchSourcesReq{Target: l.target, Size: l.size})
+		c.sendTo(cand.Node, kadwire.SearchSourcesReq{Target: l.target, Size: l.size})
 		c.rpcs.add(&rpc{kind: rpcSearchSources, node: cand.Node, target: l.target, sent: now, lookup: l})
 	case sourcePublish:
 		if l.answers > storeFileTotal {
@@ -312,7 +312,7 @@ func (c *core) sendAction(l *lookup, cand *candidate, now time.Time) {
 		if cand.Version < versionPublishSources {
 			return
 		}
-		c.send(cand.Addr, kadwire.PublishSourcesReq{FileID: l.target, Source: kadwire.Entry{ID: c.userHash, Tags: c.buildSourceTags(l.size)}})
+		c.sendTo(cand.Node, kadwire.PublishSourcesReq{FileID: l.target, Source: kadwire.Entry{ID: c.userHash, Tags: c.buildSourceTags(l.size)}})
 		c.rpcs.add(&rpc{kind: rpcPublish, node: cand.Node, target: l.target, sent: now, lookup: l})
 	}
 }

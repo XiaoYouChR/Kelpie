@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
 )
@@ -23,7 +24,7 @@ func TestFirewallChecksAreAnswered(t *testing.T) {
 	h := buildHarness(t)
 	asker := netip.MustParseAddrPort("10.9.9.9:5000")
 	user := wire.Hash{0xAB}
-	out := h.c.onPacket(asker, kadwire.FirewalledReq{TCPPort: 4111, ID: user, Options: 0x03}, h.now)
+	out := h.c.onPacket(asker, kadwire.FirewalledReq{TCPPort: 4111, ID: user, Options: 0x03}, 0, h.now)
 	h.record(out)
 	if res := packetsOf[kadwire.FirewalledRes](h); len(res) != 1 || res[0].to != asker || res[0].packet.Addr != asker.Addr() {
 		t.Fatalf("firewall answer %+v, want the asker's address", res)
@@ -33,7 +34,7 @@ func TestFirewallChecksAreAnswered(t *testing.T) {
 		t.Fatalf("requests %+v, want %+v", got, want)
 	}
 
-	out = h.c.onPacket(asker, kadwire.LegacyFirewalledReq{TCPPort: 4111}, h.now)
+	out = h.c.onPacket(asker, kadwire.LegacyFirewalledReq{TCPPort: 4111}, 0, h.now)
 	if got := requestsOf[FirewallCheck](out); len(got) != 1 || got[0].UserHash != (wire.Hash{}) {
 		t.Fatalf("legacy check requests %+v", got)
 	}
@@ -107,7 +108,10 @@ func startUDPCheck(t *testing.T, h *harness) UDPCheck {
 		h.tick(externPortGap)
 	}
 	checks := requestsOf[UDPCheck](output{requests: h.requests})
-	want := UDPCheck{Addr: netip.MustParseAddrPort("10.50.0.3:4662"), InternPort: 4672, ExternPort: 30000}
+	want := UDPCheck{
+		Addr: netip.MustParseAddrPort("10.50.0.3:4662"), InternPort: 4672, ExternPort: 30000,
+		Key: obfuscation.BuildKadVerifyKey(h.c.udpKey, netip.MustParseAddr("10.50.0.3")),
+	}
 	if len(checks) != 1 || checks[0] != want {
 		t.Fatalf("checks %+v, want %+v", checks, want)
 	}

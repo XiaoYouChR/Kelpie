@@ -105,6 +105,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	state.Kad = Kad{
 		ID:           mustHash(t, "1E5ABC409D3E49D315D76222566E99E4"),
 		IsFirewalled: true,
+		UDPKey:       0xDEADBEEF,
 		Nodes: []KadNode{
 			{ID: mustHash(t, "54F4C64866EE9E505DB15D4B4785A0BA"), Addr: netip.MustParseAddrPort("195.32.118.142:4672"), Version: 8},
 			{ID: mustHash(t, "00112233445566778899AABBCCDDEEFF"), Addr: netip.MustParseAddrPort("[2001:db8::1]:4672"), Version: 9},
