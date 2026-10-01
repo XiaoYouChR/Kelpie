@@ -72,7 +72,7 @@ func FuzzDatagrams(f *testing.F) {
 		h := buildHarness(t)
 		nodes := h.connect(fileHash, 6)
 		clear(h.answering)
-		h.c.setWanted(Wanted{Find: []Search{{Hash: fileHash, Size: 1000}}, Publish: []Publish{{Hash: userHash, Size: 1000}}}, h.now)
+		h.c.setWanted(Wanted{{Hash: fileHash, Size: 1000}, {Hash: userHash, Size: 1000, IsComplete: true, IsShared: true}}, h.now)
 		h.tick(time.Second)
 		for len(data) >= 3 {
 			from := nodes[int(data[0])%len(nodes)].Addr

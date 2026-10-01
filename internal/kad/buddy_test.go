@@ -23,7 +23,7 @@ func TestFirewalledNodeFindsBuddy(t *testing.T) {
 		h.c.table.add(n, true, h.now)
 		h.answering[n.Addr] = n
 	}
-	h.c.setWanted(Wanted{Publish: []Publish{{Hash: fileHash, Size: 5000}}}, h.now)
+	h.c.setWanted(Wanted{{Hash: fileHash, Size: 5000, IsComplete: true, IsShared: true}}, h.now)
 	h.tick(time.Second)
 	h.setUDPVerdict(true)
 	for range 4 * 60 {
@@ -159,7 +159,7 @@ func TestFirewalledNodeWithOpenUDPTakesDirectCallbacks(t *testing.T) {
 	h := buildHarness(t)
 	h.connect(fileHash, 4)
 	h.setUDPVerdict(false)
-	h.c.setWanted(Wanted{Publish: []Publish{{Hash: fileHash, Size: 5000}}}, h.now)
+	h.c.setWanted(Wanted{{Hash: fileHash, Size: 5000, IsComplete: true, IsShared: true}}, h.now)
 	for range 60 {
 		h.tick(time.Second)
 	}

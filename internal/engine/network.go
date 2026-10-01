@@ -185,43 +185,35 @@ func toKadCallback(a transfer.RequestKadCallback, file wire.Hash) kad.Callback {
 	return kad.Callback{Buddy: a.Buddy, BuddyID: a.BuddyID, Hash: file}
 }
 
-// buildServerWanted lists every running Transfer: incomplete ones are
-// searched until they have enough sources, those with verified parts are
-// offered. The source count is the last Progress, at most a second old.
-func (e *Engine) buildServerWanted() []server.Wanted {
-	var wanted []server.Wanted
+// buildWanted lists every running Transfer for the server and for Kad,
+// which decide themselves what to search and offer: incomplete files until
+// they have enough sources, files with verified parts. The source count is
+// the last Progress, at most a second old.
+func (e *Engine) buildWanted() ([]server.Wanted, kad.Wanted) {
+	var toServer []server.Wanted
+	var toKad kad.Wanted
 	for _, r := range e.runs {
 		if r.transfer == nil {
 			continue
 		}
-		wanted = append(wanted, server.Wanted{
+		isComplete, isShared := r.share.Parts.IsFull(), r.share.Parts.Count() > 0
+		toServer = append(toServer, server.Wanted{
 			File:       r.file.Hash,
 			Size:       uint64(r.file.Size),
 			Name:       r.file.Name,
-			IsComplete: r.share.Parts.IsFull(),
-			IsShared:   r.share.Parts.Count() > 0,
+			IsComplete: isComplete,
+			IsShared:   isShared,
 			Sources:    r.progress.Peers,
 		})
+		toKad = append(toKad, kad.File{
+			Hash:       r.file.Hash,
+			Size:       r.file.Size,
+			Sources:    r.progress.Peers,
+			IsComplete: isComplete,
+			IsShared:   isShared,
+		})
 	}
-	return wanted
-}
-
-// buildKadWanted is the whole set Kad searches and publishes; Kad paces its
-// own searches, so it is sent every second.
-func (e *Engine) buildKadWanted() kad.Wanted {
-	var wanted kad.Wanted
-	for _, r := range e.runs {
-		if r.transfer == nil {
-			continue
-		}
-		if r.mode == ModeDownload {
-			wanted.Find = append(wanted.Find, kad.Search{Hash: r.file.Hash, Size: r.file.Size, Sources: r.progress.Peers})
-		}
-		if r.share.Parts.Count() > 0 {
-			wanted.Publish = append(wanted.Publish, kad.Publish{Hash: r.file.Hash, Size: r.file.Size})
-		}
-	}
-	return wanted
+	return toServer, toKad
 }
 
 func (e *Engine) onKadSources(found kad.SourcesFound) {

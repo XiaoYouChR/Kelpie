@@ -7,27 +7,22 @@ import (
 	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
 )
 
-// Search asks Kad to find sources for a file.
-type Search struct {
+// File is one file the engine downloads or shares. Kad searches sources
+// for an incomplete file until it has enough, and publishes us as a source
+// of a shared one.
+type File struct {
 	Hash wire.Hash
 	Size int64
 	// Sources is how many usable sources the file has.
-	Sources int
+	Sources    int
+	IsComplete bool
+	IsShared   bool
 }
 
-// Publish asks Kad to announce us as a source of a file.
-type Publish struct {
-	Hash wire.Hash
-	Size int64
-}
-
-// Wanted is the whole set of files the engine wants searched and
-// published. Each one posted replaces the previous set, so a dropped update
-// is repaired by the next one (ADR-0005).
-type Wanted struct {
-	Find    []Search
-	Publish []Publish
-}
+// Wanted is every file the engine downloads or shares. Each one posted
+// replaces the previous set, so a dropped update is repaired by the next
+// one (ADR-0005).
+type Wanted []File
 
 // Source types, as eMule's CSearch::StorePacket publishes them.
 const (

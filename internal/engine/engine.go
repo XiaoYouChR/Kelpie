@@ -570,10 +570,11 @@ func (e *Engine) onTick() {
 	e.refreshUploadEndpoints()
 	e.refreshAsked()
 	e.refreshA4AF()
-	e.runServer(e.server.OnTick(now, e.buildServerWanted(), e.publicIP))
+	serverWanted, kadWanted := e.buildWanted()
+	e.runServer(e.server.OnTick(now, serverWanted, e.publicIP))
 	e.runBuddy(now)
 	if e.kad != nil {
-		e.kad.Post(e.buildKadWanted())
+		e.kad.Post(kadWanted)
 	}
 	for _, r := range e.runs {
 		e.refreshProgress(r, false)
