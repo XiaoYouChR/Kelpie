@@ -80,6 +80,11 @@ func toVersion(version string) (major, minor, update uint32) {
 func (s *Session) onGreeting(p wire.Packet, out *Output) {
 	var hello client.Hello
 	switch p := p.(type) {
+	case client.EmuleInfo:
+		// Shareaza and MLDonkey send it before their HelloAnswer.
+		s.sendEmuleInfoAnswer(out)
+		s.earlyEmuleInfo = &p
+		return
 	case client.Hello:
 		if s.isOutgoing {
 			out.Close = CloseProtocol
@@ -98,6 +103,10 @@ func (s *Session) onGreeting(p wire.Packet, out *Output) {
 		return
 	}
 	s.setHello(hello)
+	if s.earlyEmuleInfo != nil {
+		s.setEmuleInfo(*s.earlyEmuleInfo)
+		s.earlyEmuleInfo = nil
+	}
 	s.isHandshaken = true
 	out.add(HandshakeCompleted{UserHash: s.userHash, YourIP: hello.YourIP})
 	s.sendIdentState(out)
@@ -132,6 +141,11 @@ func (s *Session) setHello(h client.Hello) {
 // onEmuleInfo serves clients older than the Hello capability tags; a peer
 // that sent CT_EMULE_VERSION already told us everything.
 func (s *Session) onEmuleInfo(p client.EmuleInfo, out *Output) {
+	s.sendEmuleInfoAnswer(out)
+	s.setEmuleInfo(p)
+}
+
+func (s *Session) sendEmuleInfoAnswer(out *Output) {
 	major, minor, _ := toVersion(s.cfg.Version)
 	tag := func(id byte, v uint32) wire.Tag { return wire.Tag{Type: wire.TagUint32, ID: id, Uint: uint64(v)} }
 	out.send(client.EmuleInfoAnswer{
@@ -146,6 +160,9 @@ func (s *Session) onEmuleInfo(p client.EmuleInfo, out *Output) {
 			tag(client.InfoFeatures, identity.Support),
 		},
 	})
+}
+
+func (s *Session) setEmuleInfo(p client.EmuleInfo) {
 	if s.caps.IsEmule {
 		return
 	}

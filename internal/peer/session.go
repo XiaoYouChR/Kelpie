@@ -76,6 +76,8 @@ type Session struct {
 	userHash     wire.Hash
 	caps         Capabilities
 	lastReceived time.Time
+	// earlyEmuleInfo is an OP_EMULEINFO that came before the peer's Hello.
+	earlyEmuleInfo *client.EmuleInfo
 
 	ident identState
 	down  downloadState

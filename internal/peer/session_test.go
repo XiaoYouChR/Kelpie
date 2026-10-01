@@ -657,3 +657,29 @@ func TestStalledSlotIsGivenUp(t *testing.T) {
 		t.Fatalf("revoked %+v", ev)
 	}
 }
+
+// Shareaza and MLDonkey answer our Hello with OP_EMULEINFO first; seen on
+// the real network, where closing here lost a working source.
+func TestEmuleInfoBeforeHelloAnswer(t *testing.T) {
+	s, _ := BuildOutgoing(buildConfig(t, 1), netip.MustParseAddrPort("10.0.0.2:4662"), start)
+	out := s.OnPacket(client.EmuleInfo{Version: 0x30, ProtocolVersion: 1, Tags: []wire.Tag{
+		{Type: wire.TagUint32, ID: client.InfoCompression, Uint: 1},
+		{Type: wire.TagUint32, ID: client.InfoUDPPort, Uint: 4672},
+	}}, nil, start)
+	if out.Close != "" || len(out.Send) != 1 {
+		t.Fatalf("early EmuleInfo: close %q, sent %+v", out.Close, out.Send)
+	}
+	if _, ok := out.Send[0].(client.EmuleInfoAnswer); !ok {
+		t.Fatalf("sent %T", out.Send[0])
+	}
+	out = s.OnPacket(client.HelloAnswer{UserHash: hashOf(2), Name: "Shareaza", Port: 6346}, nil, start)
+	if out.Close != "" {
+		t.Fatalf("close %q", out.Close)
+	}
+	if _, ok := out.Events[0].(HandshakeCompleted); !ok {
+		t.Fatalf("events %+v", out.Events)
+	}
+	if caps := s.Capabilities(); !caps.IsEmule || !caps.CanCompress || caps.UDPPort != 4672 || caps.Port != 6346 {
+		t.Fatalf("capabilities %+v", caps)
+	}
+}
