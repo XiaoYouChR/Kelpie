@@ -29,7 +29,7 @@ type harness struct {
 	answering map[netip.AddrPort]Node
 	sent      []datagram
 	found     []SourcesFound
-	requests  []Request
+	requests  []request
 }
 
 func buildHarness(t *testing.T) *harness {
@@ -326,7 +326,7 @@ func TestRequestCallbackReachesBuddy(t *testing.T) {
 	h := buildHarness(t)
 	buddyID := mustHash("0011223344556677889900AABBCCDDEE")
 	buddy := netip.MustParseAddrPort("9.8.7.6:4672")
-	out := h.c.requestCallback(Callback{Buddy: buddy, BuddyID: buddyID, Hash: fileHash})
+	out := h.c.onMessage(Callback{Buddy: buddy, BuddyID: buddyID, Hash: fileHash})
 	if len(out.datagrams) != 1 || out.datagrams[0].to != buddy {
 		t.Fatalf("callback datagrams %+v", out.datagrams)
 	}

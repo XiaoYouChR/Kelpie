@@ -63,7 +63,7 @@ const versionObfuscation = 6
 type output struct {
 	datagrams []datagram
 	found     []SourcesFound
-	requests  []Request
+	requests  []request
 }
 
 type find struct {
@@ -233,19 +233,6 @@ func (c *core) cancelLookup(l *lookup) {
 	}
 }
 
-// requestCallback asks a firewalled source's buddy to make the source
-// connect to our TCP port.
-func (c *core) requestCallback(cb Callback) output {
-	if cb.Buddy.Addr().Is4() {
-		// Plain, as aMule sends it: we do not know the buddy's Kad version
-		// (BaseClient.cpp:1568).
-		c.sendPlain(cb.Buddy, kadwire.CallbackReq{BuddyID: cb.BuddyID, Hash: cb.Hash, TCPPort: c.tcpPort})
-	}
-	out := c.out
-	c.out = output{}
-	return out
-}
-
 // onFirewallAck counts a node that reached our TCP port, reported over TCP
 // (OP_KAD_FWTCPCHECK_ACK, received by the engine) or UDP
 // (KADEMLIA_FIREWALLED_ACK_RES). Only nodes we asked count.
@@ -256,9 +243,18 @@ func (c *core) onFirewallAck(from netip.Addr) {
 	}
 }
 
-// onMessage reacts to what the engine sends Kad besides wanted files.
+// onMessage reacts to what the engine sends Kad besides wanted files,
+// buddy state and its own datagrams.
 func (c *core) onMessage(m any) output {
 	switch m := m.(type) {
+	case Callback:
+		if m.Buddy.Addr().Is4() {
+			// Plain, as aMule sends it: we do not know the buddy's Kad version
+			// (BaseClient.cpp:1568).
+			c.sendPlain(m.Buddy, kadwire.CallbackReq{BuddyID: m.BuddyID, Hash: m.Hash, TCPPort: c.tcpPort})
+		}
+	case firewallAckReceived:
+		c.onFirewallAck(m.from)
 	case firewallAck:
 		if m.to.Addr().Is4() {
 			c.sendPlain(m.to, firewalledAck{})

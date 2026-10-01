@@ -25,8 +25,12 @@ type kadCheck struct {
 	isSent  bool
 }
 
-func (e *Engine) onKadRequest(r kad.Request) {
-	switch r := r.(type) {
+func (e *Engine) onKadMessage(m any) {
+	switch r := m.(type) {
+	case kad.SourcesFound:
+		e.onKadSources(r)
+	case kad.Datagram:
+		e.onDatagram(r.Addr, r.Data)
 	case kad.FirewallCheck:
 		e.startFirewallCheck(r)
 	case kad.UDPCheck:

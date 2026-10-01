@@ -6,9 +6,9 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
-// Request is something Kad needs a TCP connection for, which only the
-// engine has. Kad sends them on Requests.
-type Request interface{ isRequest() }
+// request is something Kad needs a TCP connection for, which only the
+// engine has. Kad sends them on Messages.
+type request interface{ isRequest() }
 
 // FirewallCheck asks the engine to connect to a node that wants to know
 // whether its TCP port is open, and to tell it once the handshake is done:
@@ -55,6 +55,10 @@ type UDPCheckEnded struct {
 	IP          netip.Addr
 	IsCancelled bool
 }
+
+// firewallAckReceived is an OP_KAD_FWTCPCHECK_ACK the engine received
+// over TCP.
+type firewallAckReceived struct{ from netip.Addr }
 
 // firewallAck asks Kad to send KADEMLIA_FIREWALLED_ACK_RES to a node
 // older than Kad version 7 whose TCP port we reached.

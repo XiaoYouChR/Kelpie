@@ -10,7 +10,7 @@ import (
 	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
 )
 
-func requestsOf[T Request](out output) []T {
+func requestsOf[T request](out output) []T {
 	var got []T
 	for _, r := range out.requests {
 		if r, ok := r.(T); ok {

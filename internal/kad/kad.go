@@ -4,7 +4,7 @@
 //
 // eMule serves Kad and eD2k UDP (reasks, server UDP) on one port, so Kad
 // owns that socket for both. Datagrams whose first byte is not a Kad
-// protocol byte (0xE4, 0xE5) go to the engine through Received; the engine
+// protocol byte (0xE4, 0xE5) go to the engine through Messages; the engine
 // sends its own datagrams through Send. Kad datagrams may be obfuscated
 // (obfuscation.ParseKadDatagram); a datagram Kad cannot read either way,
 // such as an obfuscated eD2k one, is forwarded unchanged. Servers start
@@ -13,8 +13,9 @@
 // Kad and is lost here; aMule keeps server UDP on a socket of its own.
 //
 // Every method other than Run is safe to call from another goroutine and
-// never blocks: inputs and outputs drop when full, as a hub's sends to the
-// other hub must (ADR-0005). SetWanted, SetBuddy and Statuses hold only
+// never blocks, as a hub's sends to the other hub must (ADR-0005): the
+// engine's inputs share one mailbox and Kad's outputs one outbox, both
+// dropping when full; SetWanted, SetBuddy, Statuses and States hold only
 // the latest value.
 package kad
 
@@ -25,7 +26,6 @@ import (
 	"math/rand/v2"
 	"net/netip"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/clock"
@@ -38,7 +38,7 @@ import (
 
 const (
 	tickInterval = time.Second // SEARCH_JUMPSTART
-	queueSize    = 64
+	queueSize    = 256
 	maxDatagram  = 65536
 )
 
@@ -65,18 +65,13 @@ type Datagram struct {
 }
 
 type Kad struct {
-	cfg       Config
-	wanted    chan Wanted
-	buddies   chan Buddy
-	sends     chan Datagram
-	callbacks chan Callback
-	acks      chan netip.Addr
-	inbox     chan any
-	found     chan SourcesFound
-	requests  chan Request
-	received  chan Datagram
-	statuses  chan Status
-	state     atomic.Pointer[store.Kad]
+	cfg      Config
+	wanted   chan Wanted
+	buddies  chan Buddy
+	inbox    chan any
+	messages chan any
+	statuses chan Status
+	states   chan store.Kad
 }
 
 func BuildKad(cfg Config) *Kad {
@@ -94,78 +89,37 @@ func BuildKad(cfg Config) *Kad {
 		cfg.Rand = rand.New(rand.NewChaCha8(seed))
 	}
 	k := &Kad{
-		cfg:       cfg,
-		wanted:    make(chan Wanted, 1),
-		buddies:   make(chan Buddy, 1),
-		sends:     make(chan Datagram, queueSize),
-		callbacks: make(chan Callback, queueSize),
-		acks:      make(chan netip.Addr, queueSize),
-		inbox:     make(chan any, queueSize),
-		found:     make(chan SourcesFound, queueSize),
-		requests:  make(chan Request, queueSize),
-		received:  make(chan Datagram, queueSize),
-		statuses:  make(chan Status, 1),
+		cfg:      cfg,
+		wanted:   make(chan Wanted, 1),
+		buddies:  make(chan Buddy, 1),
+		inbox:    make(chan any, queueSize),
+		messages: make(chan any, queueSize),
+		statuses: make(chan Status, 1),
+		states:   make(chan store.Kad, 1),
 	}
-	state := store.Kad{ID: cfg.State.ID, IsFirewalled: true, UDPKey: cfg.State.UDPKey, Nodes: cfg.State.Nodes}
-	k.state.Store(&state)
+	k.states <- store.Kad{ID: cfg.State.ID, IsFirewalled: true, UDPKey: cfg.State.UDPKey, Nodes: cfg.State.Nodes}
 	return k
 }
 
+// ID is our Kad ID, fixed from BuildKad on.
+func (k *Kad) ID() wire.Hash { return k.cfg.State.ID }
+
 // SetWanted replaces the set of files to search and publish.
-func (k *Kad) SetWanted(w Wanted) {
-	for {
-		select {
-		case k.wanted <- w:
-			return
-		default:
-		}
-		select {
-		case <-k.wanted:
-		default:
-		}
-	}
-}
+func (k *Kad) SetWanted(w Wanted) { setLatest(k.wanted, w) }
 
 // SetBuddy replaces what Kad knows of the engine's buddy link.
-func (k *Kad) SetBuddy(b Buddy) {
-	for {
-		select {
-		case k.buddies <- b:
-			return
-		default:
-		}
-		select {
-		case <-k.buddies:
-		default:
-		}
-	}
-}
+func (k *Kad) SetBuddy(b Buddy) { setLatest(k.buddies, b) }
 
 // Send queues an engine datagram for the shared UDP socket.
-func (k *Kad) Send(d Datagram) {
-	select {
-	case k.sends <- d:
-	default:
-	}
-}
+func (k *Kad) Send(d Datagram) { k.post(d) }
 
 // RequestCallback asks a firewalled source's buddy to have the source
 // connect to our TCP port.
-func (k *Kad) RequestCallback(cb Callback) {
-	select {
-	case k.callbacks <- cb:
-	default:
-	}
-}
+func (k *Kad) RequestCallback(cb Callback) { k.post(cb) }
 
 // SendFirewallAck reports an OP_KAD_FWTCPCHECK_ACK the engine received over
 // TCP from from.
-func (k *Kad) SendFirewallAck(from netip.Addr) {
-	select {
-	case k.acks <- from.Unmap():
-	default:
-	}
-}
+func (k *Kad) SendFirewallAck(from netip.Addr) { k.post(firewallAckReceived{from.Unmap()}) }
 
 // RequestFirewallAck asks Kad to tell a node older than Kad version 7,
 // at its Kad endpoint to, that we reached its TCP port.
@@ -176,23 +130,19 @@ func (k *Kad) RequestFirewallUDP(r FirewallUDP) { k.post(r) }
 
 func (k *Kad) SendUDPCheckEnded(e UDPCheckEnded) { k.post(e) }
 
-func (k *Kad) post(m any) {
-	select {
-	case k.inbox <- m:
-	default:
-	}
-}
+func (k *Kad) post(m any) { sendOrDrop(k.inbox, m) }
 
-func (k *Kad) Found() <-chan SourcesFound { return k.found }
-
-func (k *Kad) Requests() <-chan Request { return k.requests }
-
-func (k *Kad) Received() <-chan Datagram { return k.received }
+// Messages carries SourcesFound, the non-Kad Datagrams Kad received, and
+// what Kad needs a TCP connection for, which only the engine has:
+// FirewallCheck, UDPCheck, BuddyFound, BuddyRequested and
+// CallbackRequested.
+func (k *Kad) Messages() <-chan any { return k.messages }
 
 func (k *Kad) Statuses() <-chan Status { return k.statuses }
 
-// State is the Kad part of the Durable State as of the last tick.
-func (k *Kad) State() store.Kad { return *k.state.Load() }
+// States carries the Kad part of the Durable State: first as BuildKad
+// made it, then each tick, and last as Run ends.
+func (k *Kad) States() <-chan store.Kad { return k.states }
 
 // Run serves Kad until ctx ends. It fails only if the UDP socket cannot be
 // opened.
@@ -227,14 +177,14 @@ func (k *Kad) Run(ctx context.Context) error {
 	ticker := k.cfg.Clock.CreateTicker(tickInterval)
 	defer ticker.Stop()
 
-	var lastStatus Status
-	k.setStatus(c.status())
+	lastStatus := c.status()
+	setLatest(k.statuses, lastStatus)
 	for {
 		var out output
 		isTick := false
 		select {
 		case <-ctx.Done():
-			k.saveState(c)
+			setLatest(k.states, c.state())
 			return nil
 		case d := <-reads:
 			if p, keys, isKad := c.parseDatagram(d); isKad {
@@ -242,10 +192,7 @@ func (k *Kad) Run(ctx context.Context) error {
 					out = c.onPacket(d.Addr, p, keys, k.cfg.Clock.Now())
 				}
 			} else {
-				select {
-				case k.received <- d:
-				default:
-				}
+				sendOrDrop(k.messages, any(d))
 			}
 		case <-ticker.C():
 			out = c.onTick(k.cfg.Clock.Now())
@@ -254,36 +201,28 @@ func (k *Kad) Run(ctx context.Context) error {
 			c.setWanted(w, k.cfg.Clock.Now())
 		case b := <-k.buddies:
 			c.setBuddy(b)
-		case d := <-k.sends:
-			conn.WriteTo(d.Data, d.Addr)
-		case cb := <-k.callbacks:
-			out = c.requestCallback(cb)
-		case from := <-k.acks:
-			c.onFirewallAck(from)
 		case m := <-k.inbox:
-			out = c.onMessage(m)
+			if d, ok := m.(Datagram); ok {
+				conn.WriteTo(d.Data, d.Addr)
+			} else {
+				out = c.onMessage(m)
+			}
 		}
 		for _, d := range out.datagrams {
 			conn.WriteTo(c.buildDatagram(d), d.to)
 		}
 		for _, f := range out.found {
-			select {
-			case k.found <- f:
-			default:
-			}
+			sendOrDrop(k.messages, any(f))
 		}
 		for _, r := range out.requests {
-			select {
-			case k.requests <- r:
-			default:
-			}
+			sendOrDrop(k.messages, any(r))
 		}
 		if status := c.status(); status != lastStatus {
 			lastStatus = status
-			k.setStatus(status)
+			setLatest(k.statuses, status)
 		}
 		if isTick {
-			k.saveState(c)
+			setLatest(k.states, c.state())
 		}
 	}
 }
@@ -303,20 +242,34 @@ func runReader(ctx context.Context, conn transport.PacketConn, reads chan<- Data
 	}
 }
 
-func (k *Kad) setStatus(s Status) {
-	select {
-	case <-k.statuses:
-	default:
+// setLatest replaces the value waiting in a latest-value slot.
+func setLatest[T any](slot chan T, v T) {
+	for {
+		select {
+		case slot <- v:
+			return
+		default:
+		}
+		select {
+		case <-slot:
+		default:
+		}
 	}
-	k.statuses <- s
 }
 
-func (k *Kad) saveState(c *core) {
+func sendOrDrop[T any](queue chan T, v T) {
+	select {
+	case queue <- v:
+	default:
+	}
+}
+
+func (c *core) state() store.Kad {
 	state := store.Kad{ID: c.id, IsFirewalled: c.firewall.isFirewalled(), UDPKey: c.udpKey}
 	for _, n := range c.table.nodes() {
 		state.Nodes = append(state.Nodes, toStoreNode(n))
 	}
-	k.state.Store(&state)
+	return state
 }
 
 // buildDatagram is a datagram's wire form, obfuscated as d asks.

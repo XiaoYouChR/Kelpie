@@ -42,6 +42,25 @@ func waitParked(t *testing.T, clk *clock.Fake, n int) {
 	}
 }
 
+// waitMessage waits for Kad's next outbox message of type T, skipping
+// the others.
+func waitMessage[T any](t *testing.T, k *Kad) T {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case m := <-k.Messages():
+			if v, ok := m.(T); ok {
+				return v
+			}
+		case <-timeout:
+			var zero T
+			t.Fatalf("no %T arrived", zero)
+			return zero
+		}
+	}
+}
+
 func readFrom(t *testing.T, conn transport.PacketConn) (netip.AddrPort, []byte) {
 	t.Helper()
 	got := make(chan Datagram, 1)
@@ -77,13 +96,8 @@ func TestKadSharesItsSocketWithTheEngine(t *testing.T) {
 
 	reask := []byte{wire.ProtocolEMule, 0x90, 1, 2, 3}
 	peer.WriteTo(reask, kadAddr)
-	select {
-	case d := <-k.Received():
-		if d.Addr != netip.MustParseAddrPort("10.0.0.2:4672") || !bytes.Equal(d.Data, reask) {
-			t.Fatalf("forwarded %+v", d)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("eD2k datagram not forwarded to the engine")
+	if d := waitMessage[Datagram](t, k); d.Addr != netip.MustParseAddrPort("10.0.0.2:4672") || !bytes.Equal(d.Data, reask) {
+		t.Fatalf("forwarded %+v", d)
 	}
 
 	k.Send(Datagram{Addr: netip.MustParseAddrPort("10.0.0.2:4672"), Data: []byte{wire.ProtocolEMule, 0x91}})
@@ -96,10 +110,10 @@ func TestKadSharesItsSocketWithTheEngine(t *testing.T) {
 	if p, ok := parsePacket(data); !ok || p != (kadwire.Pong{UDPPort: 4672}) {
 		t.Fatalf("Kad answered a ping with %x", data)
 	}
-	select {
-	case d := <-k.Received():
-		t.Fatalf("Kad datagram forwarded to the engine: %+v", d)
-	default:
+	for len(k.Messages()) > 0 {
+		if d, ok := (<-k.Messages()).(Datagram); ok {
+			t.Fatalf("Kad datagram forwarded to the engine: %+v", d)
+		}
 	}
 
 	k.RequestCallback(Callback{Buddy: netip.MustParseAddrPort("10.0.0.2:4672"), BuddyID: fileHash, Hash: fileHash})
@@ -164,8 +178,11 @@ func TestKadNetworkFindsPublishedSource(t *testing.T) {
 		clk.Advance(time.Second)
 		waitParked(t, clk, count)
 		time.Sleep(time.Millisecond)
-		select {
-		case f := <-searcher.Found():
+		for len(searcher.Messages()) > 0 {
+			f, ok := (<-searcher.Messages()).(SourcesFound)
+			if !ok {
+				continue
+			}
 			if f.Hash != fileHash || len(f.Sources) != 1 || f.Sources[0] != want {
 				t.Fatalf("found %+v, want %+v", f, want)
 			}
@@ -173,12 +190,31 @@ func TestKadNetworkFindsPublishedSource(t *testing.T) {
 			if status.Nodes < 2 || status.IsFirewalled {
 				t.Fatalf("searcher status %+v", status)
 			}
-			state := searcher.State()
+			state := <-searcher.States()
 			if state.ID == (wire.Hash{}) || len(state.Nodes) < 2 || state.IsFirewalled {
 				t.Fatalf("searcher state %+v", state)
 			}
 			return
-		default:
 		}
+	}
+}
+
+func TestKadHandsOverItsStateWhenItStops(t *testing.T) {
+	network := transport.BuildNetwork()
+	seed := Node{ID: fileHash, Addr: netip.MustParseAddrPort("198.51.100.9:4672"), Version: kadwire.Version}
+	k := BuildKad(Config{
+		Transport: network.AddHost(netip.MustParseAddr("10.0.0.1")), Clock: clock.BuildFake(start),
+		Port: 4672, TCPPort: 4662, UserHash: userHash, Nodes: []Node{seed},
+	})
+	if built := <-k.States(); built.ID != k.ID() || built.UDPKey == 0 || len(built.Nodes) != 0 {
+		t.Fatalf("built state %+v", built)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := k.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if final := <-k.States(); final.ID != k.ID() || len(final.Nodes) != 1 || final.Nodes[0].Addr != seed.Addr {
+		t.Fatalf("final state %+v", final)
 	}
 }
