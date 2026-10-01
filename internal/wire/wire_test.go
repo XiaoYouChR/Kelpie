@@ -289,3 +289,21 @@ func TestInflationBomb(t *testing.T) {
 		t.Fatalf("largest datagram: %d bytes, err %v", len(f.Body), err)
 	}
 }
+
+func TestTagListCap(t *testing.T) {
+	build := func(count int) []byte {
+		b := binary.LittleEndian.AppendUint32(nil, uint32(count))
+		for range count {
+			b = append(b, TagUint8|0x80, 0x01, 7)
+		}
+		return b
+	}
+	r := &Reader{Rest: build(maxTags)}
+	if tags := r.Tags(); len(tags) != maxTags || r.Err() != nil {
+		t.Fatalf("%d tags: got %d, err %v", maxTags, len(tags), r.Err())
+	}
+	r = &Reader{Rest: build(maxTags + 1)}
+	if tags := r.Tags(); tags != nil || r.Err() == nil {
+		t.Fatalf("%d tags: got %d, want an error", maxTags+1, len(tags))
+	}
+}

@@ -316,3 +316,29 @@ func TestAICHAnswerRejectsShortList(t *testing.T) {
 		t.Fatal("want error for a truncated hash list")
 	}
 }
+
+func TestMultiPacketKeepsOnePerOpcode(t *testing.T) {
+	body := bytes.Clone(fileHash[:])
+	body = append(body, bytes.Repeat([]byte{opSetRequestFileID}, 100_000)...)
+	body = append(body, opAICHFileHashRequest, opSetRequestFileID, opAICHFileHashRequest)
+	p, err := Parse(wire.ProtocolEMule, opMultiPacket, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := MultiPacket{Hash: fileHash, Requests: []wire.Packet{SetRequestFileID{Hash: fileHash}, AICHFileHashRequest{Hash: fileHash}}}
+	if !reflect.DeepEqual(p, want) {
+		t.Fatalf("got %+v, want %+v", p, want)
+	}
+
+	answer := bytes.Clone(fileHash[:])
+	for range 50_000 {
+		answer = append(answer, opFileStatus, 0, 0)
+	}
+	p, err = Parse(wire.ProtocolEMule, opMultiPacketAnswer, answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(p.(MultiPacketAnswer).Answers); got != 1 {
+		t.Fatalf("answers = %d, want 1", got)
+	}
+}
