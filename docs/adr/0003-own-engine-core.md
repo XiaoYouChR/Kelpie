@@ -35,8 +35,10 @@ own format.
 - Engine tests use fake net, clock, and disk adapters; the disk fake injects
   faults such as a full disk. Tests that reach the real network run only when
   explicitly enabled.
-- A benchmark against eMule and goed2kd, with one lifecycle event per source,
-  is recorded before the engine is written and rerun for each speed feature.
+- The release bar is speed on a hot link: Kelpie must sustain 2 MiB/s on the
+  Ubuntu ISO in bench/links.txt, which aMule reached behind a LowID in a
+  2-minute smoke run while goed2kd stayed near 150 KiB/s. The benchmark logs one
+  lifecycle event per source so a shortfall can be traced to a channel or stage.
 - The connection limit is internal, matching eMule's defaults.
 - First release: slot grants on incoming connections, UDP reask, Secure User
   Identification, eMule-sized connection limits, server callbacks for LowID in
