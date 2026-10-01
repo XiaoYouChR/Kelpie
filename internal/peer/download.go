@@ -119,6 +119,13 @@ func (s *Session) Request(file wire.Hash, blocks []piece.Block) Output {
 	if d == nil || !s.down.isSlotGranted || s.down.started != file {
 		return out
 	}
+	// aMule gives back a slot that yields nothing to request
+	// (DownloadClient.cpp:646-689).
+	if len(blocks) == 0 && len(d.inFlight) == 0 {
+		out.send(client.CancelTransfer{})
+		s.stopSlot(&out)
+		return out
+	}
 	for _, b := range blocks {
 		d.inFlight = append(d.inFlight, &inFlight{block: b})
 	}
@@ -250,7 +257,9 @@ func (s *Session) onNoFile(file wire.Hash, out *Output) {
 }
 
 // runStarted moves the started file on as far as what we know allows: ask for
-// a slot, or once granted, ask the engine for blocks.
+// a slot, or once granted, ask the engine for blocks. A peer with no part we
+// still need is not asked for a slot (aMule DS_NONEEDEDPARTS,
+// DownloadClient.cpp:459-466); the transfer keeps it as a queued source.
 func (s *Session) runStarted(out *Output) {
 	if !s.down.isStarted {
 		return
@@ -262,10 +271,19 @@ func (s *Session) runStarted(out *Output) {
 	switch {
 	case s.down.isSlotGranted:
 		s.requestBlocks(d, out)
-	case !s.down.isStartSent:
+	case !s.down.isStartSent && hasNeededPart(d):
 		s.down.isStartSent = true
 		out.send(client.StartUploadRequest{Hash: s.down.started})
 	}
+}
+
+func hasNeededPart(d *download) bool {
+	for i, has := range d.peerParts {
+		if has && (i >= len(d.parts) || !d.parts[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Session) requestBlocks(d *download, out *Output) {

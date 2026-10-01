@@ -554,6 +554,45 @@ func TestOutOfPartsRevokesSlot(t *testing.T) {
 	}
 }
 
+func TestNoSlotAskedWithoutNeededParts(t *testing.T) {
+	l := buildLink(t)
+	size := 3 * piece.PartSize
+	file, _ := addShare(l.b, 1, size, false)
+	share := l.b.shares[file]
+	share.Parts = piece.Set{true, false, false}
+	l.b.shares[file] = share
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{true, false, false}))
+	l.run(l.a, l.a.s.Start(file))
+	lastOf[StatusReceived](t, l.a)
+	if sentCount[client.StartUploadRequest](l) != 0 {
+		t.Fatal("asked a slot of a peer with nothing we need")
+	}
+
+	share.Parts = piece.Set{true, false, true}
+	l.b.shares[file] = share
+	l.run(l.a, Output{Send: []wire.Packet{client.SetRequestFileID{Hash: file}}})
+	if sentCount[client.StartUploadRequest](l) != 1 {
+		t.Fatal("no slot asked once the peer has a part we need")
+	}
+}
+
+func TestEmptySlotIsCancelled(t *testing.T) {
+	l := buildLink(t)
+	file, _ := addShare(l.b, 1, piece.BlockSize, false)
+	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}))
+	l.run(l.a, l.a.s.Start(file))
+	l.run(l.b, l.b.s.StartUpload())
+	l.sent = nil
+	l.run(l.a, l.a.s.Request(file, nil))
+	if sentCount[client.CancelTransfer](l) != 1 {
+		t.Fatal("empty slot kept")
+	}
+	if lastOf[SlotRevoked](t, l.a).File != file {
+		t.Fatal("slot not released")
+	}
+	lastOf[UploadCancelled](t, l.b)
+}
+
 func TestSourceExchange(t *testing.T) {
 	l := buildLink(t)
 	file, _ := addShare(l.b, 1, piece.BlockSize, false)
