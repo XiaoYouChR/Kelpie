@@ -204,8 +204,20 @@ type failedLine struct {
 }
 
 type errorJSON struct {
-	Code    engine.Code `json:"code"`
-	Message string      `json:"message"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// codeNames is the wire name of each engine.Code, from docs/protocol.md
+// "Error codes".
+var codeNames = map[engine.Code]string{
+	engine.CodeInternal:     "INTERNAL",
+	engine.CodeInvalidLink:  "INVALID_LINK",
+	engine.CodeOutputExists: "OUTPUT_EXISTS",
+	engine.CodeTransferBusy: "TRANSFER_BUSY",
+	engine.CodeDiskFull:     "DISK_FULL",
+	engine.CodeFileError:    "FILE_ERROR",
+	engine.CodeStartFailed:  "START_FAILED",
 }
 
 func sendFailed(out io.Writer, err *engine.Error) error {
@@ -226,5 +238,5 @@ func toErrorJSON(err *engine.Error) *errorJSON {
 	if err == nil {
 		return nil
 	}
-	return &errorJSON{Code: err.Code, Message: err.Message}
+	return &errorJSON{Code: codeNames[err.Code], Message: err.Message}
 }

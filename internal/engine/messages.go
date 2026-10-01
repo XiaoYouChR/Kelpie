@@ -76,16 +76,18 @@ type Network struct {
 	IsBehindCarrierNat bool
 }
 
-type Code string
+// Code is why a Run failed; the gateway names it on the wire
+// (docs/protocol.md "Error codes").
+type Code int
 
 const (
-	CodeInvalidLink  Code = "INVALID_LINK"
-	CodeOutputExists Code = "OUTPUT_EXISTS"
-	CodeTransferBusy Code = "TRANSFER_BUSY"
-	CodeDiskFull     Code = "DISK_FULL"
-	CodeFileError    Code = "FILE_ERROR"
-	CodeStartFailed  Code = "START_FAILED"
-	CodeInternal     Code = "INTERNAL"
+	CodeInternal Code = iota
+	CodeInvalidLink
+	CodeOutputExists
+	CodeTransferBusy
+	CodeDiskFull
+	CodeFileError
+	CodeStartFailed
 )
 
 type Error struct {
@@ -93,7 +95,7 @@ type Error struct {
 	Message string
 }
 
-func (e *Error) Error() string { return string(e.Code) + ": " + e.Message }
+func (e *Error) Error() string { return e.Message }
 
 // Events is how the Engine reports to the gateway. Implementations must never
 // block: progress and network are latest-value slots, and every run gets
