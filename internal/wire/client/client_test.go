@@ -16,6 +16,8 @@ var (
 	userHash = mustHash("23A8CEFF57A7A32D562D649ED7893796")
 )
 
+var aichRoot = wire.AICHHash{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
+
 func mustHash(s string) wire.Hash {
 	h, err := wire.ParseHash(s)
 	if err != nil {
@@ -117,13 +119,21 @@ func TestTCPRoundTrip(t *testing.T) {
 			SetRequestFileID{Hash: fileHash},
 			RequestSources2{Version: SourceExchange2Version, Hash: fileHash},
 			RequestSources{Hash: fileHash},
-			wire.Unknown{Proto: wire.ProtocolEMule, Op: 0x9E, Body: []byte{7, 7}},
+			AICHFileHashRequest{Hash: fileHash},
+			wire.Unknown{Proto: wire.ProtocolEMule, Op: 0xFE, Body: []byte{7, 7}},
 		}},
 		MultiPacketExt{Hash: fileHash, Size: 1 << 33, Requests: []wire.Packet{SetRequestFileID{Hash: fileHash}}},
 		MultiPacketAnswer{Hash: fileHash, Answers: []wire.Packet{
 			FileNameAnswer{Hash: fileHash, Name: "kelpie.iso"},
 			FileStatus{Hash: fileHash, Parts: parts(false, true)},
+			AICHFileHashAnswer{Hash: fileHash, Root: aichRoot},
 		}},
+		AICHFileHashRequest{Hash: fileHash},
+		AICHFileHashAnswer{Hash: fileHash, Root: aichRoot},
+		AICHRequest{Hash: fileHash, Part: 3, Root: aichRoot},
+		AICHAnswer{Hash: fileHash},
+		AICHAnswer{Hash: fileHash, HasData: true, Part: 3, Root: aichRoot, Entries: []AICHEntry{{Ident: 2, Hash: aichRoot}, {Ident: 0xFFFF, Hash: aichRoot}}},
+		AICHAnswer{Hash: fileHash, HasData: true, Part: 700, Root: aichRoot, HasLongIdents: true, Entries: []AICHEntry{{Ident: 0x10000, Hash: aichRoot}}},
 		IPv6Changed{Addr: netip.MustParseAddr("2a01:4f8::1")},
 	}
 	for _, p := range packets {
@@ -279,5 +289,30 @@ func TestShortBodiesFail(t *testing.T) {
 		if _, err := Parse(wire.ProtocolEDonkey, op, []byte{1}); err == nil {
 			t.Errorf("opcode %#x: want error", op)
 		}
+	}
+}
+
+// TestAICHAnswerGolden follows aMule's layout: a 16-bit list closed by an
+// empty 32-bit count, or an empty 16-bit count before the 32-bit list.
+func TestAICHAnswerGolden(t *testing.T) {
+	root := hex.EncodeToString(aichRoot[:])
+	short := AICHAnswer{Hash: fileHash, HasData: true, Part: 1, Root: aichRoot, Entries: []AICHEntry{{Ident: 6, Hash: aichRoot}}}
+	want := unhex(t, "31d6cfe0d16ae931b73c59d7e0c089c0"+"0100"+root+"0100"+"0600"+root+"0000")
+	if got := short.Build(nil); !bytes.Equal(got, want) {
+		t.Fatalf("16-bit answer =\n %x\nwant\n %x", got, want)
+	}
+	long := short
+	long.HasLongIdents = true
+	want = unhex(t, "31d6cfe0d16ae931b73c59d7e0c089c0"+"0100"+root+"0000"+"0100"+"06000000"+root)
+	if got := long.Build(nil); !bytes.Equal(got, want) {
+		t.Fatalf("32-bit answer =\n %x\nwant\n %x", got, want)
+	}
+}
+
+func TestAICHAnswerRejectsShortList(t *testing.T) {
+	body := AICHAnswer{Hash: fileHash, HasData: true, Root: aichRoot, Entries: []AICHEntry{{Ident: 2}}}.Build(nil)
+	body = body[:len(body)-4]
+	if _, err := Parse(wire.ProtocolEMule, opAICHAnswer, body); err == nil {
+		t.Fatal("want error for a truncated hash list")
 	}
 }
