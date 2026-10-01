@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+          - goos: windows
+            goarch: arm64
+            ext: .exe
+          - goos: darwin
+            goarch: amd64
+            ext: ""
+          - goos: darwin
+            goarch: arm64
+            ext: ""
+          - goos: linux
+            goarch: amd64
+            ext: ""
+          - goos: linux
+            goarch: arm64
+            ext: ""
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          OUTPUT="kelpie-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "$OUTPUT" ./cmd/kelpie
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kelpie-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: kelpie-*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: kelpie-*
+          generate_release_notes: true
+
+      - name: Push to GitCode
+        continue-on-error: true
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: |
+          if [ -z "$GITCODE_TOKEN" ]; then echo "No GITCODE_TOKEN, skipping"; exit 0; fi
+          REMOTE="https://XiaoYouChR:${GITCODE_TOKEN}@gitcode.com/XiaoYouChR/Kelpie.git"
+          git push "$REMOTE" origin/main:refs/heads/main "${{ github.ref_name }}" 2>&1 | sed "s/${GITCODE_TOKEN}/****/g" || true
+
+      - name: Mirror release to GitCode
+        continue-on-error: true
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: |
+          if [ -z "$GITCODE_TOKEN" ]; then echo "No GITCODE_TOKEN, skipping mirror"; exit 0; fi
+
+          sudo tee -a /etc/hosts >/dev/null <<'HOSTS'
+          159.138.147.37 api.atomgit.com
+          159.138.147.37 api.gitcode.com
+          159.138.147.37 file.atomgit.com
+          159.138.147.37 file.gitcode.com
+          HOSTS
+
+          API="https://api.gitcode.com/api/v5"
+          REPO="XiaoYouChR/Kelpie"
+          TAG="${{ github.ref_name }}"
+          AUTH="access_token=${GITCODE_TOKEN}"
+
+          curl -f -X POST "${API}/repos/${REPO}/releases?${AUTH}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":\"${TAG}\"}" \
+            2>/dev/null || echo "Release already exists"
+
+          curl -f -X PATCH "${API}/repos/${REPO}/releases/${TAG}?${AUTH}" \
+            -H "Content-Type: application/json" \
+            -d '{"release_status":"latest"}' || true
+
+          upload_file() {
+            local file="$1"
+            local name=$(basename "$file")
+            local upload_info=$(curl -f "${API}/repos/${REPO}/releases/${TAG}/upload_url?${AUTH}&file_name=${name}")
+            local url=$(echo "$upload_info" | jq -r '.url')
+            local content_type=$(echo "$upload_info" | jq -r '.headers["Content-Type"]')
+            local meta_project=$(echo "$upload_info" | jq -r '.headers["x-obs-meta-project-id"]')
+            local obs_acl=$(echo "$upload_info" | jq -r '.headers["x-obs-acl"]')
+            local obs_callback=$(echo "$upload_info" | jq -r '.headers["x-obs-callback"]')
+            curl -f -X PUT "$url" \
+              -H "Content-Type: ${content_type}" \
+              -H "x-obs-meta-project-id: ${meta_project}" \
+              -H "x-obs-acl: ${obs_acl}" \
+              -H "x-obs-callback: ${obs_callback}" \
+              --data-binary "@${file}"
+            echo "uploaded: $name"
+          }
+
+          for f in kelpie-*; do
+            [ -f "$f" ] && { upload_file "$f" || echo "WARN: failed $f"; } &
+          done
+          wait
