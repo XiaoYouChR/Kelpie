@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
 	"net/netip"
+	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -225,4 +227,66 @@ func TestUploadReadAheadIsBounded(t *testing.T) {
 	if read := counting.read.Load() - before; read == 0 || read > limit {
 		t.Fatalf("read %d bytes for a peer that stopped reading, want 1 to %d", read, limit)
 	}
+}
+
+// Connections that never send their first bytes hold at most
+// maxIncomingHandshakes accepts; the rest wait in the listener's backlog or
+// are refused, and the listener serves again once they go.
+func TestSilentIncomingConnectionsAreBounded(t *testing.T) {
+	w := buildWorld(t)
+	a := w.addNode("198.51.100.1")
+	a.start()
+	silent := w.network.AddHost(netip.MustParseAddr("198.51.100.9"))
+	opened := 0
+	for range 300 {
+		if _, err := silent.OpenTCP(context.Background(), a.endpoint()); err == nil {
+			opened++
+		}
+	}
+	// The fake listener's backlog holds 128 connections.
+	if opened > maxIncomingHandshakes+128 || opened == 300 {
+		t.Fatalf("%d of 300 silent connections opened, want at most %d", opened, maxIncomingHandshakes+128)
+	}
+	silent.Close()
+
+	p := w.openRawPeer("198.51.100.10", a)
+	p.readUntil("the handshake after the silent ones went", isEvent[peer.HandshakeCompleted])
+}
+
+// Closing the engine does not wait for an incoming connection's handshake
+// to time out.
+func TestCloseDoesNotWaitForHandshakes(t *testing.T) {
+	w := buildWorld(t)
+	a := w.addNode("198.51.100.1")
+	a.start()
+	w.openRaw("198.51.100.9", a)
+	time.Sleep(50 * time.Millisecond)
+	begin := time.Now()
+	a.close()
+	if took := time.Since(begin); took > 5*time.Second {
+		t.Fatalf("Close took %v", took)
+	}
+}
+
+// Each connection runs a reader and a writer, and both end when it closes.
+func TestConnectionGoroutinesExit(t *testing.T) {
+	w := buildWorld(t)
+	a := w.addNode("198.51.100.1")
+	a.start()
+	baseline := runtime.NumGoroutine()
+	var peers []*rawPeer
+	for i := range 20 {
+		p := w.openRawPeer(fmt.Sprintf("198.51.100.%d", 100+i), a)
+		p.readUntil("the handshake", isEvent[peer.HandshakeCompleted])
+		peers = append(peers, p)
+	}
+	if extra := runtime.NumGoroutine() - baseline; extra > 2*len(peers) {
+		t.Fatalf("%d goroutines for %d connections", extra, len(peers))
+	}
+	for _, p := range peers {
+		p.conn.Close()
+	}
+	w.waitFor("the connection goroutines to end", func() bool {
+		return runtime.NumGoroutine() <= baseline
+	})
 }
