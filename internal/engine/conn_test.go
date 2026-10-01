@@ -38,7 +38,9 @@ type scriptedConn struct {
 	net      net.Conn
 	session  *peer.Session
 	received []wire.Packet
-	events   []peer.Event
+	// receivedAt is when each packet in received arrived, on the fake clock.
+	receivedAt []time.Time
+	events     []peer.Event
 }
 
 func (w *world) addScriptedPeer(ip string, f testFile) *scriptedPeer {
@@ -131,6 +133,7 @@ func (p *scriptedPeer) run(netConn net.Conn, session *peer.Session, first peer.O
 			}
 			p.mu.Lock()
 			c.received = append(c.received, packet)
+			c.receivedAt = append(c.receivedAt, p.w.clock.Now())
 			p.perform(c, session.OnPacket(packet, p.shareByHash, p.w.clock.Now()))
 			p.mu.Unlock()
 		}

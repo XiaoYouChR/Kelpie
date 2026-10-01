@@ -13,17 +13,25 @@ import (
 // slotAsks lists the files the peer was asked a slot for, over all its
 // connections.
 func (p *scriptedPeer) slotAsks() []wire.Hash {
+	files, _ := p.loadSlotAsks()
+	return files
+}
+
+// loadSlotAsks lists the slot asks with the fake-clock time each arrived.
+func (p *scriptedPeer) loadSlotAsks() ([]wire.Hash, []time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var files []wire.Hash
+	var times []time.Time
 	for _, c := range p.conns {
-		for _, packet := range c.received {
+		for i, packet := range c.received {
 			if ask, ok := packet.(client.StartUploadRequest); ok {
 				files = append(files, ask.Hash)
+				times = append(times, c.receivedAt[i])
 			}
 		}
 	}
-	return files
+	return files, times
 }
 
 func (p *scriptedPeer) connCount() int {
@@ -65,8 +73,12 @@ func TestSharedSourceIsAskedForOneFile(t *testing.T) {
 	if got := p.slotAsks()[1]; got != second.hash {
 		t.Fatalf("second ask for %v, want the second file", got)
 	}
-	if at := w.clock.Now(); at.Before(asked.Add(fileReaskTime)) {
-		t.Fatalf("second file asked %v after the first, before the reask was due", at.Sub(asked))
+	// Arrival lags sending by whatever the fake clock advanced while the
+	// packet was in flight, so allow a second of it; asking early would be
+	// off by minutes, not by steps.
+	_, at := p.loadSlotAsks()
+	if gap := at[1].Sub(at[0]); gap < fileReaskTime-time.Second {
+		t.Fatalf("second file asked %v after the first, before the reask was due", gap)
 	}
 }
 
