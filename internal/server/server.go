@@ -201,7 +201,6 @@ type Server struct {
 	// servers that obfuscate, then all of them plain.
 	isPlainPass bool
 	clientID    uint32
-	tcpFlags    uint32
 	lastSent    time.Time
 	publicIP    netip.Addr
 
@@ -459,7 +458,7 @@ func (s *Server) onIDChange(sender *listed, p packet.IDChange, now time.Time, ou
 		s.nextSourceFrame = now
 		s.nextOffer = now
 	}
-	s.clientID, s.tcpFlags = p.ClientID, p.Flags
+	s.clientID = p.ClientID
 	out.Events = append(out.Events, IDChanged{Server: s.current.Endpoint, ClientID: p.ClientID})
 	s.runSession(now, out)
 }
@@ -626,7 +625,7 @@ func (s *Server) runSourceRequests(now time.Time, out *Output) {
 	slices.SortStableFunc(due, func(a, b Wanted) int { return s.askedAt[a.File].Compare(s.askedAt[b.File]) })
 	for _, w := range due[:min(len(due), sourceFilesPerFrame)] {
 		request := packet.GetSources{Hash: w.File, Size: w.Size}
-		if s.tcpFlags&packet.FlagTCPObfuscation != 0 {
+		if s.current.tcpFlags&packet.FlagTCPObfuscation != 0 {
 			out.Send = append(out.Send, packet.GetSourcesObfu(request))
 		} else {
 			out.Send = append(out.Send, request)
@@ -670,9 +669,9 @@ func (s *Server) runOffer(now time.Time, out *Output) {
 func (s *Server) toOffered(w Wanted) packet.OfferedFile {
 	f := packet.OfferedFile{Hash: w.File}
 	switch {
-	case s.tcpFlags&packet.FlagCompression != 0 && w.IsComplete:
+	case s.current.tcpFlags&packet.FlagCompression != 0 && w.IsComplete:
 		f.ClientID, f.Port = packet.CompleteID, packet.CompletePort
-	case s.tcpFlags&packet.FlagCompression != 0:
+	case s.current.tcpFlags&packet.FlagCompression != 0:
 		f.ClientID, f.Port = packet.IncompleteID, packet.IncompletePort
 	case !wire.IsLowID(s.clientID):
 		f.ClientID, f.Port = s.clientID, s.config.Port
@@ -688,5 +687,5 @@ func (s *Server) toOffered(w Wanted) packet.OfferedFile {
 }
 
 func (s *Server) canTCP(size uint64) bool {
-	return size <= largeFileSize || s.tcpFlags&packet.FlagLargeFiles != 0
+	return size <= largeFileSize || s.current.tcpFlags&packet.FlagLargeFiles != 0
 }
