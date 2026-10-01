@@ -76,6 +76,11 @@ type SlotGranted struct{ File wire.Hash }
 // DOWNLOADTIMEOUT. Every block in flight for File is dropped.
 type SlotRevoked struct{ File wire.Hash }
 
+// NoNeededParts: the peer has no part of File we still need, or its slot
+// gave nothing to request, so no slot is asked for or kept (aMule
+// DS_NONEEDEDPARTS).
+type NoNeededParts struct{ File wire.Hash }
+
 // BlocksWanted asks the engine to Request up to Count blocks of File.
 type BlocksWanted struct {
 	File  wire.Hash
@@ -125,6 +130,7 @@ func (FileRejected) isEvent()       {}
 func (Queued) isEvent()             {}
 func (SlotGranted) isEvent()        {}
 func (SlotRevoked) isEvent()        {}
+func (NoNeededParts) isEvent()      {}
 func (BlocksWanted) isEvent()       {}
 func (BlockReceived) isEvent()      {}
 func (UploadRequested) isEvent()    {}

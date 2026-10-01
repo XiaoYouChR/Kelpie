@@ -127,6 +127,7 @@ func (s *Session) Request(file wire.Hash, blocks []piece.Block) Output {
 	if len(blocks) == 0 && len(d.inFlight) == 0 {
 		out.send(client.CancelTransfer{})
 		s.stopSlot(&out)
+		out.add(NoNeededParts{File: file})
 		return out
 	}
 	for _, b := range blocks {
@@ -272,7 +273,7 @@ func (s *Session) onNoFile(file wire.Hash, out *Output) {
 // runStarted moves the started file on as far as what we know allows: ask for
 // a slot, or once granted, ask the engine for blocks. A peer with no part we
 // still need is not asked for a slot (aMule DS_NONEEDEDPARTS,
-// DownloadClient.cpp:459-466); the transfer keeps it as a queued source.
+// DownloadClient.cpp:459-466).
 func (s *Session) runStarted(out *Output) {
 	if !s.down.isStarted {
 		return
@@ -287,6 +288,8 @@ func (s *Session) runStarted(out *Output) {
 	case !s.down.isStartSent && hasNeededPart(d):
 		s.down.isStartSent = true
 		out.send(client.StartUploadRequest{Hash: s.down.started})
+	case !s.down.isStartSent:
+		out.add(NoNeededParts{File: s.down.started})
 	}
 }
 

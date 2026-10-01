@@ -740,3 +740,63 @@ func TestResumeKeepsPartOfBlock(t *testing.T) {
 		t.Fatalf("resumed transfer asked for %v, want the tail after the head first", got)
 	}
 }
+
+// A source with no part we need is reasked only after twice the reask
+// interval and never over UDP (aMule PartFile.cpp:1574-1580).
+func TestNoNeededPartsSourceWaitsTwiceTheReask(t *testing.T) {
+	data := buildData(2 * piece.PartSize)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
+	h.tick(transfer.Tick{ConnectBudget: 1})
+	h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, start))
+	h.transfer.OnPeerParts(1, piece.Set{false, false, false})
+	h.transfer.OnNoNeededParts(1)
+	h.run(h.transfer.OnPeerGone(1, "idle", start.Add(40*time.Second)))
+
+	at := func(d time.Duration) []transfer.Action {
+		return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 1})
+	}
+	if got := at(fileReaskTime); len(got) != 0 {
+		t.Fatalf("source with nothing we need asked at the reask interval: %+v", got)
+	}
+	if got := at(2*fileReaskTime - 10*time.Second); len(got) != 0 {
+		t.Fatalf("source with nothing we need UDP-reasked: %+v", got)
+	}
+	if got := at(2 * fileReaskTime); countActions[transfer.Connect](got) != 1 {
+		t.Fatalf("source with nothing we need not reasked at twice the interval: %+v", got)
+	}
+	h.run(h.transfer.OnPeerConnected(2, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1)}, start.Add(2*fileReaskTime)))
+	h.transfer.OnPeerParts(2, piece.Set{true, false, false})
+	h.run(h.transfer.OnPeerGone(2, "idle", start.Add(2*fileReaskTime)))
+	if got := at(3 * fileReaskTime); countActions[transfer.Connect](got) != 1 {
+		t.Fatalf("source that has parts again not reasked at the normal interval: %+v", got)
+	}
+}
+
+// Near the source cap, sources with nothing we need are dropped one per
+// 40 s (aMule PartFile.cpp:1559-1573).
+func TestNoNeededPartsSourcesArePurgedNearTheCap(t *testing.T) {
+	data := buildData(2 * piece.PartSize)
+	for _, test := range []struct {
+		sources  int
+		wantGone int
+	}{{319, 0}, {321, 2}} {
+		h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+		var found []transfer.Source
+		for i := range test.sources {
+			found = append(found, transfer.Source{Endpoint: endpoint(i + 1)})
+		}
+		h.transfer.OnSourcesFound(found, transfer.ChannelServer, start)
+		for peer := range uint64(3) {
+			h.run(h.transfer.OnPeerConnected(peer+1, transfer.Hello{Endpoint: endpoint(int(peer) + 1)}, start))
+			h.transfer.OnPeerParts(peer+1, piece.Set{false, false, false})
+			h.transfer.OnNoNeededParts(peer + 1)
+			h.run(h.transfer.OnPeerGone(peer+1, "idle", start))
+		}
+		for _, d := range []time.Duration{41 * time.Second, 60 * time.Second, 82 * time.Second} {
+			h.tick(transfer.Tick{Now: start.Add(d)})
+		}
+		if got := test.sources - h.transfer.Progress(start).Peers; got != test.wantGone {
+			t.Errorf("%d sources: %d dropped, want %d", test.sources, got, test.wantGone)
+		}
+	}
+}

@@ -43,6 +43,11 @@ const (
 
 	// maxSources is eMule's MaxSourcesPerFile default.
 	maxSources = 400
+	// noNeededPurgeTime and noNeededPurgeShare: near the source cap, one
+	// source with no part we need is dropped at most every 40 s once the
+	// file has 80% of maxSources (aMule PartFile.cpp:1559-1573).
+	noNeededPurgeTime  = 40 * time.Second
+	noNeededPurgeShare = 0.8
 	// maxSourcesSoft is GetMaxSourcePerFileSoft: 9/10 of maxSources, capped
 	// at MAX_SOURCES_FILE_SOFT (750). Above it no more sources are asked for.
 	maxSourcesSoft = maxSources * 9 / 10
@@ -134,6 +139,9 @@ type source struct {
 	// hasAnswered: the connected source answered our file request with its
 	// part status, so we asked it for a slot.
 	hasAnswered bool
+	// isNoNeeded: its last part status had no part we need (aMule
+	// DS_NONEEDEDPARTS).
+	isNoNeeded bool
 	peer        uint64
 	rank        int
 
@@ -551,12 +559,32 @@ func (t *Transfer) OnTick(tick Tick) []Action {
 	if tick.IsFirewalled {
 		t.sources = slices.DeleteFunc(t.sources, func(s *source) bool { return s.ClientID != 0 && !s.isConnected })
 	}
+	t.purgeNoNeeded(tick.Now)
 	budget := tick.ConnectBudget
 	for _, s := range slices.Clone(t.sources) {
 		actions = append(actions, t.runSource(s, tick, &budget)...)
 	}
 	actions = append(actions, t.requestSources(tick)...)
 	return append(actions, t.requestHashSet()...)
+}
+
+// OnNoNeededParts records that a connected source has no part we still
+// need, or gave a slot with nothing left to request.
+func (t *Transfer) OnNoNeededParts(peer uint64) {
+	if s := t.peers[peer]; t.isDownloading() && s != nil {
+		s.isNoNeeded = true
+	}
+}
+
+func (t *Transfer) purgeNoNeeded(now time.Time) {
+	if float64(len(t.sources)) < maxSources*noNeededPurgeShare || now.Sub(t.lastPurge) <= noNeededPurgeTime {
+		return
+	}
+	i := slices.IndexFunc(t.sources, func(s *source) bool { return s.isNoNeeded && !s.isConnected })
+	if i >= 0 {
+		t.sources = slices.Delete(t.sources, i, i+1)
+		t.lastPurge = now
+	}
 }
 
 func (t *Transfer) runSource(s *source, tick Tick, budget *int) []Action {
@@ -580,11 +608,17 @@ func (t *Transfer) runSource(s *source, tick Tick, budget *int) []Action {
 		return nil
 	}
 
+	// aMule doubles the reask of a source with nothing we need and never
+	// UDP-reasks it (PartFile.cpp:1574-1580).
+	reaskTime := fileReaskTime
+	if s.isNoNeeded {
+		reaskTime *= 2
+	}
 	untilReask := time.Duration(0)
 	if !s.lastAsked.IsZero() {
-		untilReask = max(0, fileReaskTime-now.Sub(s.lastAsked))
+		untilReask = max(0, reaskTime-now.Sub(s.lastAsked))
 	}
-	if s.state == stateQueued && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s, tick) {
+	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s, tick) {
 		s.isUDPPending = true
 		s.udpReasks++
 		return []Action{ReaskUDP{Endpoint: netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort)}}

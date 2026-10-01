@@ -491,6 +491,10 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		if r := e.downloadByHash(ev.File); r != nil {
 			e.runTransferActions(r, r.transfer.OnQueued(c.id, 0, now))
 		}
+	case peer.NoNeededParts:
+		if r := e.downloadByHash(ev.File); r != nil {
+			r.transfer.OnNoNeededParts(c.id)
+		}
 	case peer.BlocksWanted:
 		if r := e.downloadByHash(ev.File); r != nil {
 			e.runSession(c, c.session.Request(ev.File, r.transfer.Request(c.id, ev.Count)))

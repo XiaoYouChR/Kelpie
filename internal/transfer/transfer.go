@@ -106,6 +106,7 @@ type Transfer struct {
 	nextKadAsk      time.Time
 	kadSearches     int
 	lastExchangeAsk time.Time
+	lastPurge       time.Time
 }
 
 // Build creates the Transfer for options.File. Persisted state that does not
@@ -256,6 +257,7 @@ func (t *Transfer) OnPeerParts(peer uint64, parts piece.Set) {
 	s := t.peers[peer]
 	if t.isDownloading() && s != nil {
 		s.hasAnswered = true
+		s.isNoNeeded = false
 		t.picker.OnPeerParts(peer, parts)
 	}
 }
