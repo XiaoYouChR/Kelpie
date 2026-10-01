@@ -18,8 +18,26 @@ func (b Block) Part() int {
 	return int(b.Begin / PartSize)
 }
 
-func (b Block) index() int {
+// Index is the block's place within its part.
+func (b Block) Index() int {
 	return int(b.Begin % PartSize / BlockSize)
+}
+
+// PartRange is the bytes of part in a file of size bytes.
+func PartRange(size int64, part int) Block {
+	begin := int64(part) * PartSize
+	return Block{Begin: begin, End: min(begin+PartSize, size)}
+}
+
+// BlockAt is the whole block holding offset in a file of size bytes.
+func BlockAt(size, offset int64) Block {
+	return blockOf(size, int(offset/PartSize), int(offset%PartSize/BlockSize))
+}
+
+func blockOf(size int64, part, index int) Block {
+	partRange := PartRange(size, part)
+	begin := partRange.Begin + int64(index)*BlockSize
+	return Block{Begin: begin, End: min(begin+BlockSize, partRange.End)}
 }
 
 // ResumeData is the part of a Picker that survives a restart, as aMule's
@@ -76,8 +94,8 @@ func BuildPicker[P comparable](size int64, resume ResumeData, random *rand.Rand)
 		p.parts[part].isVerified = true
 	}
 	for _, block := range resume.WrittenBlocks {
-		if block.Begin < 0 || block.Begin >= size || p.BlockAt(block.Begin).Begin != block.Begin ||
-			block.End <= block.Begin || block.End > p.BlockAt(block.Begin).End {
+		if block.Begin < 0 || block.Begin >= size || BlockAt(p.size, block.Begin).Begin != block.Begin ||
+			block.End <= block.Begin || block.End > BlockAt(p.size, block.Begin).End {
 			return nil, fmt.Errorf("resume data: [%d, %d) is not the start of a block of this file", block.Begin, block.End)
 		}
 		if !p.parts[block.Part()].isVerified {
@@ -99,7 +117,7 @@ func (p *Picker[P]) ToResumeData() ResumeData {
 		// received prefix is on disk only once every write of it is done.
 		for j, state := range part.blocks {
 			if state.written > 0 && state.written == state.received {
-				block := p.blockOf(i, j)
+				block := blockOf(p.size, i, j)
 				resume.WrittenBlocks = append(resume.WrittenBlocks, Block{Begin: block.Begin, End: block.Begin + state.written})
 			}
 		}
@@ -107,23 +125,12 @@ func (p *Picker[P]) ToResumeData() ResumeData {
 	return resume
 }
 
-func (p *Picker[P]) BlockAt(offset int64) Block {
-	part := int(offset / PartSize)
-	return p.blockOf(part, int(offset%PartSize/BlockSize))
-}
-
-func (p *Picker[P]) blockOf(part, index int) Block {
-	partBegin := int64(part) * PartSize
-	begin := partBegin + int64(index)*BlockSize
-	return Block{Begin: begin, End: min(begin+BlockSize, partBegin+partLength(p.size, part))}
-}
-
 func (p *Picker[P]) blockState(b Block) *blockState[P] {
 	part := &p.parts[b.Part()]
 	if part.blocks == nil {
 		part.blocks = make([]blockState[P], BlockCount(p.size, b.Part()))
 	}
-	return &part.blocks[b.index()]
+	return &part.blocks[b.Index()]
 }
 
 func (p *Picker[P]) VerifiedParts() Set {
@@ -156,7 +163,7 @@ func (p *Picker[P]) isWritten(part int) bool {
 		return false
 	}
 	for j, block := range state.blocks {
-		if b := p.blockOf(part, j); block.written != b.End-b.Begin {
+		if b := blockOf(p.size, part, j); block.written != b.End-b.Begin {
 			return false
 		}
 	}
@@ -227,7 +234,7 @@ func (p *Picker[P]) Request(peer P, n int) []Block {
 			if len(picked) == n {
 				return picked
 			}
-			b := p.blockOf(part, index)
+			b := blockOf(p.size, part, index)
 			state := p.blockState(b)
 			if state.received < b.End-b.Begin && len(state.requesters) == 0 {
 				state.requesters = append(state.requesters, peer)
@@ -243,7 +250,7 @@ func (p *Picker[P]) Request(peer P, n int) []Block {
 			if len(picked) == n {
 				return picked
 			}
-			b := p.blockOf(part, index)
+			b := blockOf(p.size, part, index)
 			state := p.blockState(b)
 			if state.received < b.End-b.Begin && len(state.requesters) < maxRequesters && !slices.Contains(state.requesters, peer) {
 				state.requesters = append(state.requesters, peer)
@@ -290,7 +297,7 @@ func (p *Picker[P]) hasUnrequestedBlock() bool {
 			return true
 		}
 		for j, block := range part.blocks {
-			if b := p.blockOf(i, j); block.received < b.End-b.Begin && len(block.requesters) == 0 {
+			if b := blockOf(p.size, i, j); block.received < b.End-b.Begin && len(block.requesters) == 0 {
 				return true
 			}
 		}
@@ -307,7 +314,7 @@ func (p *Picker[P]) OnBlockReceived(peer P, b Block) (Block, bool) {
 	if p.parts[b.Part()].isVerified {
 		return Block{}, false
 	}
-	whole := p.BlockAt(b.Begin)
+	whole := BlockAt(p.size, b.Begin)
 	state := p.blockState(b)
 	next := whole.Begin + state.received
 	if b.Begin > next || b.End <= next {

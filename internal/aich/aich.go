@@ -76,7 +76,8 @@ func (t *Tree) Root() wire.AICHHash { return t.root }
 
 func (t *Tree) buildHash(n node) wire.AICHHash {
 	return buildNodeHash(n, func(leaf node) wire.AICHHash {
-		return t.leaves[int(leaf.begin/piece.PartSize)*blocksPerPart+int(leaf.begin%piece.PartSize/piece.BlockSize)]
+		block := piece.Block{Begin: leaf.begin}
+		return t.leaves[block.Part()*blocksPerPart+block.Index()]
 	})
 }
 
@@ -178,11 +179,11 @@ func (n node) leaves() []node {
 // buildPath walks from the root down to part and returns the siblings
 // passed on the way, top first, and the part's node.
 func buildPath(size int64, part int) ([]node, node) {
-	begin := int64(part) * piece.PartSize
-	partSize := min(piece.PartSize, size-begin)
+	partRange := piece.PartRange(size, part)
+	begin := partRange.Begin
 	n := buildRoot(size)
 	var siblings []node
-	for n.begin != begin || n.size != partSize {
+	for n.begin != begin || n.size != partRange.End-begin {
 		left, right := n.children()
 		if begin < right.begin {
 			siblings = append(siblings, right)

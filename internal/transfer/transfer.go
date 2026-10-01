@@ -84,7 +84,7 @@ type Transfer struct {
 	// next OnTick.
 	pending []Action
 	// unhashedParts are written parts waiting for the hash set.
-	unhashedParts     []int
+	unhashedParts []int
 	// hashSetPeer is the peer asked for the hash set; 0 when none is.
 	hashSetPeer       uint64
 	hashSetAskedPeers map[uint64]bool
@@ -213,8 +213,8 @@ func (t *Transfer) ToState() store.Transfer {
 		Created:       t.created,
 	}
 	for _, block := range resume.WrittenBlocks {
-		part, index := block.Part(), int(block.Begin%piece.PartSize/piece.BlockSize)
-		if block == t.picker.BlockAt(block.Begin) {
+		part, index := block.Part(), block.Index()
+		if block == piece.BlockAt(t.file.Size, block.Begin) {
 			state.WrittenBlocks = append(state.WrittenBlocks, store.Block{Part: part, Index: index})
 		} else {
 			state.PartialBlocks = append(state.PartialBlocks, store.PartialBlock{Part: part, Index: index, Size: block.End - block.Begin})
@@ -307,8 +307,8 @@ func (t *Transfer) requestPartHash(part int) []Action {
 		t.unhashedParts = append(t.unhashedParts, part)
 		return nil
 	}
-	begin := int64(part) * piece.PartSize
-	return []Action{HashPart{Part: part, Begin: begin, End: min(begin+piece.PartSize, t.file.Size)}}
+	partRange := piece.PartRange(t.file.Size, part)
+	return []Action{HashPart{Part: part, Begin: partRange.Begin, End: partRange.End}}
 }
 
 // expectedHash follows piece.HashCount: a file below PartSize is checked

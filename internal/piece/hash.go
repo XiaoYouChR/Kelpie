@@ -20,7 +20,8 @@ func BlockCount(size int64, part int) int {
 }
 
 func partLength(size int64, part int) int64 {
-	return min(PartSize, size-int64(part)*PartSize)
+	partRange := PartRange(size, part)
+	return partRange.End - partRange.Begin
 }
 
 // HashCount is the length of a file's hash set. Files below PartSize have none:

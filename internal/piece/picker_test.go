@@ -241,7 +241,7 @@ func TestResumeDataRestoresProgress(t *testing.T) {
 
 	restored.OnPeerParts("a", piece.BuildFullSet(3))
 	got := restored.Request("a", 200)
-	if len(got) != 52 || slices.Contains(partsOf(got), 1) || slices.Contains(got, picker.BlockAt(0)) {
+	if len(got) != 52 || slices.Contains(partsOf(got), 1) || slices.Contains(got, piece.BlockAt(size, 0)) {
 		t.Fatalf("restored picker requested %d blocks %v, want the 52 unwritten blocks of part 0", len(got), partsOf(got))
 	}
 }
