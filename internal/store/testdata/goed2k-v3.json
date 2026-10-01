@@ -19,8 +19,10 @@
         "pieces": [true, false, false],
         "downloaded_blocks": [
           {"PieceIndex": 1, "PieceBlock": 0},
+          {"PieceIndex": 1, "PieceBlock": 1},
+          {"PieceIndex": 1, "PieceBlock": 2},
           {"PieceIndex": 1, "PieceBlock": 3},
-          {"PieceIndex": 2, "PieceBlock": 52}
+          {"PieceIndex": 2, "PieceBlock": 22}
         ],
         "peers": ["195.32.118.142:4662", "81.2.3.4:4672"]
       }

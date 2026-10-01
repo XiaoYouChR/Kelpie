@@ -83,7 +83,7 @@ func TestLoadGoed2k(t *testing.T) {
 					mustHash(t, "AABBCCDDEEFF00112233445566778899"),
 				},
 				VerifiedParts: []bool{true, false, false},
-				WrittenBlocks: []Block{{Part: 1, Index: 0}, {Part: 1, Index: 3}, {Part: 2, Index: 52}},
+				WrittenBlocks: []Block{{Part: 1, Index: 0}, {Part: 1, Index: 1}, {Part: 1, Index: 2}, {Part: 1, Index: 3}},
 				Created:       time.UnixMilli(1787328879185).UTC(),
 			},
 			mustHash(t, "31D6CFE0D16AE931B73C59D7E0C089C0"): {

@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
@@ -80,11 +81,41 @@ func parseGoed2k(raw []byte) (State, error) {
 				transfer.PartHashes = append(transfer.PartHashes, wire.Hash(part))
 			}
 			transfer.VerifiedParts = resume.Pieces
+			written := map[int]map[int]bool{}
 			for _, block := range resume.DownloadedBlocks {
-				transfer.WrittenBlocks = append(transfer.WrittenBlocks, Block{Part: block.PieceIndex, Index: block.PieceBlock})
+				if written[block.PieceIndex] == nil {
+					written[block.PieceIndex] = map[int]bool{}
+				}
+				written[block.PieceIndex][block.PieceBlock] = true
 			}
+			transfer.WrittenBlocks = toWrittenBlocks(entry.Size, written)
 		}
 		state.Transfers[wire.Hash(entry.Hash)] = transfer
 	}
 	return state, nil
+}
+
+// goed2k wrote 190 KiB blocks; Kelpie counts eMule's 180 KiB blocks. A Kelpie
+// block counts as written only when goed2k blocks cover every byte of it.
+const goed2kBlockSize = 190 * 1024
+
+func toWrittenBlocks(size int64, written map[int]map[int]bool) []Block {
+	var blocks []Block
+	for part := 0; part < piece.PartCount(size); part++ {
+		if len(written[part]) == 0 {
+			continue
+		}
+		partSize := min(piece.PartSize, size-int64(part)*piece.PartSize)
+		for begin := int64(0); begin < partSize; begin += piece.BlockSize {
+			end := min(begin+piece.BlockSize, partSize)
+			isCovered := true
+			for index := begin / goed2kBlockSize; index <= (end-1)/goed2kBlockSize; index++ {
+				isCovered = isCovered && written[part][int(index)]
+			}
+			if isCovered {
+				blocks = append(blocks, Block{Part: part, Index: int(begin / piece.BlockSize)})
+			}
+		}
+	}
+	return blocks
 }
