@@ -135,6 +135,7 @@ func (s *Session) setHello(h client.Hello) {
 		ExtendedRequests:           h.Misc1.ExtendedRequestsVersion,
 		HasMultiPacket:             h.Misc1.HasMultiPacket,
 		HasExtMultiPacket:          h.Misc2.HasExtMultiPacket,
+		HasFileIdentifiers:         h.Misc2.HasFileIdentifiers,
 		HasLargeFiles:              h.Misc2.HasLargeFiles,
 		HasSourceExchange2:         h.Misc2.HasSourceExchange2,
 		HasExtendedSources:         h.ModMisc&client.ModMiscExtendedSources != 0,

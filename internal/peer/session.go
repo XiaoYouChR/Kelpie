@@ -68,6 +68,7 @@ type Capabilities struct {
 	ExtendedRequests           byte
 	HasMultiPacket             bool
 	HasExtMultiPacket          bool
+	HasFileIdentifiers         bool
 	HasLargeFiles              bool
 	HasSourceExchange2         bool
 	HasExtendedSources         bool
@@ -155,7 +156,9 @@ func (s *Session) OnPacket(p wire.Packet, shares Shares, now time.Time) Output {
 	case client.FileStatus:
 		s.onFileStatus(p, &out)
 	case client.MultiPacketAnswer:
-		s.onMultiPacketAnswer(p, &out)
+		s.onMultiPacketAnswer(p.Answers, &out)
+	case client.MultiPacketAnswerExt2:
+		s.onMultiPacketAnswerExt2(p, &out)
 	case client.NoFile:
 		s.onNoFile(p.Hash, &out)
 	case client.HashSetAnswer:
@@ -186,11 +189,15 @@ func (s *Session) OnPacket(p wire.Packet, shares Shares, now time.Time) Output {
 	case client.SetRequestFileID:
 		s.onStatusRequest(p.Hash, shares, &out)
 	case client.MultiPacket:
-		s.onMultiPacket(p.Hash, 0, p.Requests, shares, now, &out)
+		s.onMultiPacket(client.FileIdentifier{Hash: p.Hash}, p.Requests, false, shares, now, &out)
 	case client.MultiPacketExt:
-		s.onMultiPacket(p.Hash, p.Size, p.Requests, shares, now, &out)
+		s.onMultiPacket(client.FileIdentifier{Hash: p.Hash, Size: p.Size}, p.Requests, false, shares, now, &out)
+	case client.MultiPacketExt2:
+		s.onMultiPacket(p.File, p.Requests, true, shares, now, &out)
 	case client.HashSetRequest:
 		s.onHashSetRequest(p.Hash, shares, &out)
+	case client.HashSetRequest2:
+		s.onHashSetRequest2(p, shares, &out)
 	case client.StartUploadRequest:
 		s.onUploadRequest(p.Hash, shares, &out)
 	case client.RequestParts:

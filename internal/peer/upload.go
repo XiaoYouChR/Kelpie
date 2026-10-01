@@ -166,34 +166,49 @@ func toStatus(share Share) wire.Bitfield {
 	return toBitfield(share.Parts, share.Size)
 }
 
-// onMultiPacket answers the bundled requests in one OP_MULTIPACKETANSWER.
-// size is zero for OP_MULTIPACKET, which does not carry it.
-func (s *Session) onMultiPacket(file wire.Hash, size uint64, requests []wire.Packet, shares Shares, now time.Time, out *Output) {
+// onMultiPacket answers the bundled requests in one OP_MULTIPACKETANSWER,
+// or OP_MULTIPACKETANSWER_EXT2 led by our identifier when isExt2
+// (ListenSocket.cpp:1072-1297). OP_MULTIPACKET carries no size.
+func (s *Session) onMultiPacket(id client.FileIdentifier, requests []wire.Packet, isExt2 bool, shares Shares, now time.Time, out *Output) {
+	file := id.Hash
 	share, ok := shares(file)
-	if !ok || size != 0 && uint64(share.Size) != size {
+	if !ok || !matchFile(id, share) {
 		out.send(client.NoFile{Hash: file})
 		return
 	}
 	s.up.file = file
-	answer := client.MultiPacketAnswer{Hash: file}
+	var answers []wire.Packet
 	var sourcesRequest *client.RequestSources2
 	for _, request := range requests {
 		switch r := request.(type) {
 		case client.FileRequest:
 			s.setRequestedParts(r, share)
-			answer.Answers = append(answer.Answers, client.FileNameAnswer{Hash: file, Name: share.Name})
+			answers = append(answers, client.FileNameAnswer{Hash: file, Name: share.Name})
 		case client.SetRequestFileID:
-			answer.Answers = append(answer.Answers, client.FileStatus{Hash: file, Parts: toStatus(share)})
+			answers = append(answers, client.FileStatus{Hash: file, Parts: toStatus(share)})
 		case client.RequestSources2:
 			sourcesRequest = &r
 		case client.AICHFileHashRequest:
+			// eMule ignores it once the root travels in the identifier
+			// (ListenSocket.cpp:1206).
+			if isExt2 || s.caps.HasFileIdentifiers {
+				continue
+			}
 			if root, ok := s.onRootRequest(file, share, out); ok {
-				answer.Answers = append(answer.Answers, root)
+				answers = append(answers, root)
 			}
 		}
 	}
-	if len(answer.Answers) > 0 {
-		out.send(answer)
+	switch {
+	case isExt2:
+		if share.Tree == nil {
+			s.requestTree(file, share, out)
+		}
+		if len(answers) > 0 {
+			out.send(client.MultiPacketAnswerExt2{File: toIdentifier(file, share), Answers: answers})
+		}
+	case len(answers) > 0:
+		out.send(client.MultiPacketAnswer{Hash: file, Answers: answers})
 	}
 	if sourcesRequest != nil {
 		s.onSourcesRequest(*sourcesRequest, shares, now, out)
@@ -204,6 +219,41 @@ func (s *Session) onHashSetRequest(file wire.Hash, shares Shares, out *Output) {
 	if share, ok := shares(file); ok && len(share.PartHashes) > 0 {
 		out.send(client.HashSetAnswer{Hash: file, Parts: share.PartHashes})
 	}
+}
+
+// onHashSetRequest2 answers with the MD4 part hashes only; eMule closes on
+// a file it does not share (UploadClient.cpp:572-605).
+func (s *Session) onHashSetRequest2(p client.HashSetRequest2, shares Shares, out *Output) {
+	share, ok := shares(p.File.Hash)
+	if !ok || !matchFile(p.File, share) {
+		out.Close = CloseProtocol
+		return
+	}
+	if !p.IsMD4Wanted && !p.IsAICHWanted {
+		return
+	}
+	answer := client.HashSetAnswer2{File: toIdentifier(p.File.Hash, share)}
+	if p.IsMD4Wanted {
+		answer.Parts = share.PartHashes
+	}
+	out.send(answer)
+}
+
+// matchFile is eMule's CompareRelaxed (FileIdentifier.cpp:75-82): size and
+// root count only when both sides know them.
+func matchFile(id client.FileIdentifier, share Share) bool {
+	if id.Size != 0 && id.Size != uint64(share.Size) {
+		return false
+	}
+	return !id.HasRoot || share.Tree == nil || share.Tree.Root() == id.Root
+}
+
+func toIdentifier(file wire.Hash, share Share) client.FileIdentifier {
+	id := client.FileIdentifier{Hash: file, Size: uint64(share.Size)}
+	if share.Tree != nil {
+		id.HasRoot, id.Root = true, share.Tree.Root()
+	}
+	return id
 }
 
 func (s *Session) onUploadRequest(file wire.Hash, shares Shares, out *Output) {
