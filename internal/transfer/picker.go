@@ -1,44 +1,16 @@
-package piece
+package transfer
 
 import (
 	"fmt"
 	"math/rand/v2"
 	"slices"
 	"sort"
+
+	"github.com/XiaoYouChR/Kelpie/internal/piece"
 )
 
-// Block is the byte range [Begin, End) of one block inside one part, or of
-// the part of a block that is still missing.
-type Block struct {
-	Begin int64
-	End   int64
-}
-
-func (b Block) Part() int {
-	return int(b.Begin / PartSize)
-}
-
-// Index is the block's place within its part.
-func (b Block) Index() int {
-	return int(b.Begin % PartSize / BlockSize)
-}
-
-// PartRange is the bytes of part in a file of size bytes.
-func PartRange(size int64, part int) Block {
-	begin := int64(part) * PartSize
-	return Block{Begin: begin, End: min(begin+PartSize, size)}
-}
-
-func blockAt(size, offset int64) Block {
-	return BlockOf(size, int(offset/PartSize), int(offset%PartSize/BlockSize))
-}
-
-// BlockOf is block index of part in a file of size bytes. An index past the
-// part's last block gives an empty or reversed range.
-func BlockOf(size int64, part, index int) Block {
-	partRange := PartRange(size, part)
-	begin := partRange.Begin + int64(index)*BlockSize
-	return Block{Begin: begin, End: min(begin+BlockSize, partRange.End)}
+func blockAt(size, offset int64) piece.Block {
+	return piece.BlockOf(size, int(offset/piece.PartSize), int(offset%piece.PartSize/piece.BlockSize))
 }
 
 // maxRequesters bounds endgame duplication: one original request plus one copy.
@@ -48,41 +20,41 @@ const maxRequesters = 2
 // (DownloadClient.cpp:835-848), so a block cut off when a slot ends is
 // finished by asking only for its missing tail. Data arrives in order, so
 // what is received is always a prefix.
-type blockState[P comparable] struct {
+type blockState struct {
 	received   int64
 	written    int64
-	requesters []P
-	senders    []P
+	requesters []uint64
+	senders    []uint64
 }
 
-type partState[P comparable] struct {
+type partState struct {
 	isVerified bool
 	// blocks is nil until the part is first touched and again after it is
 	// verified or reset.
-	blocks []blockState[P]
+	blocks []blockState
 }
 
-// Picker decides which blocks of one file to request from which peer. P
-// identifies a peer; the caller chooses its type.
-type Picker[P comparable] struct {
+// picker decides which blocks of the file to request from which peer, named
+// by its connection id.
+type picker struct {
 	size         int64
 	random       *rand.Rand
-	parts        []partState[P]
+	parts        []partState
 	availability []int
-	peerParts    map[P]Set
+	peerParts    map[uint64]piece.Set
 }
 
-// BuildPicker restores the parts verified and the blocks written before a
+// buildPicker restores the parts verified and the blocks written before a
 // restart, as aMule's .part.met keeps its gap list. A written block is a
 // whole block or, for a block cut off when a slot ended, its leading piece
 // [Begin, Begin+n).
-func BuildPicker[P comparable](size int64, verified Set, written []Block, random *rand.Rand) (*Picker[P], error) {
-	p := &Picker[P]{
+func buildPicker(size int64, verified piece.Set, written []piece.Block, random *rand.Rand) (*picker, error) {
+	p := &picker{
 		size:         size,
 		random:       random,
-		parts:        make([]partState[P], PartCount(size)),
-		availability: make([]int, PartCount(size)),
-		peerParts:    map[P]Set{},
+		parts:        make([]partState, piece.PartCount(size)),
+		availability: make([]int, piece.PartCount(size)),
+		peerParts:    map[uint64]piece.Set{},
 	}
 	for part, isVerified := range verified {
 		if !isVerified {
@@ -107,42 +79,42 @@ func BuildPicker[P comparable](size int64, verified Set, written []Block, random
 	return p, nil
 }
 
-// WrittenBlocks lists what BuildPicker takes back after a restart: the
+// writtenBlocks lists what buildPicker takes back after a restart: the
 // written bytes of parts not yet verified.
-func (p *Picker[P]) WrittenBlocks() []Block {
-	var written []Block
+func (p *picker) writtenBlocks() []piece.Block {
+	var written []piece.Block
 	for i, part := range p.parts {
 		// Disk workers may finish writes out of order, so a block's
 		// received prefix is on disk only once every write of it is done.
 		for j, state := range part.blocks {
 			if state.written > 0 && state.written == state.received {
-				block := BlockOf(p.size, i, j)
-				written = append(written, Block{Begin: block.Begin, End: block.Begin + state.written})
+				block := piece.BlockOf(p.size, i, j)
+				written = append(written, piece.Block{Begin: block.Begin, End: block.Begin + state.written})
 			}
 		}
 	}
 	return written
 }
 
-func (p *Picker[P]) blockState(b Block) *blockState[P] {
+func (p *picker) blockState(b piece.Block) *blockState {
 	part := &p.parts[b.Part()]
 	if part.blocks == nil {
-		part.blocks = make([]blockState[P], BlockCount(p.size, b.Part()))
+		part.blocks = make([]blockState, piece.BlockCount(p.size, b.Part()))
 	}
 	return &part.blocks[b.Index()]
 }
 
-func (p *Picker[P]) VerifiedParts() Set {
-	set := make(Set, len(p.parts))
+func (p *picker) verifiedParts() piece.Set {
+	set := make(piece.Set, len(p.parts))
 	for i, part := range p.parts {
 		set[i] = part.isVerified
 	}
 	return set
 }
 
-// WrittenParts lists parts whose blocks are all on disk but whose hash has not
+// writtenParts lists parts whose blocks are all on disk but whose hash has not
 // been checked yet, as happens after a restart.
-func (p *Picker[P]) WrittenParts() []int {
+func (p *picker) writtenParts() []int {
 	var parts []int
 	for i := range p.parts {
 		if p.isWritten(i) {
@@ -152,24 +124,25 @@ func (p *Picker[P]) WrittenParts() []int {
 	return parts
 }
 
-func (p *Picker[P]) isWritten(part int) bool {
+func (p *picker) isWritten(part int) bool {
 	state := p.parts[part]
 	if state.isVerified || state.blocks == nil {
 		return false
 	}
 	for j, block := range state.blocks {
-		if b := BlockOf(p.size, part, j); block.written != b.End-b.Begin {
+		if b := piece.BlockOf(p.size, part, j); block.written != b.End-b.Begin {
 			return false
 		}
 	}
 	return true
 }
 
-func (p *Picker[P]) WrittenSize() int64 {
+func (p *picker) writtenSize() int64 {
 	var written int64
 	for i, part := range p.parts {
 		if part.isVerified {
-			written += partLength(p.size, i)
+			partRange := piece.PartRange(p.size, i)
+			written += partRange.End - partRange.Begin
 			continue
 		}
 		for _, block := range part.blocks {
@@ -179,8 +152,8 @@ func (p *Picker[P]) WrittenSize() int64 {
 	return written
 }
 
-// OnPeerParts replaces what the picker knows a peer has.
-func (p *Picker[P]) OnPeerParts(peer P, parts Set) {
+// onPeerParts replaces what the picker knows a peer has.
+func (p *picker) onPeerParts(peer uint64, parts piece.Set) {
 	p.removeAvailability(peer)
 	p.peerParts[peer] = slices.Clone(parts)
 	for i, has := range parts {
@@ -190,13 +163,13 @@ func (p *Picker[P]) OnPeerParts(peer P, parts Set) {
 	}
 }
 
-func (p *Picker[P]) OnPeerGone(peer P) {
-	p.Cancel(peer)
+func (p *picker) onPeerGone(peer uint64) {
+	p.cancel(peer)
 	p.removeAvailability(peer)
 	delete(p.peerParts, peer)
 }
 
-func (p *Picker[P]) removeAvailability(peer P) {
+func (p *picker) removeAvailability(peer uint64) {
 	for i, has := range p.peerParts[peer] {
 		if has {
 			p.availability[i]--
@@ -204,54 +177,54 @@ func (p *Picker[P]) removeAvailability(peer P) {
 	}
 }
 
-// Cancel releases every block the peer was asked for and has not delivered,
+// cancel releases every block the peer was asked for and has not delivered,
 // so other peers can take them.
-func (p *Picker[P]) Cancel(peer P) {
+func (p *picker) cancel(peer uint64) {
 	for i := range p.parts {
 		for j := range p.parts[i].blocks {
 			block := &p.parts[i].blocks[j]
-			block.requesters = slices.DeleteFunc(block.requesters, func(r P) bool { return r == peer })
+			block.requesters = slices.DeleteFunc(block.requesters, func(r uint64) bool { return r == peer })
 		}
 	}
 }
 
-// Request picks up to n blocks to ask the peer for and records them as
+// request picks up to n blocks to ask the peer for and records them as
 // requested; a partly received block is asked for from where it stops. It
 // prefers parts already in progress, then the rarest parts, breaking ties at
 // random. Only when no block is left unrequested anywhere it can be fetched
 // from does it hand out blocks already requested from one other peer
 // (endgame).
-func (p *Picker[P]) Request(peer P, n int) []Block {
+func (p *picker) request(peer uint64, n int) []piece.Block {
 	parts := p.candidateParts(peer)
-	picked := p.addRequests(peer, parts, n, nil, func(requesters []P) bool { return len(requesters) == 0 })
+	picked := p.addRequests(peer, parts, n, nil, func(requesters []uint64) bool { return len(requesters) == 0 })
 	if len(picked) == n || p.hasUnrequestedBlock() {
 		return picked
 	}
-	return p.addRequests(peer, parts, n, picked, func(requesters []P) bool {
+	return p.addRequests(peer, parts, n, picked, func(requesters []uint64) bool {
 		return len(requesters) < maxRequesters && !slices.Contains(requesters, peer)
 	})
 }
 
 // addRequests fills picked up to n with the missing rest of each block of parts
 // whose requesters canJoin accepts, and records peer as requesting it.
-func (p *Picker[P]) addRequests(peer P, parts []int, n int, picked []Block, canJoin func(requesters []P) bool) []Block {
+func (p *picker) addRequests(peer uint64, parts []int, n int, picked []piece.Block, canJoin func(requesters []uint64) bool) []piece.Block {
 	for _, part := range parts {
-		for index := range BlockCount(p.size, part) {
+		for index := range piece.BlockCount(p.size, part) {
 			if len(picked) == n {
 				return picked
 			}
-			b := BlockOf(p.size, part, index)
+			b := piece.BlockOf(p.size, part, index)
 			state := p.blockState(b)
 			if state.received < b.End-b.Begin && canJoin(state.requesters) {
 				state.requesters = append(state.requesters, peer)
-				picked = append(picked, Block{Begin: b.Begin + state.received, End: b.End})
+				picked = append(picked, piece.Block{Begin: b.Begin + state.received, End: b.End})
 			}
 		}
 	}
 	return picked
 }
 
-func (p *Picker[P]) candidateParts(peer P) []int {
+func (p *picker) candidateParts(peer uint64) []int {
 	var parts []int
 	for i, has := range p.peerParts[peer] {
 		if has && !p.parts[i].isVerified {
@@ -269,7 +242,7 @@ func (p *Picker[P]) candidateParts(peer P) []int {
 	return parts
 }
 
-func (p *Picker[P]) isStarted(part int) bool {
+func (p *picker) isStarted(part int) bool {
 	for _, block := range p.parts[part].blocks {
 		if block.received > 0 || len(block.requesters) > 0 {
 			return true
@@ -278,7 +251,7 @@ func (p *Picker[P]) isStarted(part int) bool {
 	return false
 }
 
-func (p *Picker[P]) hasUnrequestedBlock() bool {
+func (p *picker) hasUnrequestedBlock() bool {
 	for i, part := range p.parts {
 		if part.isVerified || p.availability[i] == 0 {
 			continue
@@ -287,7 +260,7 @@ func (p *Picker[P]) hasUnrequestedBlock() bool {
 			return true
 		}
 		for j, block := range part.blocks {
-			if b := BlockOf(p.size, i, j); block.received < b.End-b.Begin && len(block.requesters) == 0 {
+			if b := piece.BlockOf(p.size, i, j); block.received < b.End-b.Begin && len(block.requesters) == 0 {
 				return true
 			}
 		}
@@ -295,20 +268,20 @@ func (p *Picker[P]) hasUnrequestedBlock() bool {
 	return false
 }
 
-// OnBlockReceived records that the data of b, a block or a leading piece of
+// onBlockReceived records that the data of b, a block or a leading piece of
 // what was requested of it, arrived from peer. It returns the bytes of b that
 // are new and should be written; false when another peer delivered them first
 // or the part is already verified. The block stays requested until it is
 // complete or the peer's requests are cancelled.
-func (p *Picker[P]) OnBlockReceived(peer P, b Block) (Block, bool) {
+func (p *picker) onBlockReceived(peer uint64, b piece.Block) (piece.Block, bool) {
 	if p.parts[b.Part()].isVerified {
-		return Block{}, false
+		return piece.Block{}, false
 	}
 	whole := blockAt(p.size, b.Begin)
 	state := p.blockState(b)
 	next := whole.Begin + state.received
 	if b.Begin > next || b.End <= next {
-		return Block{}, false
+		return piece.Block{}, false
 	}
 	state.received = b.End - whole.Begin
 	if !slices.Contains(state.senders, peer) {
@@ -317,38 +290,38 @@ func (p *Picker[P]) OnBlockReceived(peer P, b Block) (Block, bool) {
 	if b.End == whole.End {
 		state.requesters = nil
 	}
-	return Block{Begin: next, End: b.End}, true
+	return piece.Block{Begin: next, End: b.End}, true
 }
 
-// OnBlockWritten records that b, as returned by OnBlockReceived, is on disk
+// onBlockWritten records that b, as returned by onBlockReceived, is on disk
 // and reports whether its whole part is now written and ready to be hashed.
-func (p *Picker[P]) OnBlockWritten(b Block) bool {
+func (p *picker) onBlockWritten(b piece.Block) bool {
 	p.blockState(b).written += b.End - b.Begin
 	return p.isWritten(b.Part())
 }
 
-func (p *Picker[P]) OnPartVerified(part int) {
-	p.parts[part] = partState[P]{isVerified: true}
+func (p *picker) onPartVerified(part int) {
+	p.parts[part] = partState{isVerified: true}
 }
 
-// OnPartFailed discards a part whose hash did not match and returns the peers
+// onPartFailed discards a part whose hash did not match and returns the peers
 // that sent any of its blocks, so the caller can ban the corrupt sender.
-func (p *Picker[P]) OnPartFailed(part int) []P {
+func (p *picker) onPartFailed(part int) []uint64 {
 	senders := addSenders(nil, p.parts[part].blocks)
-	p.parts[part] = partState[P]{}
+	p.parts[part] = partState{}
 	return senders
 }
 
-// Senders lists the peers that sent any block of a part not yet verified.
-func (p *Picker[P]) Senders() []P {
-	var senders []P
+// senders lists the peers that sent any block of a part not yet verified.
+func (p *picker) senders() []uint64 {
+	var senders []uint64
 	for _, part := range p.parts {
 		senders = addSenders(senders, part.blocks)
 	}
 	return senders
 }
 
-func addSenders[P comparable](senders []P, blocks []blockState[P]) []P {
+func addSenders(senders []uint64, blocks []blockState) []uint64 {
 	for _, block := range blocks {
 		for _, sender := range block.senders {
 			if !slices.Contains(senders, sender) {
@@ -359,11 +332,11 @@ func addSenders[P comparable](senders []P, blocks []blockState[P]) []P {
 	return senders
 }
 
-// OnBlockFailed discards one whole block of a part that failed its hash
+// onBlockFailed discards one whole block of a part that failed its hash
 // check, so only that block is requested again, and returns its senders.
-func (p *Picker[P]) OnBlockFailed(b Block) []P {
+func (p *picker) onBlockFailed(b piece.Block) []uint64 {
 	state := p.blockState(b)
 	senders := state.senders
-	*state = blockState[P]{}
+	*state = blockState{}
 	return senders
 }

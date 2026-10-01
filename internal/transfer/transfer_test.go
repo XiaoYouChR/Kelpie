@@ -50,10 +50,13 @@ func userHash(i int) wire.Hash {
 type harness struct {
 	t        *testing.T
 	transfer *transfer.Transfer
-	data     []byte
-	disk     []byte
-	actions  []transfer.Action
-	now      time.Time
+	// started holds the actions Build returned; a test runs them when it
+	// needs them.
+	started []transfer.Action
+	data    []byte
+	disk    []byte
+	actions []transfer.Action
+	now     time.Time
 }
 
 func buildHarness(t *testing.T, data []byte, options transfer.Options) *harness {
@@ -63,7 +66,8 @@ func buildHarness(t *testing.T, data []byte, options transfer.Options) *harness 
 	if options.Path == "" {
 		options.Path = path
 	}
-	return &harness{t: t, transfer: transfer.Build(options, start), data: data, disk: make([]byte, len(data)), now: start}
+	tr, started := transfer.Build(options, start)
+	return &harness{t: t, transfer: tr, started: started, data: data, disk: make([]byte, len(data)), now: start}
 }
 
 func (h *harness) run(actions []transfer.Action) {
@@ -99,7 +103,7 @@ func (h *harness) tick(tick transfer.Tick) []transfer.Action {
 }
 
 func (h *harness) connect(peer uint64, i int, parts piece.Set) {
-	h.run(h.transfer.OnPeerConnected(peer, transfer.Hello{Endpoint: endpoint(i), UserHash: userHash(i)}, h.now))
+	h.run(h.transfer.OnPeerConnected(peer, transfer.Source{Endpoint: endpoint(i), UserHash: userHash(i)}, h.now))
 	h.transfer.OnPeerParts(peer, parts)
 	h.run(h.transfer.OnSlotGranted(peer, h.now))
 }
@@ -143,11 +147,14 @@ func TestMultiSourceDownloadCompletes(t *testing.T) {
 	file := buildFile(data, endpoint(1), endpoint(2))
 	h := buildHarness(t, data, transfer.Options{File: file})
 
+	if got := len(traces(h.started, transfer.EventFound)); got != 2 {
+		t.Fatalf("found traces = %d, want 2", got)
+	}
 	connects := h.tick(transfer.Tick{ConnectBudget: 10})
 	if got := countActions[transfer.Connect](connects); got != 2 {
 		t.Fatalf("Connect actions = %d, want 2", got)
 	}
-	if got := len(traces(connects, transfer.EventFound)); got != 2 {
+	if got := len(traces(connects, transfer.EventFound)); got != 0 {
 		t.Fatalf("found traces = %d, want 2", got)
 	}
 	full := piece.BuildFullSet(piece.PartCount(file.Size))
@@ -214,10 +221,10 @@ func TestResumeHashesWrittenParts(t *testing.T) {
 	h := buildHarness(t, data, transfer.Options{File: file, State: &state})
 	copy(h.disk, data[:piece.PartSize])
 
-	actions := h.tick(transfer.Tick{})
-	if got := countActions[transfer.HashPart](actions); got != 1 {
+	if got := countActions[transfer.HashPart](h.started); got != 1 {
 		t.Fatalf("HashPart actions = %d, want 1", got)
 	}
+	h.run(h.started)
 	if !h.transfer.ToState().VerifiedParts[0] {
 		t.Fatal("part 0 not verified after resume hashing")
 	}
@@ -274,7 +281,7 @@ func TestCorruptPartBansSenderAndIsDownloadedAgain(t *testing.T) {
 		t.Fatal("corrupt part verified")
 	}
 
-	reconnect := h.transfer.OnPeerConnected(3, transfer.Hello{Endpoint: endpoint(9), UserHash: userHash(1)}, h.now)
+	reconnect := h.transfer.OnPeerConnected(3, transfer.Source{Endpoint: endpoint(9), UserHash: userHash(1)}, h.now)
 	if len(reconnect) != 1 || reconnect[0] != (transfer.Close{Peer: 3, Reason: "banned"}) {
 		t.Fatalf("banned peer reconnecting: %+v", reconnect)
 	}
@@ -291,7 +298,7 @@ func TestCorruptPartBansSenderAndIsDownloadedAgain(t *testing.T) {
 }
 
 func TestDiskFailure(t *testing.T) {
-	for _, isDiskFull := range []bool{true, false} {
+	for isDiskFull, want := range map[bool]transfer.Status{true: transfer.StatusDiskFull, false: transfer.StatusFailed} {
 		data := buildData(1000)
 		h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
 		h.connect(1, 1, piece.Set{true})
@@ -302,7 +309,7 @@ func TestDiskFailure(t *testing.T) {
 		}
 		h.transfer.OnDiskFailed(isDiskFull, "no space left on device")
 		got := h.transfer.Outcome()
-		if got.Status != transfer.StatusFailed || got.IsDiskFull != isDiskFull {
+		if got.Status != want {
 			t.Fatalf("isDiskFull=%v: outcome = %+v", isDiskFull, got)
 		}
 		if h.transfer.Request(1, 1) != nil {
@@ -320,7 +327,7 @@ func TestReaskTiming(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
 			h.tick(transfer.Tick{ConnectBudget: 1})
-			h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: test.canReaskUDP, CanObfuscate: true}, start))
+			h.run(h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: test.canReaskUDP, CanObfuscate: true}, start))
 			h.run(h.transfer.OnQueued(1, 42, start))
 			h.run(h.transfer.OnPeerGone(1, "idle", start))
 
@@ -404,7 +411,7 @@ func TestSourceCap(t *testing.T) {
 	if got := h.transfer.Progress(start).Peers; got != 400 {
 		t.Fatalf("peers = %d, want 400", got)
 	}
-	incoming := h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1000)}, start)
+	incoming := h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(1000)}, start)
 	if len(incoming) != 1 || incoming[0] != (transfer.Close{Peer: 1, Reason: "too many sources"}) {
 		t.Fatalf("incoming beyond the cap: %+v", incoming)
 	}
@@ -433,7 +440,7 @@ func TestSeedMode(t *testing.T) {
 	data := buildData(piece.PartSize + 100)
 	file := buildFile(data)
 	incomplete := buildHarness(t, data, transfer.Options{File: file, Mode: transfer.ModeSeed})
-	if got := incomplete.transfer.Outcome(); got.Status != transfer.StatusFailed || got.IsDiskFull {
+	if got := incomplete.transfer.Outcome(); got.Status != transfer.StatusFailed {
 		t.Fatalf("seed of an incomplete file: %+v", got)
 	}
 
@@ -525,8 +532,8 @@ func TestSlotAskedSourceStaysQueuedWhenClosedBeforeRank(t *testing.T) {
 	data := buildData(1000)
 	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1), endpoint(2))})
 	h.tick(transfer.Tick{ConnectBudget: 2})
-	h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1)}, start))
-	h.run(h.transfer.OnPeerConnected(2, transfer.Hello{Endpoint: endpoint(2), UserHash: userHash(2)}, start))
+	h.run(h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1)}, start))
+	h.run(h.transfer.OnPeerConnected(2, transfer.Source{Endpoint: endpoint(2), UserHash: userHash(2)}, start))
 	h.transfer.OnPeerParts(1, piece.Set{true})
 
 	asked := h.transfer.OnPeerGone(1, "idle", start.Add(40*time.Second))
@@ -683,13 +690,36 @@ func TestResumeKeepsPartOfBlock(t *testing.T) {
 	}
 }
 
+// An OP_REASKACK that arrives after the source connected to us is late: the
+// connection already tells where we stand, and the slot it gave stays.
+func TestLateReaskAnswerKeepsSlot(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
+	h.tick(transfer.Tick{ConnectBudget: 1})
+	h.run(h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, start))
+	h.run(h.transfer.OnQueued(1, 42, start))
+	h.run(h.transfer.OnPeerGone(1, "idle", start))
+	reaskAt := start.Add(fileReaskTime - 10*time.Second)
+	if got := h.tick(transfer.Tick{Now: reaskAt, ConnectBudget: 1}); countActions[transfer.ReaskUDP](got) != 1 {
+		t.Fatalf("no UDP reask: %+v", got)
+	}
+
+	h.run(h.transfer.OnPeerConnected(2, transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, reaskAt))
+	h.transfer.OnPeerParts(2, piece.Set{true})
+	h.run(h.transfer.OnSlotGranted(2, reaskAt))
+	h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, reaskAt.Add(time.Second)))
+	if got := h.transfer.Request(2, 1); len(got) != 1 {
+		t.Fatalf("late UDP answer took the slot away: requested %v", got)
+	}
+}
+
 // A source with no part we need is reasked only after twice the reask
 // interval and never over UDP (aMule PartFile.cpp:1574-1580).
 func TestNoNeededPartsSourceWaitsTwiceTheReask(t *testing.T) {
 	data := buildData(2 * piece.PartSize)
 	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
 	h.tick(transfer.Tick{ConnectBudget: 1})
-	h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, start))
+	h.run(h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, start))
 	h.transfer.OnPeerParts(1, piece.Set{false, false, false})
 	h.transfer.OnNoNeededParts(1)
 	h.run(h.transfer.OnPeerGone(1, "idle", start.Add(40*time.Second)))
@@ -706,7 +736,7 @@ func TestNoNeededPartsSourceWaitsTwiceTheReask(t *testing.T) {
 	if got := at(2 * fileReaskTime); countActions[transfer.Connect](got) != 1 {
 		t.Fatalf("source with nothing we need not reasked at twice the interval: %+v", got)
 	}
-	h.run(h.transfer.OnPeerConnected(2, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1)}, start.Add(2*fileReaskTime)))
+	h.run(h.transfer.OnPeerConnected(2, transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1)}, start.Add(2*fileReaskTime)))
 	h.transfer.OnPeerParts(2, piece.Set{true, false, false})
 	h.run(h.transfer.OnPeerGone(2, "idle", start.Add(2*fileReaskTime)))
 	if got := at(3 * fileReaskTime); countActions[transfer.Connect](got) != 1 {
@@ -729,7 +759,7 @@ func TestNoNeededPartsSourcesArePurgedNearTheCap(t *testing.T) {
 		}
 		h.transfer.OnSourcesFound(found, transfer.ChannelServer, start)
 		for peer := range uint64(3) {
-			h.run(h.transfer.OnPeerConnected(peer+1, transfer.Hello{Endpoint: endpoint(int(peer) + 1)}, start))
+			h.run(h.transfer.OnPeerConnected(peer+1, transfer.Source{Endpoint: endpoint(int(peer) + 1)}, start))
 			h.transfer.OnPeerParts(peer+1, piece.Set{false, false, false})
 			h.transfer.OnNoNeededParts(peer + 1)
 			h.run(h.transfer.OnPeerGone(peer+1, "idle", start))
@@ -767,7 +797,7 @@ func TestA4AFSourceWaits(t *testing.T) {
 	}
 
 	h.transfer.SetA4AF(transfer.Source{UserHash: userHash(1)}, start.Add(time.Hour))
-	h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1)}, start.Add(11*time.Minute)))
+	h.run(h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1)}, start.Add(11*time.Minute)))
 	h.transfer.OnPeerParts(1, piece.Set{true})
 	h.run(h.transfer.OnPeerGone(1, "idle", start.Add(11*time.Minute)))
 	if got := at(11*time.Minute + fileReaskTime); countActions[transfer.Connect](got) != 1 {

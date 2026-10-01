@@ -645,7 +645,7 @@ func (e *Engine) addTransferPeer(c *conn, r *run) {
 	r.asked[user] = e.now()
 	e.addKnownSource(r.file.Hash, transfer.Source{UserHash: user})
 	caps := c.session.Capabilities()
-	hello := transfer.Hello{
+	hello := transfer.Source{
 		Endpoint:     c.endpoint(),
 		ClientID:     caps.ClientID,
 		Server:       caps.Server,

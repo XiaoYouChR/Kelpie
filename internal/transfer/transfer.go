@@ -26,16 +26,16 @@ type Status int
 const (
 	StatusRunning Status = iota
 	StatusComplete
+	// StatusFailed is a file error.
 	StatusFailed
+	StatusDiskFull
 )
 
-// Outcome is the Transfer's state as its Run sees it. IsDiskFull and
-// Message are set only for StatusFailed; a failure that is not a full disk
-// is a file error.
+// Outcome is the Transfer's state as its Run sees it. Message says why it
+// failed.
 type Outcome struct {
-	Status     Status
-	IsDiskFull bool
-	Message    string
+	Status  Status
+	Message string
 }
 
 type Progress struct {
@@ -79,15 +79,12 @@ type Transfer struct {
 	mode       Mode
 	created    time.Time
 	partHashes []wire.Hash
-	picker     *piece.Picker[uint64]
+	picker     *picker
 	outcome    Outcome
 	uploaded   int64
 	download   meter
 	upload     meter
 
-	// pending holds actions produced outside a reaction, handed out by the
-	// next OnTick.
-	pending []Action
 	// unhashedParts are written parts waiting for the hash set.
 	unhashedParts []int
 	// hashSetPeer is the peer asked for the hash set; 0 when none is.
@@ -112,10 +109,11 @@ type Transfer struct {
 	lastPurge       time.Time
 }
 
-// Build creates the Transfer for options.File. Persisted state that does not
-// fit the file is dropped and the download starts over; a seed whose state is
-// not complete fails at once with a file error.
-func Build(options Options, now time.Time) *Transfer {
+// Build creates the Transfer for options.File with the actions to start it:
+// hashing parts written before a restart, and the link's sources. Persisted
+// state that does not fit the file is dropped and the download starts over;
+// a seed whose state is not complete fails at once with a file error.
+func Build(options Options, now time.Time) (*Transfer, []Action) {
 	t := &Transfer{
 		file:              options.File,
 		path:              options.Path,
@@ -130,7 +128,7 @@ func Build(options Options, now time.Time) *Transfer {
 		aich:              buildAICHState(options.File.AICHHash, options.Random),
 	}
 	if state := options.State; state != nil && state.Size == options.File.Size {
-		picker, err := piece.BuildPicker[uint64](state.Size, state.VerifiedParts, state.WrittenBlocks, options.Random)
+		picker, err := buildPicker(state.Size, state.VerifiedParts, state.WrittenBlocks, options.Random)
 		if err == nil {
 			t.picker = picker
 			t.created = state.Created
@@ -141,9 +139,10 @@ func Build(options Options, now time.Time) *Transfer {
 		}
 	}
 	if t.picker == nil {
-		t.picker, _ = piece.BuildPicker[uint64](options.File.Size, nil, nil, options.Random)
+		t.picker, _ = buildPicker(options.File.Size, nil, nil, options.Random)
 	}
 
+	var actions []Action
 	switch {
 	case t.isComplete():
 		t.outcome = Outcome{Status: StatusComplete}
@@ -153,14 +152,14 @@ func Build(options Options, now time.Time) *Transfer {
 	case t.mode == ModeSeed:
 		t.outcome = Outcome{Status: StatusFailed, Message: "the file is not complete"}
 	default:
-		for _, part := range t.picker.WrittenParts() {
-			t.pending = append(t.pending, t.requestPartHash(part)...)
+		for _, part := range t.picker.writtenParts() {
+			actions = append(actions, t.requestPartHash(part)...)
 		}
 		for _, source := range options.File.Sources {
-			t.pending = append(t.pending, t.addSource(Source{Endpoint: source}, ChannelLink, now)...)
+			actions = append(actions, t.addSource(Source{Endpoint: source}, ChannelLink, now)...)
 		}
 	}
-	return t
+	return t, actions
 }
 
 func (t *Transfer) matchHashSet(hashes []wire.Hash) bool {
@@ -168,7 +167,7 @@ func (t *Transfer) matchHashSet(hashes []wire.Hash) bool {
 }
 
 func (t *Transfer) isComplete() bool {
-	return t.picker.VerifiedParts().IsFull()
+	return t.picker.verifiedParts().IsFull()
 }
 
 func (t *Transfer) isRunning() bool {
@@ -188,8 +187,8 @@ func (t *Transfer) ToState() State {
 		Size:          t.file.Size,
 		File:          t.path,
 		PartHashes:    t.partHashes,
-		VerifiedParts: t.picker.VerifiedParts(),
-		WrittenBlocks: t.picker.WrittenBlocks(),
+		VerifiedParts: t.picker.verifiedParts(),
+		WrittenBlocks: t.picker.writtenBlocks(),
 		Uploaded:      uint64(t.uploaded),
 		Created:       t.created,
 	}
@@ -198,7 +197,7 @@ func (t *Transfer) ToState() State {
 func (t *Transfer) Progress(now time.Time) Progress {
 	progress := Progress{
 		Size:         t.file.Size,
-		Received:     t.picker.WrittenSize(),
+		Received:     t.picker.writtenSize(),
 		DownloadRate: t.download.rate(now),
 		UploadRate:   t.upload.rate(now),
 		Uploaded:     t.uploaded,
@@ -226,15 +225,17 @@ func (t *Transfer) Request(peer uint64, n int) []piece.Block {
 	if !t.isDownloading() || s == nil || s.state != stateDownloading {
 		return nil
 	}
-	return t.picker.Request(peer, n)
+	return t.picker.request(peer, n)
 }
 
 func (t *Transfer) OnPeerParts(peer uint64, parts piece.Set) {
 	s := t.peers[peer]
 	if t.isDownloading() && s != nil {
-		s.hasAnswered = true
+		if s.state == stateAsking {
+			s.state = stateQueued
+		}
 		s.isNoNeeded = false
-		t.picker.OnPeerParts(peer, parts)
+		t.picker.onPeerParts(peer, parts)
 	}
 }
 
@@ -247,7 +248,7 @@ func (t *Transfer) OnBlockReceived(peer uint64, block piece.Block, data []byte, 
 	}
 	t.download.add(now, int64(len(data)))
 	s.receivedBytes += int64(len(data))
-	fresh, ok := t.picker.OnBlockReceived(peer, block)
+	fresh, ok := t.picker.onBlockReceived(peer, block)
 	if !ok {
 		return nil
 	}
@@ -255,7 +256,7 @@ func (t *Transfer) OnBlockReceived(peer uint64, block piece.Block, data []byte, 
 }
 
 func (t *Transfer) OnBlockWritten(block piece.Block) []Action {
-	if !t.isDownloading() || !t.picker.OnBlockWritten(block) {
+	if !t.isDownloading() || !t.picker.onBlockWritten(block) {
 		return nil
 	}
 	return t.requestPartHash(block.Part())
@@ -267,7 +268,10 @@ func (t *Transfer) OnDiskFailed(isDiskFull bool, message string) {
 	if !t.isRunning() {
 		return
 	}
-	t.outcome = Outcome{Status: StatusFailed, IsDiskFull: isDiskFull, Message: message}
+	t.outcome = Outcome{Status: StatusFailed, Message: message}
+	if isDiskFull {
+		t.outcome.Status = StatusDiskFull
+	}
 }
 
 func (t *Transfer) requestPartHash(part int) []Action {
@@ -298,7 +302,7 @@ func (t *Transfer) OnPartHashed(part int, hash wire.Hash, now time.Time) []Actio
 		return nil
 	}
 	if expected, _ := t.expectedHash(part); hash == expected {
-		t.picker.OnPartVerified(part)
+		t.picker.onPartVerified(part)
 		if t.isComplete() {
 			t.outcome = Outcome{Status: StatusComplete}
 		}
@@ -345,7 +349,7 @@ func (t *Transfer) requestHashSet() []Action {
 }
 
 func (t *Transfer) runPublish(now time.Time) []Action {
-	parts := t.picker.VerifiedParts()
+	parts := t.picker.verifiedParts()
 	if parts.Count() == 0 || !t.lastPublish.IsZero() && now.Sub(t.lastPublish) < kadRepublishTime {
 		return nil
 	}

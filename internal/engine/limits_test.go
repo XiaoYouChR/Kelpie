@@ -305,10 +305,11 @@ func buildIdleEngine(t *testing.T, clock *clock.Fake) (*Engine, *run) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tr, _ := transfer.Build(transfer.Options{File: file, Path: "/known.bin", Mode: transfer.ModeDownload, Random: rand.New(rand.NewPCG(1, 1))}, clock.Now())
 	r := &run{
 		mode:     ModeDownload,
 		file:     file,
-		transfer: transfer.Build(transfer.Options{File: file, Path: "/known.bin", Mode: transfer.ModeDownload, Random: rand.New(rand.NewPCG(1, 1))}, clock.Now()),
+		transfer: tr,
 		asked:    map[wire.Hash]time.Time{},
 	}
 	e := &Engine{
