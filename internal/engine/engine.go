@@ -227,7 +227,10 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)
 		e.ports.Transport = udpLogTransport{Transport: ports.Transport, log: e.packetLog, clock: ports.Clock}
 	}
-	e.queue = upload.BuildQueue(e.ledger.Ratio, e.ledger.TrustByUser, func(wire.Hash, netip.Addr) bool { return false })
+	e.queue = upload.BuildQueue(e.ledger.Ratio, e.ledger.TrustByUser, func(file wire.Hash) bool {
+		r := e.runByHash[file]
+		return r != nil && r.transfer != nil
+	})
 	e.queue.SetRate(config.RateLimits.Upload)
 	if err := e.start(mapPorts); err != nil {
 		cancel()

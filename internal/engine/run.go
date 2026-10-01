@@ -150,7 +150,6 @@ func (e *Engine) startTransfer(r *run, state *transfer.State) {
 		Random: e.ports.Rand,
 	}, e.now())
 	e.refreshShare(r)
-	e.queue.AddFile(r.file.Hash)
 	for _, src := range r.file.Sources {
 		e.addKnownSource(r.file.Hash, transfer.Source{Endpoint: src})
 	}

@@ -128,8 +128,7 @@ type sample struct {
 type Queue struct {
 	ratio         func(user wire.Hash, ip netip.Addr) float64
 	trust         func(user wire.Hash, ip netip.Addr) identity.Trust
-	isBanned      func(user wire.Hash, ip netip.Addr) bool
-	files         map[wire.Hash]bool
+	isShared      func(file wire.Hash) bool
 	waiters       map[key]*waiter
 	slots         []*slot
 	rate          int64
@@ -140,17 +139,17 @@ type Queue struct {
 }
 
 // BuildQueue takes the credit ratio and trust (identity.Ledger.Ratio and
-// TrustByUser) and the engine's ban list.
+// TrustByUser) and whether a file is shared: requests and reasks for other
+// files are not queued.
 func BuildQueue(
 	ratio func(user wire.Hash, ip netip.Addr) float64,
 	trust func(user wire.Hash, ip netip.Addr) identity.Trust,
-	isBanned func(user wire.Hash, ip netip.Addr) bool,
+	isShared func(file wire.Hash) bool,
 ) *Queue {
 	return &Queue{
 		ratio:    ratio,
 		trust:    trust,
-		isBanned: isBanned,
-		files:    map[wire.Hash]bool{},
+		isShared: isShared,
 		waiters:  map[key]*waiter{},
 	}
 }
@@ -160,14 +159,9 @@ func (q *Queue) SetRate(bytesPerSecond int64) {
 	q.rate = bytesPerSecond
 }
 
-// AddFile shares file: requests and reasks for other files are not queued.
-func (q *Queue) AddFile(file wire.Hash) {
-	q.files[file] = true
-}
-
-// RemoveFile stops sharing file, dropping its waiters and revoking its slots.
+// RemoveFile drops the waiters and revokes the slots of a file that is no
+// longer shared.
 func (q *Queue) RemoveFile(file wire.Hash) []Action {
-	delete(q.files, file)
 	for k, w := range q.waiters {
 		if w.file == file {
 			delete(q.waiters, k)
@@ -207,7 +201,7 @@ func (q *Queue) OnConnected(conn uint64, peer Peer, now time.Time) []Action {
 
 // OnRequest handles OP_STARTUPLOADREQ for file from peer on conn.
 func (q *Queue) OnRequest(conn uint64, peer Peer, file wire.Hash, now time.Time) []Action {
-	if !q.files[file] || q.isBanned(peer.User, peer.IP) {
+	if !q.isShared(file) {
 		return nil
 	}
 	k := peer.key()
@@ -236,7 +230,7 @@ func (q *Queue) OnRequest(conn uint64, peer Peer, file wire.Hash, now time.Time)
 // OnReask answers a UDP OP_REASKFILEPING for file from ip:udpPort.
 func (q *Queue) OnReask(ip netip.Addr, udpPort uint16, file wire.Hash, now time.Time) Answer {
 	w, isAmbiguous := q.waiterByUDP(ip, udpPort)
-	if !q.files[file] {
+	if !q.isShared(file) {
 		var user wire.Hash
 		if w != nil {
 			user = w.peer.User
@@ -287,7 +281,7 @@ func (q *Queue) OnSent(conn uint64, bytes int64) {
 func (q *Queue) OnTick(now time.Time) []Action {
 	q.updateDatarate(now)
 	for k, w := range q.waiters {
-		if now.Sub(w.lastAsk) > maxPurgeTime || q.isBanned(w.peer.User, w.peer.IP) {
+		if now.Sub(w.lastAsk) > maxPurgeTime {
 			delete(q.waiters, k)
 		}
 	}
@@ -297,10 +291,6 @@ func (q *Queue) OnTick(now time.Time) []Action {
 	for _, s := range q.slots {
 		switch {
 		case s.conn == 0 && now.Sub(s.start) > connectTimeout:
-		case q.isBanned(s.peer.User, s.peer.IP):
-			if s.conn != 0 {
-				actions = append(actions, Revoke{s.conn})
-			}
 		case s.conn != 0 && len(q.waiters) > 0 && (s.sent > sessionMaxTrans || now.Sub(s.start) > sessionMaxTime):
 			actions = append(actions, Revoke{s.conn})
 			rotated = append(rotated, s)
@@ -407,10 +397,10 @@ func (q *Queue) bestWaiter(now time.Time) *waiter {
 }
 
 // score is eMule's CUpDownClient::GetScore: seconds waited × credit ratio ×
-// file priority / 10, halved for old clients. Banned peers and impostors of an
-// identified user score 0 and are never chosen (aMule UploadClient.cpp:91).
+// file priority / 10, halved for old clients. Impostors of an identified
+// user score 0 and are never chosen (aMule UploadClient.cpp:91).
 func (q *Queue) score(w *waiter, counts map[wire.Hash]int, now time.Time) float64 {
-	if q.isBanned(w.peer.User, w.peer.IP) || q.trust(w.peer.User, w.peer.IP) == identity.TrustImpostor {
+	if q.trust(w.peer.User, w.peer.IP) == identity.TrustImpostor {
 		return 0
 	}
 	score := now.Sub(w.waitStart).Seconds() * q.ratio(w.peer.User, w.peer.IP) * filePriority(counts[w.file]) / 10
