@@ -1,0 +1,81 @@
+{
+  "version": 3,
+  "user_agent": "FD3887E9230E53F744E5CA8FAF1A6F31",
+  "server_address": "212.95.35.240:4232",
+  "transfers": [
+    {
+      "hash": "2D2A61A79C0E0B4B4B7E6F7A4B9F1C55",
+      "size": 25000000,
+      "create_time": 1787328879185,
+      "target_path": "/Users/alice/Downloads/ubuntu 24.04 中文.iso",
+      "paused": true,
+      "upload_prio": 2,
+      "resume_data": {
+        "hashes": [
+          "0A1B2C3D4E5F60718293A4B5C6D7E8F9",
+          "1F2E3D4C5B6A79880716253443526170",
+          "AABBCCDDEEFF00112233445566778899"
+        ],
+        "pieces": [true, false, false],
+        "downloaded_blocks": [
+          {"PieceIndex": 1, "PieceBlock": 0},
+          {"PieceIndex": 1, "PieceBlock": 3},
+          {"PieceIndex": 2, "PieceBlock": 52}
+        ],
+        "peers": ["195.32.118.142:4662", "81.2.3.4:4672"]
+      }
+    },
+    {
+      "hash": "31D6CFE0D16AE931B73C59D7E0C089C0",
+      "size": 1048576,
+      "create_time": 1787400000000,
+      "target_path": "/Users/alice/Downloads/small.bin",
+      "paused": false
+    },
+    {
+      "hash": "0123456789ABCDEF0123456789ABCDEF",
+      "size": 10,
+      "create_time": 1787400000000,
+      "target_path": "",
+      "paused": false
+    }
+  ],
+  "credits": [
+    {"PeerHash": "1550D611EA0E55210F452221902F6F73", "Uploaded": 0, "Downloaded": 1822908},
+    {"PeerHash": "8F6E0C2A1B3D4E5F60718293A4B5C6D7", "Uploaded": 734003200, "Downloaded": 12}
+  ],
+  "friend_slots": ["8F6E0C2A1B3D4E5F60718293A4B5C6D7"],
+  "dht": {
+    "self_id": "1E5ABC409D3E49D315D76222566E99E4",
+    "firewalled": true,
+    "last_bootstrap": 1787328870000,
+    "last_refresh": 1787724720915,
+    "last_firewalled_check": 1787724943025,
+    "storage_point": "91.121.1.1:4672",
+    "nodes": [
+      {
+        "id": "54F4C64866EE9E505DB15D4B4785A0BA",
+        "addr": "195.32.118.142:4672",
+        "tcp_port": 4662,
+        "version": 8,
+        "seed": true,
+        "pinged": true,
+        "first_seen": 1787328879185,
+        "last_seen": 1787724720412
+      },
+      {
+        "id": "00112233445566778899AABBCCDDEEFF",
+        "addr": "82.64.1.2:5672",
+        "version": 9,
+        "hello_sent": true,
+        "fail_count": 2
+      },
+      {
+        "id": "FFEEDDCCBBAA99887766554433221100",
+        "addr": "not an address",
+        "version": 9
+      }
+    ],
+    "router_nodes": ["router.bitcomet.com:554"]
+  }
+}
