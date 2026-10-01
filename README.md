@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="160" alt="Kelpie"></p>
+
 # Kelpie
 
 Kelpie is an eD2k engine with a typed asyncio interface. The `kelpie` Engine
