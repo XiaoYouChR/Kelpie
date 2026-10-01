@@ -57,21 +57,7 @@ func (s *Server) OnUDPPacket(from netip.AddrPort, p wire.Packet, now time.Time) 
 		l.udpKey, l.udpKeyIP = p.UDPKey, s.publicIP
 	case serverwire.GlobFoundSources:
 		for _, f := range p.Files {
-			if !s.isWanted(f.Hash) {
-				continue
-			}
-			var sources []Source
-			for _, found := range f.Sources {
-				// A LowID source from another server could only be reached
-				// by a callback through that server, which we are not on.
-				src, ok := s.toSource(found, l.Endpoint)
-				if ok && !src.IsLowID {
-					sources = append(sources, src)
-				}
-			}
-			if len(sources) > 0 {
-				out.Events = append(out.Events, SourcesFound{File: f.Hash, Sources: sources, IsGlobal: true})
-			}
+			s.addSources(f.Hash, f.Sources, l.Endpoint, true, &out)
 		}
 	}
 	return out

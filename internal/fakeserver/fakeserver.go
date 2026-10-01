@@ -96,31 +96,34 @@ func Create(config Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	udp, err := config.Transport.OpenUDP(listener.Port() + 4)
+	s := &Server{config: config, listener: listener, clients: map[*client]struct{}{}, nextLowID: 1}
+	s.config.Addr = netip.AddrPortFrom(config.Addr.Addr(), uint16(listener.Port()))
+	s.udp, err = config.Transport.OpenUDP(listener.Port() + 4)
+	if err == nil && config.ObfuscationPort != 0 {
+		s.obfuscated, err = config.Transport.OpenListener(int(config.ObfuscationPort))
+	}
+	if err == nil && config.UDPKey != 0 {
+		s.obfuscatedUDP, err = config.Transport.OpenUDP(listener.Port() + udpObfuscationOffset)
+	}
 	if err != nil {
-		listener.Close()
+		s.close()
 		return nil, err
 	}
-	s := &Server{config: config, listener: listener, udp: udp, clients: map[*client]struct{}{}, nextLowID: 1}
-	if config.ObfuscationPort != 0 {
-		if s.obfuscated, err = config.Transport.OpenListener(int(config.ObfuscationPort)); err != nil {
-			listener.Close()
-			udp.Close()
-			return nil, err
-		}
-	}
-	if config.UDPKey != 0 {
-		if s.obfuscatedUDP, err = config.Transport.OpenUDP(listener.Port() + udpObfuscationOffset); err != nil {
-			listener.Close()
-			udp.Close()
-			if s.obfuscated != nil {
-				s.obfuscated.Close()
-			}
-			return nil, err
-		}
-	}
-	s.config.Addr = netip.AddrPortFrom(config.Addr.Addr(), uint16(listener.Port()))
 	return s, nil
+}
+
+// close closes every socket that is open.
+func (s *Server) close() {
+	s.listener.Close()
+	if s.udp != nil {
+		s.udp.Close()
+	}
+	if s.obfuscated != nil {
+		s.obfuscated.Close()
+	}
+	if s.obfuscatedUDP != nil {
+		s.obfuscatedUDP.Close()
+	}
 }
 
 func (s *Server) Addr() netip.AddrPort { return s.config.Addr }
@@ -177,14 +180,7 @@ func (s *Server) Run(ctx context.Context) error {
 	case err = <-errs:
 	}
 	cancel()
-	s.listener.Close()
-	if s.obfuscated != nil {
-		s.obfuscated.Close()
-	}
-	s.udp.Close()
-	if s.obfuscatedUDP != nil {
-		s.obfuscatedUDP.Close()
-	}
+	s.close()
 	wg.Wait()
 	return err
 }

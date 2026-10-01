@@ -283,7 +283,7 @@ func toControlURL(base *url.URL, controlURL string) (string, error) {
 	return resolved.String(), nil
 }
 
-func (s service) addMapping(ctx context.Context, protocol string, port int, description string) error {
+func (s service) addMapping(ctx context.Context, m mapping, description string) error {
 	body := fmt.Sprintf(`<u:AddPortMapping xmlns:u="%s">
 	<NewRemoteHost></NewRemoteHost>
 	<NewExternalPort>%d</NewExternalPort>
@@ -293,17 +293,17 @@ func (s service) addMapping(ctx context.Context, protocol string, port int, desc
 	<NewEnabled>1</NewEnabled>
 	<NewPortMappingDescription>%s</NewPortMappingDescription>
 	<NewLeaseDuration>0</NewLeaseDuration>
-	</u:AddPortMapping>`, s.urn, port, protocol, port, s.localIP, toXMLText(description))
+	</u:AddPortMapping>`, s.urn, m.port, m.protocol, m.port, s.localIP, toXMLText(description))
 	_, err := s.requestSOAP(ctx, "AddPortMapping", body)
 	return err
 }
 
-func (s service) deleteMapping(ctx context.Context, protocol string, port int) error {
+func (s service) deleteMapping(ctx context.Context, m mapping) error {
 	body := fmt.Sprintf(`<u:DeletePortMapping xmlns:u="%s">
 	<NewRemoteHost></NewRemoteHost>
 	<NewExternalPort>%d</NewExternalPort>
 	<NewProtocol>%s</NewProtocol>
-	</u:DeletePortMapping>`, s.urn, port, protocol)
+	</u:DeletePortMapping>`, s.urn, m.port, m.protocol)
 	_, err := s.requestSOAP(ctx, "DeletePortMapping", body)
 	return err
 }

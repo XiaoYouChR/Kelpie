@@ -393,9 +393,9 @@ func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) Out
 	}
 	switch p := p.(type) {
 	case serverwire.FoundSources:
-		s.onFoundSources(p.Hash, p.Sources, &out)
+		s.addSources(p.Hash, p.Sources, sender.Endpoint, false, &out)
 	case serverwire.FoundSourcesObfu:
-		s.onFoundSources(p.Hash, p.Sources, &out)
+		s.addSources(p.Hash, p.Sources, sender.Endpoint, false, &out)
 	case serverwire.CallbackRequested:
 		if p.Addr.IsValid() && p.Addr.Port() != 0 {
 			out.ConnectPeers = append(out.ConnectPeers, Callback{
@@ -457,19 +457,23 @@ func (s *Server) onIDChange(sender *listed, p serverwire.IDChange, now time.Time
 	s.runSession(now, out)
 }
 
-func (s *Server) onFoundSources(file wire.Hash, found []serverwire.Source, out *Output) {
+// addSources reports what server found for a wanted file. A LowID source
+// is reachable only by a callback through the server that named it, so it
+// is kept only from the connected server, and only while we are HighID.
+func (s *Server) addSources(file wire.Hash, found []serverwire.Source, server netip.AddrPort, isGlobal bool, out *Output) {
 	if !s.isWanted(file) {
 		return
 	}
+	canCallback := !isGlobal && !wire.IsLowID(s.clientID)
 	var sources []Source
 	for _, f := range found {
-		src, ok := s.toSource(f, s.current.Endpoint)
-		if ok && (!src.IsLowID || !wire.IsLowID(s.clientID)) {
+		src, ok := s.toSource(f, server)
+		if ok && (!src.IsLowID || canCallback) {
 			sources = append(sources, src)
 		}
 	}
 	if len(sources) > 0 {
-		out.Events = append(out.Events, SourcesFound{File: file, Sources: sources})
+		out.Events = append(out.Events, SourcesFound{File: file, Sources: sources, IsGlobal: isGlobal})
 	}
 }
 
