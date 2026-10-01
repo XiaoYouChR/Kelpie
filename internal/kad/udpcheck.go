@@ -37,6 +37,10 @@ type udpCheck struct {
 	// asked holds every IP asked for a test, true once it answered; aMule
 	// keeps it across rechecks so an IP is asked only once.
 	asked map[netip.Addr]bool
+	// tested holds the IPs we sent test packets to. Our NAT would let their
+	// answer through; aMule's client list still knows them
+	// (IsIPAlreadyKnown, ClientList.cpp:959).
+	tested map[netip.Addr]bool
 	// useExternPort is false once a test packet came in on our own port, so
 	// that port, not the NAT's, is what others should use.
 	useExternPort  bool
@@ -48,7 +52,7 @@ type udpCheck struct {
 }
 
 func buildUDPCheck() udpCheck {
-	return udpCheck{asked: map[netip.Addr]bool{}, useExternPort: true}
+	return udpCheck{asked: map[netip.Addr]bool{}, tested: map[netip.Addr]bool{}, useExternPort: true}
 }
 
 func (u *udpCheck) isRunning() bool { return u.finished < udpCheckClients }
@@ -160,7 +164,7 @@ func (c *core) queryUDPCheck() {
 		if n.Version < versionUDPCheck || ip == c.publicIP || n.ID == c.id {
 			continue
 		}
-		if _, ok := u.asked[ip]; ok || c.table.hasIP(ip) {
+		if _, ok := u.asked[ip]; ok || u.tested[ip] || c.table.hasIP(ip) {
 			continue
 		}
 		u.asked[ip] = false
@@ -233,6 +237,7 @@ func (c *core) onFirewallUDP(r FirewallUDP) {
 	if !r.IP.Is4() || r.InternPort == 0 {
 		return
 	}
+	c.udp.tested[r.IP] = true
 	var code byte
 	if r.IsKnown || c.table.hasIP(r.IP) {
 		code = 1

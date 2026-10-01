@@ -24,7 +24,7 @@ func TestFirewallChecksAreAnswered(t *testing.T) {
 	h := buildHarness(t)
 	asker := netip.MustParseAddrPort("10.9.9.9:5000")
 	user := wire.Hash{0xAB}
-	out := h.c.onPacket(asker, kadwire.FirewalledReq{TCPPort: 4111, ID: user, Options: 0x03}, 0, h.now)
+	out := h.c.onPacket(asker, kadwire.FirewalledReq{TCPPort: 4111, ID: user, Options: 0x03}, keys{}, h.now)
 	h.record(out)
 	if res := packetsOf[kadwire.FirewalledRes](h); len(res) != 1 || res[0].to != asker || res[0].packet.Addr != asker.Addr() {
 		t.Fatalf("firewall answer %+v, want the asker's address", res)
@@ -34,7 +34,7 @@ func TestFirewallChecksAreAnswered(t *testing.T) {
 		t.Fatalf("requests %+v, want %+v", got, want)
 	}
 
-	out = h.c.onPacket(asker, kadwire.LegacyFirewalledReq{TCPPort: 4111}, 0, h.now)
+	out = h.c.onPacket(asker, kadwire.LegacyFirewalledReq{TCPPort: 4111}, keys{}, h.now)
 	if got := requestsOf[FirewallCheck](out); len(got) != 1 || got[0].UserHash != (wire.Hash{}) {
 		t.Fatalf("legacy check requests %+v", got)
 	}
@@ -152,5 +152,16 @@ func TestUDPCheckFails(t *testing.T) {
 	h.c.onMessage(UDPCheckEnded{IP: next[0].Addr.Addr()})
 	if h.c.udp.isOpen() || !h.c.udp.isFirewalledNow() || !h.c.udp.isVerified {
 		t.Fatalf("udp check %+v, want firewalled after two failures", h.c.udp)
+	}
+}
+
+// TestUDPCheckSkipsClientsWeTested: our test packets to a client opened our
+// NAT to it, so its test would prove nothing.
+func TestUDPCheckSkipsClientsWeTested(t *testing.T) {
+	h := buildHarness(t)
+	tester := startUDPCheck(t, h).Addr
+	h.c.onMessage(FirewallUDP{IP: netip.MustParseAddr("10.50.0.2"), InternPort: 4672})
+	if next := requestsOf[UDPCheck](h.c.onMessage(UDPCheckEnded{IP: tester.Addr()})); len(next) != 0 {
+		t.Fatalf("asked %+v, a client we sent test packets to", next)
 	}
 }

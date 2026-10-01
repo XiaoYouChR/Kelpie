@@ -99,7 +99,7 @@ func TestOpenNodeServesAsBuddy(t *testing.T) {
 		t.Fatal("answered a buddy request before a UDP test confirmed us open")
 	}
 	h.setUDPVerdict(false)
-	h.record(h.c.onPacket(asker, req, 0x5555, h.now))
+	h.record(h.c.onPacket(asker, req, keys{sender: 0x5555}, h.now))
 	res := packetsOf[kadwire.FindBuddyRes](h)
 	wantRes := kadwire.FindBuddyRes{Target: target, UserHash: userHash, TCPPort: 4662, HasOptions: true, Options: connectOptions}
 	if len(res) != 1 || res[0].to != asker || res[0].packet != wantRes {

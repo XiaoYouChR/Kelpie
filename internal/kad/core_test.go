@@ -48,11 +48,11 @@ func (h *harness) record(out output) {
 		}
 		switch p := d.packet.(type) {
 		case kadwire.Req:
-			h.record(h.c.onPacket(peer.Addr, kadwire.Res{Target: p.Target}, 0, h.now))
+			h.record(h.c.onPacket(peer.Addr, kadwire.Res{Target: p.Target}, keys{}, h.now))
 		case kadwire.HelloReq:
-			h.record(h.c.onPacket(peer.Addr, kadwire.HelloRes{ID: peer.ID, TCPPort: peer.TCPPort, Version: peer.Version}, 0, h.now))
+			h.record(h.c.onPacket(peer.Addr, kadwire.HelloRes{ID: peer.ID, TCPPort: peer.TCPPort, Version: peer.Version}, keys{}, h.now))
 		case kadwire.BootstrapReq:
-			h.record(h.c.onPacket(peer.Addr, kadwire.BootstrapRes{ID: peer.ID, TCPPort: peer.TCPPort, Version: peer.Version}, 0, h.now))
+			h.record(h.c.onPacket(peer.Addr, kadwire.BootstrapRes{ID: peer.ID, TCPPort: peer.TCPPort, Version: peer.Version}, keys{}, h.now))
 		}
 	}
 }
@@ -63,7 +63,7 @@ func (h *harness) tick(d time.Duration) {
 }
 
 func (h *harness) receive(from netip.AddrPort, p wire.Packet) {
-	h.record(h.c.onPacket(from, p, 0, h.now))
+	h.record(h.c.onPacket(from, p, keys{}, h.now))
 }
 
 // clearSent forgets what was sent so far.
@@ -505,7 +505,7 @@ func TestObfuscationFollowsAMule(t *testing.T) {
 		t.Fatalf("answer to a plain ping %+v, want plain", h.sent)
 	}
 	h.clearSent()
-	h.record(h.c.onPacket(modern.Addr, kadwire.Ping{}, 0x1234, h.now))
+	h.record(h.c.onPacket(modern.Addr, kadwire.Ping{}, keys{sender: 0x1234}, h.now))
 	if len(h.sent) != 1 || h.sent[0].receiverKey != 0x1234 || h.sent[0].nodeID != (wire.Hash{}) ||
 		h.sent[0].senderKey != obfuscation.BuildKadVerifyKey(h.c.udpKey, modern.Addr.Addr()) {
 		t.Fatalf("answer to an obfuscated ping %+v, want it keyed by the ping's sender key", h.sent)
@@ -516,8 +516,101 @@ func TestObfuscationFollowsAMule(t *testing.T) {
 
 	d := h.sent[0]
 	data := h.c.buildDatagram(d)
-	p, key, isKad := buildCore(coreConfig{ID: modern.ID, Rand: h.c.rng}, h.now).parseDatagram(Datagram{Addr: netip.AddrPortFrom(netip.MustParseAddr("10.0.0.1"), 4672), Data: data})
-	if isKad || p != nil || key != 0 {
+	p, k, isKad := buildCore(coreConfig{ID: modern.ID, Rand: h.c.rng}, h.now).parseDatagram(Datagram{Addr: netip.AddrPortFrom(netip.MustParseAddr("10.0.0.1"), 4672), Data: data})
+	if isKad || p != nil || k != (keys{}) {
 		t.Fatal("a receiver key datagram decoded with someone else's verify key")
+	}
+}
+
+func miscOptionsOf(h kadwire.Hello) (byte, bool) {
+	for _, t := range h.Tags {
+		if t.ID == kadwire.TagKadMiscOptions {
+			return byte(t.Uint), true
+		}
+	}
+	return 0, false
+}
+
+// TestHelloKeysAndMiscOptions follows AddContact2 and SendMyDetails: a
+// hello carrying our verify key proves its sender's IP, a UDP firewalled
+// sender stays out of the table, and only version 8 nodes hear our
+// firewall state.
+func TestHelloKeysAndMiscOptions(t *testing.T) {
+	h := buildHarness(t)
+	known := buildNear(fileHash, 1)
+	h.c.onPacket(known.Addr, kadwire.HelloReq{ID: known.ID, TCPPort: 4662, Version: 8}, keys{sender: 0x77, receiver: obfuscation.BuildKadVerifyKey(h.c.udpKey, known.Addr.Addr())}, h.now)
+	if c := h.c.table.byID[known.ID]; c == nil || !c.isVerified {
+		t.Fatal("a hello with our verify key did not verify its sender")
+	}
+	stranger := buildNear(fileHash, 2)
+	h.c.onPacket(stranger.Addr, kadwire.HelloReq{ID: stranger.ID, TCPPort: 4662, Version: 8}, keys{sender: 0x77, receiver: 0x1234}, h.now)
+	if c := h.c.table.byID[stranger.ID]; c == nil || c.isVerified {
+		t.Fatal("want a hello with a wrong receiver key added unverified")
+	}
+
+	h.clearSent()
+	nat := buildNear(fileHash, 3)
+	udpFirewalled := wire.Tag{Type: wire.TagUint8, ID: kadwire.TagKadMiscOptions, Uint: uint64(kadwire.MiscUDPFirewalled | kadwire.MiscTCPFirewalled)}
+	h.receive(nat.Addr, kadwire.HelloReq{ID: nat.ID, TCPPort: 4662, Version: 8, Tags: []wire.Tag{udpFirewalled}})
+	if h.c.table.byID[nat.ID] != nil {
+		t.Fatal("added a UDP firewalled node")
+	}
+	res := packetsOf[kadwire.HelloRes](h)
+	if len(res) != 1 {
+		t.Fatalf("hello answers %+v, want one", res)
+	}
+	if misc, ok := miscOptionsOf(kadwire.Hello(res[0].packet)); !ok || misc != kadwire.MiscTCPFirewalled {
+		t.Fatalf("misc options %#x %v, want TCP firewalled before any check", misc, ok)
+	}
+
+	h.clearSent()
+	legacy := buildNear(fileHash, 4)
+	h.receive(legacy.Addr, kadwire.HelloReq{ID: legacy.ID, TCPPort: 4662, Version: 7})
+	if res := packetsOf[kadwire.HelloRes](h); len(res) != 1 || len(res[0].packet.Tags) != 0 {
+		t.Fatalf("answer to a version 7 hello %+v, want no tags", res)
+	}
+}
+
+// TestHelloResAck is the three-way hello of Kad version 8: a node we added
+// on its word is asked for a HelloResAck, which verifies it only when it
+// carries our verify key; we answer such a request when the asker is a
+// version 8 node that gave us its key.
+func TestHelloResAck(t *testing.T) {
+	h := buildHarness(t)
+	n := buildNear(fileHash, 1)
+	n.Version = 8
+	verifyKey := obfuscation.BuildKadVerifyKey(h.c.udpKey, n.Addr.Addr())
+	h.c.onPacket(n.Addr, kadwire.HelloResAck{ID: n.ID}, keys{receiver: verifyKey}, h.now)
+	h.receive(n.Addr, kadwire.HelloReq{ID: n.ID, TCPPort: 4662, Version: 8})
+	if h.c.table.byID[n.ID].isVerified {
+		t.Fatal("an unasked ACK verified a node")
+	}
+	res := packetsOf[kadwire.HelloRes](h)
+	if misc, _ := miscOptionsOf(kadwire.Hello(res[0].packet)); misc&kadwire.MiscRequestsAck == 0 {
+		t.Fatalf("hello answer %+v does not ask for an ACK", res)
+	}
+	h.c.onPacket(n.Addr, kadwire.HelloResAck{ID: n.ID}, keys{receiver: 0x1234}, h.now)
+	if h.c.table.byID[n.ID].isVerified {
+		t.Fatal("an ACK without our verify key verified a node")
+	}
+	h.receive(n.Addr, kadwire.HelloReq{ID: n.ID, TCPPort: 4662, Version: 8})
+	h.c.onPacket(n.Addr, kadwire.HelloResAck{ID: n.ID}, keys{receiver: verifyKey}, h.now)
+	if !h.c.table.byID[n.ID].isVerified {
+		t.Fatal("the ACK did not verify the node")
+	}
+
+	askAck := []wire.Tag{{Type: wire.TagUint8, ID: kadwire.TagKadMiscOptions, Uint: uint64(kadwire.MiscRequestsAck)}}
+	for _, tc := range []struct {
+		version   byte
+		senderKey uint32
+		isAcked   bool
+	}{{8, 0x55, true}, {7, 0x55, false}, {8, 0, false}} {
+		h.clearSent()
+		h.c.rpcs.add(&rpc{kind: rpcHello, node: n, sent: h.now})
+		h.record(h.c.onPacket(n.Addr, kadwire.HelloRes{ID: n.ID, TCPPort: 4662, Version: tc.version, Tags: askAck}, keys{sender: tc.senderKey}, h.now))
+		acks := packetsOf[kadwire.HelloResAck](h)
+		if tc.isAcked != (len(acks) == 1) || tc.isAcked && (acks[0].packet.ID != selfID || h.sent[0].receiverKey != tc.senderKey || h.sent[0].nodeID != (wire.Hash{})) {
+			t.Fatalf("version %d, sender key %#x: sent %+v", tc.version, tc.senderKey, h.sent)
+		}
 	}
 }

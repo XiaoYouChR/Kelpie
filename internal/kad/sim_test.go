@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -52,6 +53,8 @@ type sim struct {
 	callbacks []CallbackRequested
 	// isObfuscated: some datagram went out obfuscated.
 	isObfuscated bool
+	// acks are the HELLO_RES_ACKs delivered, sender first.
+	acks [][2]netip.AddrPort
 }
 
 // buildSim makes a node for each ID; every node but the first knows only
@@ -139,12 +142,15 @@ func (s *sim) drain() {
 		if to == nil || to.isUDPFirewalled && !to.sentTo[d.from.Addr()] {
 			continue
 		}
-		p, senderKey, isKad := to.c.parseDatagram(Datagram{Addr: d.from, Data: d.data})
+		p, keys, isKad := to.c.parseDatagram(Datagram{Addr: d.from, Data: d.data})
 		if !isKad || p == nil {
 			s.t.Fatalf("undecodable datagram %x", d.data)
 		}
 		s.isObfuscated = s.isObfuscated || d.data[0] != wire.ProtocolKad
-		s.record(to, to.c.onPacket(d.from, p, senderKey, s.now))
+		if _, ok := p.(kadwire.HelloResAck); ok {
+			s.acks = append(s.acks, [2]netip.AddrPort{d.from, d.to})
+		}
+		s.record(to, to.c.onPacket(d.from, p, keys, s.now))
 	}
 }
 
@@ -287,6 +293,13 @@ func TestSimulatedBuddy(t *testing.T) {
 	s := buildSim(t, ids)
 	firewalled, buddy, searcher := s.nodes[10], s.nodes[11], s.nodes[3]
 	firewalled.isFirewalled, firewalled.isUDPFirewalled = true, true
+	// In a network this small every tester soon knows every asker (the
+	// HELLO_RES_ACK verifies newcomers at the seed at once, and the seed
+	// spreads them), so most UDP tests come back "already known" and do
+	// not count. The open nodes start with the verdict of an earlier test.
+	for _, n := range s.nodes {
+		n.c.udp.isVerified = n != firewalled
+	}
 	firewalled.c.setWanted(Wanted{Publish: []Publish{{Hash: fileHash, Size: 123456}}}, s.now)
 	s.run(12 * time.Minute)
 	if firewalled.c.buddy.Addr != buddy.addr {
@@ -311,5 +324,57 @@ func TestSimulatedBuddy(t *testing.T) {
 	want := CallbackRequested{BuddyID: firewalled.c.buddyTarget(), Hash: fileHash, Addr: netip.AddrPortFrom(searcher.addr.Addr(), 4662)}
 	if len(s.callbacks) != 1 || s.callbacks[0] != want {
 		t.Fatalf("callbacks %+v, want %+v", s.callbacks, want)
+	}
+}
+
+func (s *sim) isVerifiedBy(n, by *simNode) bool {
+	c := by.c.table.byID[n.c.id]
+	return c != nil && c.isVerified
+}
+
+// TestSimulatedHelloResAck: a newcomer's first hello carries no key of the
+// seed's, so the seed asks for a HELLO_RES_ACK and verifies the newcomer at
+// once, before greeting it itself; the newcomers then verify each other.
+func TestSimulatedHelloResAck(t *testing.T) {
+	s := buildSim(t, buildIDs(3, false))
+	seed, a, b := s.nodes[0], s.nodes[1], s.nodes[2]
+	s.run(time.Second)
+	for _, n := range []*simNode{a, b} {
+		if !s.isVerifiedBy(n, seed) || !slices.Contains(s.acks, [2]netip.AddrPort{n.addr, seed.addr}) {
+			t.Fatalf("seed did not verify %v by its ACK (acks %v)", n.addr, s.acks)
+		}
+	}
+	s.run(time.Minute)
+	for _, n := range s.nodes {
+		for _, by := range s.nodes {
+			if n != by && !s.isVerifiedBy(n, by) {
+				t.Fatalf("%v did not verify %v", by.addr, n.addr)
+			}
+		}
+	}
+}
+
+// TestSimulatedVersion7Node: a version 7 node is never asked for an ACK and
+// its own request for one is ignored (KademliaUDPListener.cpp:406); it is
+// verified by the hellos of the others, and verifies them.
+func TestSimulatedVersion7Node(t *testing.T) {
+	s := buildSim(t, buildIDs(3, false))
+	legacy := s.nodes[2]
+	legacy.c.version = 7
+	s.run(3 * time.Minute)
+	for _, ack := range s.acks {
+		if ack[0] == legacy.addr || ack[1] == legacy.addr {
+			t.Fatalf("ACK %v involves the version 7 node", ack)
+		}
+	}
+	for _, n := range s.nodes {
+		for _, by := range s.nodes {
+			if n != by && !s.isVerifiedBy(n, by) {
+				t.Fatalf("%v did not verify %v", by.addr, n.addr)
+			}
+		}
+	}
+	if ct := s.nodes[0].c.table.byID[legacy.c.id]; ct.Version != 7 {
+		t.Fatalf("seed has the version 7 node as version %d", ct.Version)
 	}
 }
