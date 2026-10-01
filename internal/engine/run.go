@@ -367,9 +367,7 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 				}
 			}
 		case transfer.TraceEvent:
-			if e.trace != nil {
-				e.trace.send(toTraceLine(a))
-			}
+			e.sendTrace(a)
 		}
 	}
 }

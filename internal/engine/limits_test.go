@@ -356,3 +356,13 @@ func TestPeerMapsAreBounded(t *testing.T) {
 		t.Fatalf("%d A4AF clients remembered, want only the one still held", len(e.a4afClients))
 	}
 }
+
+func TestTraceBacklogIsBounded(t *testing.T) {
+	e := &Engine{trace: buildLeafQueue[traceLine](1)}
+	for range maxTraceBacklog + 1000 {
+		e.sendTrace(transfer.TraceEvent{Event: transfer.EventFound})
+	}
+	if got := len(e.trace.backlog); got != maxTraceBacklog {
+		t.Fatalf("%d trace lines waiting, want %d", got, maxTraceBacklog)
+	}
+}
