@@ -15,7 +15,9 @@ A Run's outcome is the Transfer's state: it reports Progress while open, a
 download Run ends on its own when the file is complete, a failed Run raises
 `kelpie.Error`, and closing it stops the Transfer. Every failure, including
 admission, startup, and Engine Process exit, reaches the caller through the
-Run that it affects; no other call raises a business error.
+Run that it affects; no other call raises a business error, except that
+`remove(hash)` starts the Engine Process and raises `kelpie.Error` when it
+cannot.
 
 Apart from the handshake, every protocol message is one-way. The caller tags
 each Run with a run id; Progress for a run id may be coalesced, and exactly one
