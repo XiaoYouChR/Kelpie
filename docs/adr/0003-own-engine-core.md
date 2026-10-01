@@ -52,6 +52,8 @@ own format.
 - Protocol obfuscation for client connections is in the first release too:
   on the real network the fastest sources of the hot link (aMule seedboxes)
   require it and close a plain connection right after our Hello.
-- Later: Kad buddies, AICH, NAT-PMP and PCP. Kad stays IPv4.
+- NAT-PMP and PCP join the first release: UPnP is often off or broken on
+  home routers, and a HighID matters more to speed than any other feature.
+- Later: Kad buddies, AICH. Kad stays IPv4.
 - Code may be reused from `goed2k` (MIT) with attribution; eMule and aMule
   (GPL) contribute protocol knowledge only.
