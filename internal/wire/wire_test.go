@@ -216,8 +216,8 @@ func TestBitfieldGolden(t *testing.T) {
 	}
 	r := Reader{Rest: raw}
 	back := r.Bitfield()
-	if r.Err() != nil || !reflect.DeepEqual(back.Bools(), f.Bools()) || back.Count() != 3 {
-		t.Fatalf("back = %v", back.Bools())
+	if r.Err() != nil || !reflect.DeepEqual(back.bools(), f.bools()) || back.Count() != 3 {
+		t.Fatalf("back = %v", back.bools())
 	}
 }
 
@@ -225,20 +225,18 @@ func TestBitfieldDropsTrailingBits(t *testing.T) {
 	r := Reader{Rest: []byte{0x03, 0x00, 0xFF}}
 	f := r.Bitfield()
 	if f.Len() != 3 || f.Count() != 3 || f.Has(3) {
-		t.Fatalf("bitfield = %v", f.Bools())
+		t.Fatalf("bitfield = %v", f.bools())
 	}
 	if raw := BuildBitfield(nil, f); !bytes.Equal(raw, []byte{0x03, 0x00, 0x07}) {
 		t.Fatalf("re-encoded = %x", raw)
 	}
 }
 
-func TestBitfieldSetClear(t *testing.T) {
+func TestBitfieldSet(t *testing.T) {
 	f := ToBitfield(make([]bool, 12))
 	f.Set(11)
-	f.Set(0)
-	f.Clear(0)
 	if !f.Has(11) || f.Has(0) || f.Has(12) || f.Has(-1) || f.Count() != 1 {
-		t.Fatalf("bitfield = %v", f.Bools())
+		t.Fatalf("bitfield = %v", f.bools())
 	}
 }
 
@@ -260,8 +258,8 @@ func (r *failingReader) Read(b []byte) (int, error) {
 func TestOversizedFrameIsRejectedUnread(t *testing.T) {
 	head := []byte{ProtocolEMule, 0, 0, 0, 0, 0x60}
 	binary.LittleEndian.PutUint32(head[1:5], MaxFrameSize+1)
-	if _, err := ParseFrameFrom(&failingReader{t: t, head: head}); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("err = %v, want ErrTooLarge", err)
+	if _, err := ParseFrameFrom(&failingReader{t: t, head: head}); !errors.Is(err, errTooLarge) {
+		t.Fatalf("err = %v, want errTooLarge", err)
 	}
 	binary.LittleEndian.PutUint32(head[1:5], MaxFrameSize)
 	raw := append(head, make([]byte, MaxFrameSize-1)...)
@@ -278,14 +276,14 @@ func TestTruncatedFrameFails(t *testing.T) {
 }
 
 func TestInflationBomb(t *testing.T) {
-	bomb := make([]byte, MaxInflatedSize+1)
-	if _, err := ParseFrameFrom(bytes.NewReader(BuildPackedFrame(nil, 0x60, bomb))); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("frame err = %v, want ErrTooLarge", err)
+	bomb := make([]byte, maxInflatedSize+1)
+	if _, err := ParseFrameFrom(bytes.NewReader(BuildPackedFrame(nil, 0x60, bomb))); !errors.Is(err, errTooLarge) {
+		t.Fatalf("frame err = %v, want errTooLarge", err)
 	}
-	if _, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb)); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("datagram err = %v, want ErrTooLarge", err)
+	if _, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb)); !errors.Is(err, errTooLarge) {
+		t.Fatalf("datagram err = %v, want errTooLarge", err)
 	}
-	if f, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb[:MaxInflatedSize])); err != nil || len(f.Body) != MaxInflatedSize {
+	if f, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb[:maxInflatedSize])); err != nil || len(f.Body) != maxInflatedSize {
 		t.Fatalf("largest datagram: %d bytes, err %v", len(f.Body), err)
 	}
 }

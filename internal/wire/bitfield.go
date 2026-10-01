@@ -34,8 +34,6 @@ func (f Bitfield) Has(i int) bool {
 
 func (f Bitfield) Set(i int) { f.bits[i/8] |= 1 << (i % 8) }
 
-func (f Bitfield) Clear(i int) { f.bits[i/8] &^= 1 << (i % 8) }
-
 func (f Bitfield) Count() int {
 	n := 0
 	for i := range f.size {
@@ -46,7 +44,7 @@ func (f Bitfield) Count() int {
 	return n
 }
 
-func (f Bitfield) Bools() []bool {
+func (f Bitfield) bools() []bool {
 	out := make([]bool, f.size)
 	for i := range out {
 		out[i] = f.Has(i)
