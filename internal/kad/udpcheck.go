@@ -142,7 +142,7 @@ func (c *core) onPong(from netip.AddrPort, p kadwire.Pong) {
 // test whether others reach us.
 func (c *core) addUDPCheckClients(contacts []kadwire.Contact) {
 	for _, ct := range contacts {
-		n := Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}
+		n := toNode(ct)
 		if ct.Version > 1 && matchGoodAddr(n.Addr) && c.udp.isRunning() {
 			c.udp.possible = append([]Node{n}, c.udp.possible...)
 		}

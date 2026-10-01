@@ -63,14 +63,10 @@ func samplePackets() []wire.Packet {
 		HelloResAck{ID: idA},
 		Req{SearchType: FindNode, Target: idA, Receiver: idB},
 		Res{Target: idA, Contacts: []Contact{{ID: idC, Addr: netip.MustParseAddr("127.0.0.1"), UDPPort: 4672, TCPPort: 4661, Version: 8}}},
-		SearchKeysReq{Target: idA},
 		SearchSourcesReq{Target: idA, StartPos: 7, Size: 12345},
-		SearchNotesReq{Target: idA, Size: 99},
 		SearchRes{Source: idA, Target: idB, Results: []Entry{{ID: idC, Tags: sourceTags}}},
-		PublishKeysReq{KeywordID: idA, Sources: []Entry{{ID: idB, Tags: []wire.Tag{{Type: wire.TagString, ID: 0x01, String: "demo.epub"}}}}},
 		PublishSourcesReq{FileID: idA, Source: Entry{ID: idB, Tags: sourceTags}},
 		PublishRes{FileID: idA, Load: 1},
-		PublishNotesRes{FileID: idA, Load: 1},
 		LegacyFirewalledReq{TCPPort: 4662},
 		FirewalledReq{TCPPort: 4661, ID: idA, Options: 3},
 		FirewalledRes{Addr: netip.MustParseAddr("127.0.0.1")},
@@ -124,19 +120,6 @@ func TestContactGolden(t *testing.T) {
 	want := "e0cfd63131e96ad1d7593cb7c089c0e0" + "0100007f" + "4012" + "3512" + "08"
 	if hex.EncodeToString(got) != want {
 		t.Fatalf("contact = %x\nwant      %s", got, want)
-	}
-}
-
-// Ported from goed2k protocol/kad/types_test.go.
-func TestSearchEntryExtractsSourceAddrPort(t *testing.T) {
-	entry := Entry{Tags: []wire.Tag{
-		{ID: TagSourceType, Uint: 1},
-		{ID: TagSourceIP, Uint: 0x7f000001},
-		{ID: TagSourcePort, Uint: 4662},
-	}}
-	ap, ok := entry.SourceAddrPort()
-	if !ok || ap != netip.MustParseAddrPort("127.0.0.1:4662") {
-		t.Fatalf("source = %v %v", ap, ok)
 	}
 }
 

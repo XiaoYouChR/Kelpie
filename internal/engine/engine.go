@@ -405,7 +405,7 @@ func (e *Engine) startKad(nodes []kad.Node) {
 		Rand:      rand.New(rand.NewPCG(random.Uint64(), random.Uint64())),
 	})
 	e.kadStatus = kad.Status{IsFirewalled: true}
-	e.kadID = e.kad.State().ID
+	e.kadID = e.kad.ID()
 	ctx, cancel := context.WithCancel(e.ctx)
 	e.kadCancel = cancel
 	e.kadDone = make(chan struct{})
@@ -530,12 +530,11 @@ func (e *Engine) run() {
 	defer close(e.hubDone)
 	ticker := e.ports.Clock.CreateTicker(tickInterval)
 	defer ticker.Stop()
-	var found <-chan kad.SourcesFound
-	var received <-chan kad.Datagram
-	var statuses <-chan kad.Status
-	var requests <-chan kad.Request
+	var kadMessages <-chan any
+	var kadStatuses <-chan kad.Status
+	var kadStates <-chan store.Kad
 	if e.kad != nil {
-		found, received, statuses, requests = e.kad.Found(), e.kad.Received(), e.kad.Statuses(), e.kad.Requests()
+		kadMessages, kadStatuses, kadStates = e.kad.Messages(), e.kad.Statuses(), e.kad.States()
 	}
 	for {
 		select {
@@ -547,14 +546,12 @@ func (e *Engine) run() {
 			e.onMessage(m)
 		case <-ticker.C():
 			e.onTick()
-		case f := <-found:
-			e.onKadSources(f)
-		case d := <-received:
-			e.onDatagram(d.Addr, d.Data)
-		case s := <-statuses:
+		case m := <-kadMessages:
+			e.onKadMessage(m)
+		case s := <-kadStatuses:
 			e.kadStatus = s
-		case r := <-requests:
-			e.onKadRequest(r)
+		case s := <-kadStates:
+			e.state.Kad = s
 		}
 		e.refreshRuns()
 		e.refreshNetwork()
@@ -711,6 +708,11 @@ func (e *Engine) stop() error {
 	if e.kad != nil {
 		e.kadCancel()
 		<-e.kadDone
+		select {
+		case s := <-e.kad.States():
+			e.state.Kad = s
+		default:
+		}
 	}
 	close(e.saves)
 	<-e.saverDone
@@ -749,9 +751,6 @@ func (e *Engine) buildState() store.State {
 		Kad:       e.state.Kad,
 		Credits:   map[wire.Hash]store.Credit{},
 		Transfers: maps.Clone(e.state.Transfers),
-	}
-	if e.kad != nil {
-		state.Kad = e.kad.State()
 	}
 	for _, c := range e.ledger.ToCredits() {
 		state.Credits[c.User] = store.Credit{Uploaded: c.Uploaded, Downloaded: c.Downloaded, PublicKey: c.PublicKey, LastSeen: c.LastSeen}

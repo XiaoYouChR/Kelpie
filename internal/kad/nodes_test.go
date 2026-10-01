@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
+	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
 )
 
 func mustHash(s string) wire.Hash {
@@ -41,7 +42,7 @@ func TestParseNodesReadsShippedFile(t *testing.T) {
 }
 
 func buildNodeEntry(b []byte, n Node, typeOrVersion byte) []byte {
-	b = buildID(b, n.ID)
+	b = kadwire.BuildID(b, n.ID)
 	ip := n.Addr.Addr().As4()
 	b = binary.LittleEndian.AppendUint32(b, binary.BigEndian.Uint32(ip[:]))
 	b = binary.LittleEndian.AppendUint16(b, n.Addr.Port())
