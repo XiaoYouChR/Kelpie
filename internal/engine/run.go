@@ -79,9 +79,10 @@ func (e *Engine) startRun(c RunCommand) *Error {
 		return &Error{Code: CodeTransferBusy, Message: "another run is open for " + file.Hash.String()}
 	}
 	r := &run{id: c.ID, mode: c.Mode, file: file, path: c.File, asked: map[wire.Hash]time.Time{}}
-	var state *store.Transfer
+	var state *transfer.State
 	if old, ok := e.state.Transfers[file.Hash]; ok && old.File == c.File {
-		state = &old
+		resume := transfer.State(old)
+		state = &resume
 	}
 	info, err := e.ports.Disk.Probe(c.File)
 	switch {
@@ -131,7 +132,7 @@ func toFileError(err error) *Error {
 	return &Error{Code: CodeFileError, Message: err.Error()}
 }
 
-func isComplete(state *store.Transfer) bool {
+func isComplete(state *transfer.State) bool {
 	return len(state.VerifiedParts) == piece.PartCount(state.Size) && piece.Set(state.VerifiedParts).IsFull()
 }
 
@@ -141,7 +142,7 @@ func (e *Engine) addRun(r *run) {
 	e.runList = append(e.runList, r)
 }
 
-func (e *Engine) startTransfer(r *run, state *store.Transfer) {
+func (e *Engine) startTransfer(r *run, state *transfer.State) {
 	mode := transfer.ModeDownload
 	if r.mode == ModeSeed {
 		mode = transfer.ModeSeed
@@ -167,7 +168,7 @@ func (e *Engine) onFileHashed(r *run, partHashes []wire.Hash, fileHash wire.Hash
 		e.stopRun(r, &Error{Code: CodeFileError, Message: r.path + " does not match the link"})
 		return
 	}
-	state := store.Transfer{
+	state := transfer.State{
 		Size:          r.file.Size,
 		File:          r.path,
 		PartHashes:    partHashes,
@@ -183,7 +184,7 @@ func (e *Engine) onFileHashed(r *run, partHashes []wire.Hash, fileHash wire.Hash
 
 func (e *Engine) refreshShare(r *run) {
 	state := r.transfer.ToState()
-	r.share = peer.Share{Name: r.file.Name, Size: r.file.Size, Parts: piece.Set(state.VerifiedParts), PartHashes: state.PartHashes, Tree: r.tree}
+	r.share = peer.Share{Name: r.file.Name, Size: r.file.Size, Parts: state.VerifiedParts, PartHashes: state.PartHashes, Tree: r.tree}
 }
 
 func (e *Engine) shareByHash(file wire.Hash) (peer.Share, bool) {
@@ -212,7 +213,7 @@ func (e *Engine) stopRun(r *run, err *Error) {
 	e.runQueueActions(e.queue.RemoveFile(h))
 	if r.transfer != nil {
 		e.refreshProgress(r, false)
-		e.state.Transfers[h] = r.transfer.ToState()
+		e.state.Transfers[h] = store.Transfer(r.transfer.ToState())
 	}
 	r.handle.Close()
 	delete(e.runs, r.id)

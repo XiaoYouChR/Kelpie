@@ -758,7 +758,7 @@ func (e *Engine) buildState() store.State {
 	}
 	for _, r := range e.runList {
 		if r.transfer != nil {
-			state.Transfers[r.file.Hash] = r.transfer.ToState()
+			state.Transfers[r.file.Hash] = store.Transfer(r.transfer.ToState())
 		}
 	}
 	state.Servers = toStoreServers(e.server.Entries())

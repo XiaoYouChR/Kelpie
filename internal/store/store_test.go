@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
@@ -83,7 +84,7 @@ func TestLoadGoed2k(t *testing.T) {
 					mustHash(t, "AABBCCDDEEFF00112233445566778899"),
 				},
 				VerifiedParts: []bool{true, false, false},
-				WrittenBlocks: []Block{{Part: 1, Index: 0}, {Part: 1, Index: 1}, {Part: 1, Index: 2}, {Part: 1, Index: 3}},
+				WrittenBlocks: []piece.Block{piece.BlockOf(25000000, 1, 0), piece.BlockOf(25000000, 1, 1), piece.BlockOf(25000000, 1, 2), piece.BlockOf(25000000, 1, 3)},
 				Created:       time.UnixMilli(1787328879185).UTC(),
 			},
 			mustHash(t, "31D6CFE0D16AE931B73C59D7E0C089C0"): {
@@ -117,10 +118,12 @@ func buildSampleState(t testing.TB) State {
 		File:          "/tmp/a.iso",
 		PartHashes:    []wire.Hash{mustHash(t, "0A1B2C3D4E5F60718293A4B5C6D7E8F9"), mustHash(t, "1F2E3D4C5B6A79880716253443526170"), mustHash(t, "AABBCCDDEEFF00112233445566778899")},
 		VerifiedParts: []bool{true, false, true},
-		WrittenBlocks: []Block{{Part: 1, Index: 7}},
-		PartialBlocks: []PartialBlock{{Part: 1, Index: 8, Size: 1000}},
-		Uploaded:      123456,
-		Created:       lastSeen,
+		WrittenBlocks: []piece.Block{
+			piece.BlockOf(25000000, 1, 7),
+			{Begin: piece.BlockOf(25000000, 1, 8).Begin, End: piece.BlockOf(25000000, 1, 8).Begin + 1000},
+		},
+		Uploaded: 123456,
+		Created:  lastSeen,
 	}
 	state.Servers = []Server{
 		{Endpoint: netip.MustParseAddrPort("45.82.80.155:5687"), Failures: 2, Ping: 80, Users: 5000, Files: 9000, SoftFiles: 10000, UDPFlags: 0x7FB, TCPObfuscationPort: 5688, UDPObfuscationPort: 5689, PingedAt: lastSeen},
@@ -144,7 +147,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 
 	raw, _ := os.ReadFile(filepath.Join(folder, fileName))
-	if !strings.Contains(string(raw), `"version": 4`) || !strings.Contains(string(raw), `"31D6CFE0D16AE931B73C59D7E0C089C0"`) {
+	if !strings.Contains(string(raw), `"version": 4`) || !strings.Contains(string(raw), `"31D6CFE0D16AE931B73C59D7E0C089C0"`) ||
+		!strings.Contains(string(raw), `"size": 1000`) {
 		t.Fatalf("unexpected file:\n%s", raw)
 	}
 	entries, _ := os.ReadDir(folder)

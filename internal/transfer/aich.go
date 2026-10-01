@@ -220,13 +220,12 @@ func (t *Transfer) OnBlocksHashed(part int, hashes []wire.AICHHash, now time.Tim
 	// is noted apart from who sent it.
 	isCorrupt := false
 	var senders []uint64
-	begin := piece.PartRange(t.file.Size, part).Begin
 	for i, hash := range verified {
 		if i < len(hashes) && hashes[i] == hash {
 			continue
 		}
 		isCorrupt = true
-		for _, sender := range t.picker.OnBlockFailed(piece.BlockAt(t.file.Size, begin+int64(i)*piece.BlockSize)) {
+		for _, sender := range t.picker.OnBlockFailed(piece.BlockOf(t.file.Size, part, i)) {
 			if !slices.Contains(senders, sender) {
 				senders = append(senders, sender)
 			}

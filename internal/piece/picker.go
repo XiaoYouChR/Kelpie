@@ -29,23 +29,16 @@ func PartRange(size int64, part int) Block {
 	return Block{Begin: begin, End: min(begin+PartSize, size)}
 }
 
-// BlockAt is the whole block holding offset in a file of size bytes.
-func BlockAt(size, offset int64) Block {
-	return blockOf(size, int(offset/PartSize), int(offset%PartSize/BlockSize))
+func blockAt(size, offset int64) Block {
+	return BlockOf(size, int(offset/PartSize), int(offset%PartSize/BlockSize))
 }
 
-func blockOf(size int64, part, index int) Block {
+// BlockOf is block index of part in a file of size bytes. An index past the
+// part's last block gives an empty or reversed range.
+func BlockOf(size int64, part, index int) Block {
 	partRange := PartRange(size, part)
 	begin := partRange.Begin + int64(index)*BlockSize
 	return Block{Begin: begin, End: min(begin+BlockSize, partRange.End)}
-}
-
-// ResumeData is the part of a Picker that survives a restart, as aMule's
-// .part.met keeps its gap list. A WrittenBlocks entry is a whole block or,
-// for a block cut off when a slot ended, its leading piece [Begin, Begin+n).
-type ResumeData struct {
-	VerifiedParts []int
-	WrittenBlocks []Block
 }
 
 // maxRequesters bounds endgame duplication: one original request plus one copy.
@@ -79,7 +72,11 @@ type Picker[P comparable] struct {
 	peerParts    map[P]Set
 }
 
-func BuildPicker[P comparable](size int64, resume ResumeData, random *rand.Rand) (*Picker[P], error) {
+// BuildPicker restores the parts verified and the blocks written before a
+// restart, as aMule's .part.met keeps its gap list. A written block is a
+// whole block or, for a block cut off when a slot ended, its leading piece
+// [Begin, Begin+n).
+func BuildPicker[P comparable](size int64, verified Set, written []Block, random *rand.Rand) (*Picker[P], error) {
 	p := &Picker[P]{
 		size:         size,
 		random:       random,
@@ -87,15 +84,18 @@ func BuildPicker[P comparable](size int64, resume ResumeData, random *rand.Rand)
 		availability: make([]int, PartCount(size)),
 		peerParts:    map[P]Set{},
 	}
-	for _, part := range resume.VerifiedParts {
-		if part < 0 || part >= len(p.parts) {
+	for part, isVerified := range verified {
+		if !isVerified {
+			continue
+		}
+		if part >= len(p.parts) {
 			return nil, fmt.Errorf("resume data: part %d out of range", part)
 		}
 		p.parts[part].isVerified = true
 	}
-	for _, block := range resume.WrittenBlocks {
-		if block.Begin < 0 || block.Begin >= size || BlockAt(p.size, block.Begin).Begin != block.Begin ||
-			block.End <= block.Begin || block.End > BlockAt(p.size, block.Begin).End {
+	for _, block := range written {
+		if block.Begin < 0 || block.Begin >= size || blockAt(p.size, block.Begin).Begin != block.Begin ||
+			block.End <= block.Begin || block.End > blockAt(p.size, block.Begin).End {
 			return nil, fmt.Errorf("resume data: [%d, %d) is not the start of a block of this file", block.Begin, block.End)
 		}
 		if !p.parts[block.Part()].isVerified {
@@ -107,22 +107,21 @@ func BuildPicker[P comparable](size int64, resume ResumeData, random *rand.Rand)
 	return p, nil
 }
 
-func (p *Picker[P]) ToResumeData() ResumeData {
-	resume := ResumeData{VerifiedParts: []int{}, WrittenBlocks: []Block{}}
+// WrittenBlocks lists what BuildPicker takes back after a restart: the
+// written bytes of parts not yet verified.
+func (p *Picker[P]) WrittenBlocks() []Block {
+	var written []Block
 	for i, part := range p.parts {
-		if part.isVerified {
-			resume.VerifiedParts = append(resume.VerifiedParts, i)
-		}
 		// Disk workers may finish writes out of order, so a block's
 		// received prefix is on disk only once every write of it is done.
 		for j, state := range part.blocks {
 			if state.written > 0 && state.written == state.received {
-				block := blockOf(p.size, i, j)
-				resume.WrittenBlocks = append(resume.WrittenBlocks, Block{Begin: block.Begin, End: block.Begin + state.written})
+				block := BlockOf(p.size, i, j)
+				written = append(written, Block{Begin: block.Begin, End: block.Begin + state.written})
 			}
 		}
 	}
-	return resume
+	return written
 }
 
 func (p *Picker[P]) blockState(b Block) *blockState[P] {
@@ -139,10 +138,6 @@ func (p *Picker[P]) VerifiedParts() Set {
 		set[i] = part.isVerified
 	}
 	return set
-}
-
-func (p *Picker[P]) IsComplete() bool {
-	return p.VerifiedParts().IsFull()
 }
 
 // WrittenParts lists parts whose blocks are all on disk but whose hash has not
@@ -163,7 +158,7 @@ func (p *Picker[P]) isWritten(part int) bool {
 		return false
 	}
 	for j, block := range state.blocks {
-		if b := blockOf(p.size, part, j); block.written != b.End-b.Begin {
+		if b := BlockOf(p.size, part, j); block.written != b.End-b.Begin {
 			return false
 		}
 	}
@@ -234,7 +229,7 @@ func (p *Picker[P]) Request(peer P, n int) []Block {
 			if len(picked) == n {
 				return picked
 			}
-			b := blockOf(p.size, part, index)
+			b := BlockOf(p.size, part, index)
 			state := p.blockState(b)
 			if state.received < b.End-b.Begin && len(state.requesters) == 0 {
 				state.requesters = append(state.requesters, peer)
@@ -250,7 +245,7 @@ func (p *Picker[P]) Request(peer P, n int) []Block {
 			if len(picked) == n {
 				return picked
 			}
-			b := blockOf(p.size, part, index)
+			b := BlockOf(p.size, part, index)
 			state := p.blockState(b)
 			if state.received < b.End-b.Begin && len(state.requesters) < maxRequesters && !slices.Contains(state.requesters, peer) {
 				state.requesters = append(state.requesters, peer)
@@ -297,7 +292,7 @@ func (p *Picker[P]) hasUnrequestedBlock() bool {
 			return true
 		}
 		for j, block := range part.blocks {
-			if b := blockOf(p.size, i, j); block.received < b.End-b.Begin && len(block.requesters) == 0 {
+			if b := BlockOf(p.size, i, j); block.received < b.End-b.Begin && len(block.requesters) == 0 {
 				return true
 			}
 		}
@@ -314,7 +309,7 @@ func (p *Picker[P]) OnBlockReceived(peer P, b Block) (Block, bool) {
 	if p.parts[b.Part()].isVerified {
 		return Block{}, false
 	}
-	whole := BlockAt(p.size, b.Begin)
+	whole := blockAt(p.size, b.Begin)
 	state := p.blockState(b)
 	next := whole.Begin + state.received
 	if b.Begin > next || b.End <= next {

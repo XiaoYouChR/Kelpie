@@ -23,12 +23,15 @@ func FuzzResume(f *testing.F) {
 		File:          path,
 		PartHashes:    file.PartHashes,
 		VerifiedParts: []bool{true, false, false},
-		WrittenBlocks: []store.Block{{Part: 1, Index: 7}, {Part: 2, Index: 0}},
-		PartialBlocks: []store.PartialBlock{{Part: 1, Index: 8, Size: 1000}},
-		Uploaded:      5,
-		Created:       start,
+		WrittenBlocks: []piece.Block{
+			piece.BlockOf(file.Size, 1, 7),
+			piece.BlockOf(file.Size, 2, 0),
+			{Begin: piece.BlockOf(file.Size, 1, 8).Begin, End: piece.BlockOf(file.Size, 1, 8).Begin + 1000},
+		},
+		Uploaded: 5,
+		Created:  start,
 	}
-	seed := state.Transfers[file.Hash]
+	seed := transfer.State(state.Transfers[file.Hash])
 	resumed := transfer.Build(transfer.Options{File: file, Path: path, State: &seed, Random: rand.New(rand.NewPCG(1, 2))}, start)
 	if got, want := resumed.Progress(start).Received, piece.PartSize+piece.BlockSize+1000+5000; got != want {
 		f.Fatalf("seed resumes %d bytes, want %d", got, want)
@@ -56,7 +59,8 @@ func FuzzResume(f *testing.F) {
 			if saved.Size > 0 && saved.Size <= 256<<30 {
 				linked.Size = saved.Size
 			}
-			tr := transfer.Build(transfer.Options{File: linked, Path: saved.File, State: &saved, Random: rand.New(rand.NewPCG(1, 2))}, start)
+			resume := transfer.State(saved)
+			tr := transfer.Build(transfer.Options{File: linked, Path: saved.File, State: &resume, Random: rand.New(rand.NewPCG(1, 2))}, start)
 			tr.Progress(start)
 			tr.ToState()
 		}

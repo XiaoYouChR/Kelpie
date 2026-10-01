@@ -11,7 +11,6 @@ import (
 
 	"github.com/XiaoYouChR/Kelpie/internal/link"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
-	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
@@ -55,12 +54,25 @@ type Progress struct {
 	ActivePeers  int
 }
 
+// State is the Transfer's Durable State. It has the fields of store.Transfer,
+// so the engine converts one to the other. WrittenBlocks are those of parts
+// not yet verified, each a whole block or the leading bytes of one.
+type State struct {
+	Size          int64
+	File          string
+	PartHashes    []wire.Hash
+	VerifiedParts piece.Set
+	WrittenBlocks []piece.Block
+	Uploaded      uint64
+	Created       time.Time
+}
+
 type Options struct {
 	File link.File
 	// Path is the file the Transfer writes; State is dropped when it belongs
 	// to another path.
 	Path   string
-	State  *store.Transfer
+	State  *State
 	Mode   Mode
 	Random *rand.Rand
 }
@@ -130,7 +142,7 @@ func Build(options Options, now time.Time) *Transfer {
 		aich:              buildAICHState(options.File.AICHHash, options.Random),
 	}
 	if state := options.State; state != nil && state.File == options.Path && state.Size == options.File.Size {
-		picker, err := piece.BuildPicker[uint64](state.Size, toResumeData(state), options.Random)
+		picker, err := piece.BuildPicker[uint64](state.Size, state.VerifiedParts, state.WrittenBlocks, options.Random)
 		if err == nil {
 			t.picker = picker
 			t.created = state.Created
@@ -141,11 +153,11 @@ func Build(options Options, now time.Time) *Transfer {
 		}
 	}
 	if t.picker == nil {
-		t.picker, _ = piece.BuildPicker[uint64](options.File.Size, piece.ResumeData{}, options.Random)
+		t.picker, _ = piece.BuildPicker[uint64](options.File.Size, nil, nil, options.Random)
 	}
 
 	switch {
-	case t.picker.IsComplete():
+	case t.isComplete():
 		t.outcome = Outcome{Status: StatusComplete}
 		if t.mode == ModeSeed {
 			t.outcome = Outcome{Status: StatusRunning}
@@ -163,28 +175,12 @@ func Build(options Options, now time.Time) *Transfer {
 	return t
 }
 
-func toResumeData(state *store.Transfer) piece.ResumeData {
-	resume := piece.ResumeData{}
-	for part, isVerified := range state.VerifiedParts {
-		if isVerified {
-			resume.VerifiedParts = append(resume.VerifiedParts, part)
-		}
-	}
-	for _, block := range state.WrittenBlocks {
-		partBegin := int64(block.Part) * piece.PartSize
-		begin := partBegin + int64(block.Index)*piece.BlockSize
-		end := min(begin+piece.BlockSize, partBegin+piece.PartSize, state.Size)
-		resume.WrittenBlocks = append(resume.WrittenBlocks, piece.Block{Begin: begin, End: end})
-	}
-	for _, block := range state.PartialBlocks {
-		begin := int64(block.Part)*piece.PartSize + int64(block.Index)*piece.BlockSize
-		resume.WrittenBlocks = append(resume.WrittenBlocks, piece.Block{Begin: begin, End: begin + block.Size})
-	}
-	return resume
-}
-
 func (t *Transfer) matchHashSet(hashes []wire.Hash) bool {
 	return len(hashes) > 0 && len(hashes) == piece.HashCount(t.file.Size) && piece.BuildFileHash(hashes) == t.file.Hash
+}
+
+func (t *Transfer) isComplete() bool {
+	return t.picker.VerifiedParts().IsFull()
 }
 
 func (t *Transfer) isRunning() bool {
@@ -199,28 +195,16 @@ func (t *Transfer) Outcome() Outcome {
 	return t.outcome
 }
 
-// ToState exports the Durable State for internal/store.
-func (t *Transfer) ToState() store.Transfer {
-	resume := t.picker.ToResumeData()
-	state := store.Transfer{
+func (t *Transfer) ToState() State {
+	return State{
 		Size:          t.file.Size,
 		File:          t.path,
 		PartHashes:    t.partHashes,
 		VerifiedParts: t.picker.VerifiedParts(),
-		WrittenBlocks: []store.Block{},
-		PartialBlocks: []store.PartialBlock{},
+		WrittenBlocks: t.picker.WrittenBlocks(),
 		Uploaded:      uint64(t.uploaded),
 		Created:       t.created,
 	}
-	for _, block := range resume.WrittenBlocks {
-		part, index := block.Part(), block.Index()
-		if block == piece.BlockAt(t.file.Size, block.Begin) {
-			state.WrittenBlocks = append(state.WrittenBlocks, store.Block{Part: part, Index: index})
-		} else {
-			state.PartialBlocks = append(state.PartialBlocks, store.PartialBlock{Part: part, Index: index, Size: block.End - block.Begin})
-		}
-	}
-	return state
 }
 
 func (t *Transfer) Progress(now time.Time) Progress {
@@ -332,7 +316,7 @@ func (t *Transfer) OnPartHashed(part int, hash wire.Hash, now time.Time) []Actio
 	}
 	if expected, _ := t.expectedHash(part); hash == expected {
 		t.picker.OnPartVerified(part)
-		if t.picker.IsComplete() {
+		if t.isComplete() {
 			t.outcome = Outcome{Status: StatusComplete}
 		}
 		return nil
