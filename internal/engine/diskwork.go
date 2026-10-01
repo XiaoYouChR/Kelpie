@@ -3,6 +3,7 @@ package engine
 import (
 	"io"
 
+	"github.com/XiaoYouChR/Kelpie/internal/aich"
 	"github.com/XiaoYouChR/Kelpie/internal/disk"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -18,6 +19,8 @@ const (
 	jobRead
 	jobHashPart
 	jobHashFile
+	jobHashBlocks
+	jobHashTree
 )
 
 // diskJob is work for a disk worker. run routes the result back; a result
@@ -39,6 +42,7 @@ type diskDone struct {
 	data       []byte
 	digest     wire.Hash
 	partHashes []wire.Hash
+	leaves     []wire.AICHHash
 	err        error
 }
 
@@ -73,8 +77,17 @@ func runDiskJob(job diskJob) diskDone {
 		done.digest = hasher.Digest()
 	case jobHashFile:
 		var hasher piece.FileHasher
-		done.err = loadRange(&hasher, job.file, 0, job.size)
-		done.digest, done.partHashes = hasher.FileHash(), hasher.PartHashes()
+		var leaves aich.Hasher
+		done.err = loadRange(io.MultiWriter(&hasher, &leaves), job.file, 0, job.size)
+		done.digest, done.partHashes, done.leaves = hasher.FileHash(), hasher.PartHashes(), leaves.Leaves()
+	case jobHashBlocks:
+		var leaves aich.Hasher
+		done.err = loadRange(&leaves, job.file, job.block.Begin, job.block.End)
+		done.leaves = leaves.Leaves()
+	case jobHashTree:
+		var leaves aich.Hasher
+		done.err = loadRange(&leaves, job.file, 0, job.size)
+		done.leaves = leaves.Leaves()
 	}
 	return done
 }
@@ -114,6 +127,7 @@ func (e *Engine) onDiskDone(d diskDone) {
 			e.stopRun(r, toFileError(d.err))
 			return
 		}
+		r.tree = aich.BuildTree(r.file.Size, d.leaves)
 		e.onFileHashed(r, d.partHashes, d.digest)
 		return
 	}
@@ -135,5 +149,10 @@ func (e *Engine) onDiskDone(d diskDone) {
 		if c := e.conns[d.job.conn]; c != nil && c.session != nil {
 			e.onBlockRead(c, d.job.hash, d.job.block, d.data)
 		}
+	case jobHashBlocks:
+		e.runTransferActions(r, r.transfer.OnBlocksHashed(d.job.part, d.leaves, now))
+	case jobHashTree:
+		r.tree = aich.BuildTree(r.file.Size, d.leaves)
+		e.refreshShare(r)
 	}
 }

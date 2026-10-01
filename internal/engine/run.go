@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/aich"
 	"github.com/XiaoYouChR/Kelpie/internal/disk"
 	"github.com/XiaoYouChR/Kelpie/internal/link"
 	"github.com/XiaoYouChR/Kelpie/internal/peer"
@@ -30,6 +31,9 @@ type run struct {
 	progress  Progress
 	// asked maps each user we sent the file request to the last time we did.
 	asked map[wire.Hash]time.Time
+	// tree is the AICH tree of a complete file, nil until hashed.
+	tree          *aich.Tree
+	isTreeHashing bool
 }
 
 // fileReaskTime is aMule's FILEREASKTIME (Constants.h:35), the transfer's
@@ -175,7 +179,7 @@ func (e *Engine) onFileHashed(r *run, partHashes []wire.Hash, fileHash wire.Hash
 
 func (e *Engine) refreshShare(r *run) {
 	state := r.transfer.ToState()
-	r.share = peer.Share{Name: r.file.Name, Size: r.file.Size, Parts: piece.Set(state.VerifiedParts), PartHashes: state.PartHashes}
+	r.share = peer.Share{Name: r.file.Name, Size: r.file.Size, Parts: piece.Set(state.VerifiedParts), PartHashes: state.PartHashes, Tree: r.tree}
 }
 
 func (e *Engine) shareByHash(file wire.Hash) (peer.Share, bool) {
@@ -336,6 +340,12 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			e.sendDiskJob(diskJob{kind: jobWrite, run: r.id, file: r.handle, block: a.Block, data: a.Data})
 		case transfer.HashPart:
 			e.sendDiskJob(diskJob{kind: jobHashPart, run: r.id, file: r.handle, part: a.Part, block: piece.Block{Begin: a.Begin, End: a.End}})
+		case transfer.HashBlocks:
+			e.sendDiskJob(diskJob{kind: jobHashBlocks, run: r.id, file: r.handle, part: a.Part, block: piece.Block{Begin: a.Begin, End: a.End}})
+		case transfer.RequestRecovery:
+			if c := e.conns[a.Peer]; c != nil && c.session != nil {
+				e.runSession(c, c.session.RequestRecovery(r.file.Hash, a.Part, a.Root))
+			}
 		case transfer.Close:
 			if c := e.conns[a.Peer]; c != nil {
 				e.removeFile(c, r.file.Hash, a.Reason)
