@@ -41,7 +41,7 @@ func (x *index) onPublishSources(self wire.Hash, from netip.AddrPort, req kadwir
 	if !matchTolerance(distance(self, req.FileID)) {
 		return 0, false
 	}
-	if _, ok := req.Source.TagByID(kadwire.TagSourceType); !ok {
+	if _, ok := tagByID(req.Source.Tags, kadwire.TagSourceType); !ok {
 		return 0, false
 	}
 	sources := x.files[req.FileID]

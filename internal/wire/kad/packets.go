@@ -213,15 +213,6 @@ type Entry struct {
 	Tags []wire.Tag
 }
 
-func (e Entry) TagByID(id byte) (wire.Tag, bool) {
-	for _, t := range e.Tags {
-		if t.Name == "" && t.ID == id {
-			return t, true
-		}
-	}
-	return wire.Tag{}, false
-}
-
 func buildEntry(b []byte, e Entry) []byte { return buildTags(BuildID(b, e.ID), e.Tags) }
 
 // buildTags writes a one-byte count and the tags. Kad tags always use the

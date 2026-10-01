@@ -417,11 +417,11 @@ func TestFirewallCheckGatesPublishing(t *testing.T) {
 	}
 	wantTags := map[byte]uint64{kadwire.TagSourceType: 1, kadwire.TagSourcePort: 4662, kadwire.TagFileSize: 5000}
 	for id, v := range wantTags {
-		if tag, ok := p.Source.TagByID(id); !ok || tag.Uint != v {
+		if tag, ok := tagByID(p.Source.Tags, id); !ok || tag.Uint != v {
 			t.Fatalf("publish tag %#x = %+v, want %d", id, tag, v)
 		}
 	}
-	if _, ok := p.Source.TagByID(kadwire.TagSourceUPort); ok {
+	if _, ok := tagByID(p.Source.Tags, kadwire.TagSourceUPort); ok {
 		t.Fatal("published our UDP port before a UDP test chose it over the NAT's")
 	}
 	l := h.c.lookupByTarget(sourcePublish, fileHash)

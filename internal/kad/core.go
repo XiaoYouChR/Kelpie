@@ -298,12 +298,17 @@ func (c *core) buildHello(version byte, isAckWanted bool) kadwire.Hello {
 // parseMiscOptions reads TAG_KADMISCOPTIONS; aMule takes it from any
 // integer tag (KademliaUDPListener.cpp:400).
 func parseMiscOptions(h kadwire.Hello) byte {
-	for _, t := range h.Tags {
-		if t.Name == "" && t.ID == kadwire.TagKadMiscOptions {
-			return byte(t.Uint)
+	t, _ := tagByID(h.Tags, kadwire.TagKadMiscOptions)
+	return byte(t.Uint)
+}
+
+func tagByID(tags []wire.Tag, id byte) (wire.Tag, bool) {
+	for _, t := range tags {
+		if t.Name == "" && t.ID == id {
+			return t, true
 		}
 	}
-	return 0
+	return wire.Tag{}, false
 }
 
 // addHello adds or updates the hello's sender, unless it says it is UDP
