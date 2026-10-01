@@ -28,8 +28,6 @@ type Mode int
 const (
 	// Read opens an existing file for seeding, so a read-only file can be shared.
 	Read Mode = iota
-	// Write opens an existing file for reading and writing.
-	Write
 	// Create opens a file for reading and writing, creating it when missing.
 	Create
 )
@@ -43,14 +41,10 @@ func IsFull(err error) bool {
 type Real struct{}
 
 func (Real) Open(path string, mode Mode) (File, error) {
-	switch mode {
-	case Read:
+	if mode == Read {
 		return os.Open(path)
-	case Write:
-		return os.OpenFile(path, os.O_RDWR, 0)
-	default:
-		return os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	}
+	return os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 }
 
 func (Real) Probe(path string) (fs.FileInfo, error) {

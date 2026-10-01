@@ -23,8 +23,8 @@ func TestDiskContract(t *testing.T) {
 			d, folder := build(t)
 			path := filepath.Join(folder, "a.iso")
 
-			if _, err := d.Open(path, Write); !errors.Is(err, fs.ErrNotExist) {
-				t.Fatalf("open missing for write: %v", err)
+			if _, err := d.Open(path, Read); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("open missing: %v", err)
 			}
 			if info, err := d.Probe(path); info != nil || err != nil {
 				t.Fatalf("probe missing: %v %v", info, err)
@@ -125,19 +125,6 @@ func TestFakeGlobalFault(t *testing.T) {
 	d.AddFault("", OpSync, syscall.ENOSPC, 1)
 	if err := file.Sync(); !IsFull(err) {
 		t.Fatalf("want full on sync, got %v", err)
-	}
-}
-
-func TestFakeDeleteMakesPathMissing(t *testing.T) {
-	d := BuildFake()
-	file, _ := d.Open("/a", Create)
-	file.WriteAt([]byte("abc"), 0)
-	d.Delete("/a")
-	if _, err := d.Open("/a", Read); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("want missing, got %v", err)
-	}
-	if _, ok := d.DataByPath("/a"); ok {
-		t.Fatal("data still there")
 	}
 }
 

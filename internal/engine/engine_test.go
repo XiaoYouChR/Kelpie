@@ -496,7 +496,7 @@ func TestCorruptSeederIsBanned(t *testing.T) {
 	f := buildTestFile("corrupt.bin", 900_000, 7)
 	bad.seed(1, f)
 	good.seed(1, f)
-	file, err := bad.disk.Open("/share/corrupt.bin", disk.Write)
+	file, err := bad.disk.Open("/share/corrupt.bin", disk.Create)
 	if err != nil {
 		t.Fatal(err)
 	}

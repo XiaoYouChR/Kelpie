@@ -28,7 +28,7 @@ func TestAICHRepairRedownloadsOneBlock(t *testing.T) {
 	root := aich.BuildTree(int64(len(f.data)), hasher.Leaves()).Root()
 	bad.seed(1, f)
 	good.seed(1, f)
-	file, err := bad.disk.Open("/share/aich.bin", disk.Write)
+	file, err := bad.disk.Open("/share/aich.bin", disk.Create)
 	if err != nil {
 		t.Fatal(err)
 	}

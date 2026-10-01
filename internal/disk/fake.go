@@ -67,14 +67,6 @@ func (f *Fake) DataByPath(path string) ([]byte, bool) {
 	return append([]byte(nil), data.bytes...), true
 }
 
-// Delete removes path as another program would; open handles keep working
-// on the old contents, as on Unix.
-func (f *Fake) Delete(path string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.files, path)
-}
-
 func (f *Fake) Open(name string, mode Mode) (File, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
