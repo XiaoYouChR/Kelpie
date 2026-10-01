@@ -223,23 +223,18 @@ func (p *Picker[P]) Cancel(peer P) {
 // (endgame).
 func (p *Picker[P]) Request(peer P, n int) []Block {
 	parts := p.candidateParts(peer)
-	var picked []Block
-	for _, part := range parts {
-		for index := range BlockCount(p.size, part) {
-			if len(picked) == n {
-				return picked
-			}
-			b := BlockOf(p.size, part, index)
-			state := p.blockState(b)
-			if state.received < b.End-b.Begin && len(state.requesters) == 0 {
-				state.requesters = append(state.requesters, peer)
-				picked = append(picked, Block{Begin: b.Begin + state.received, End: b.End})
-			}
-		}
-	}
-	if p.hasUnrequestedBlock() {
+	picked := p.addRequests(peer, parts, n, nil, func(requesters []P) bool { return len(requesters) == 0 })
+	if len(picked) == n || p.hasUnrequestedBlock() {
 		return picked
 	}
+	return p.addRequests(peer, parts, n, picked, func(requesters []P) bool {
+		return len(requesters) < maxRequesters && !slices.Contains(requesters, peer)
+	})
+}
+
+// addRequests fills picked up to n with the missing rest of each block of parts
+// whose requesters canJoin accepts, and records peer as requesting it.
+func (p *Picker[P]) addRequests(peer P, parts []int, n int, picked []Block, canJoin func(requesters []P) bool) []Block {
 	for _, part := range parts {
 		for index := range BlockCount(p.size, part) {
 			if len(picked) == n {
@@ -247,7 +242,7 @@ func (p *Picker[P]) Request(peer P, n int) []Block {
 			}
 			b := BlockOf(p.size, part, index)
 			state := p.blockState(b)
-			if state.received < b.End-b.Begin && len(state.requesters) < maxRequesters && !slices.Contains(state.requesters, peer) {
+			if state.received < b.End-b.Begin && canJoin(state.requesters) {
 				state.requesters = append(state.requesters, peer)
 				picked = append(picked, Block{Begin: b.Begin + state.received, End: b.End})
 			}
@@ -339,14 +334,7 @@ func (p *Picker[P]) OnPartVerified(part int) {
 // OnPartFailed discards a part whose hash did not match and returns the peers
 // that sent any of its blocks, so the caller can ban the corrupt sender.
 func (p *Picker[P]) OnPartFailed(part int) []P {
-	var senders []P
-	for _, block := range p.parts[part].blocks {
-		for _, sender := range block.senders {
-			if !slices.Contains(senders, sender) {
-				senders = append(senders, sender)
-			}
-		}
-	}
+	senders := addSenders(nil, p.parts[part].blocks)
 	p.parts[part] = partState[P]{}
 	return senders
 }
@@ -355,11 +343,16 @@ func (p *Picker[P]) OnPartFailed(part int) []P {
 func (p *Picker[P]) Senders() []P {
 	var senders []P
 	for _, part := range p.parts {
-		for _, block := range part.blocks {
-			for _, sender := range block.senders {
-				if !slices.Contains(senders, sender) {
-					senders = append(senders, sender)
-				}
+		senders = addSenders(senders, part.blocks)
+	}
+	return senders
+}
+
+func addSenders[P comparable](senders []P, blocks []blockState[P]) []P {
+	for _, block := range blocks {
+		for _, sender := range block.senders {
+			if !slices.Contains(senders, sender) {
+				senders = append(senders, sender)
 			}
 		}
 	}
