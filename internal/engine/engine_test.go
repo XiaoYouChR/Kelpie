@@ -426,6 +426,20 @@ func TestDiskFull(t *testing.T) {
 	}
 }
 
+func TestCompleteDownloadIsSyncedBeforeItEnds(t *testing.T) {
+	w := buildWorld(t)
+	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+	a.start()
+	b.start()
+	f := buildTestFile("sync.bin", 600_000, 8)
+	a.seed(1, f)
+	b.disk.AddFault("/downloads/sync.bin", disk.OpSync, syscall.EIO, 1)
+	b.download(2, f, a.endpoint())
+	if err := w.waitEnded(b, 2); err == nil || err.Code != CodeFileError {
+		t.Fatalf("got %v, want FILE_ERROR from the failed sync", err)
+	}
+}
+
 func TestDownloadFromTwoSeedersViaServer(t *testing.T) {
 	w := buildWorld(t)
 	srv := w.startFakeServer("198.51.100.100")

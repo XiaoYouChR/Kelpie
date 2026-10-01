@@ -18,6 +18,7 @@ const (
 	jobRead
 	jobHashPart
 	jobHashFile
+	jobSync
 )
 
 // diskJob is work for a disk worker. run routes the result back; a result
@@ -75,6 +76,8 @@ func runDiskJob(job diskJob) diskDone {
 		var hasher piece.FileHasher
 		done.err = loadRange(&hasher, job.file, 0, job.size)
 		done.digest, done.partHashes = hasher.FileHash(), hasher.PartHashes()
+	case jobSync:
+		done.err = job.file.Sync()
 	}
 	return done
 }
@@ -115,6 +118,14 @@ func (e *Engine) onDiskDone(d diskDone) {
 			return
 		}
 		e.onFileHashed(r, d.partHashes, d.digest)
+		return
+	}
+	if d.job.kind == jobSync {
+		var err *Error
+		if d.err != nil {
+			err = toFileError(d.err)
+		}
+		e.stopRun(r, err)
 		return
 	}
 	if r.transfer == nil {

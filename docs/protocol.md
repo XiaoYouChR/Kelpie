@@ -62,8 +62,8 @@ with a non-zero status.
   may keep only the newest one.
 - `uploaded` is the Transfer's total across all runs.
 - Each run gets exactly one `ended`, and no `progress` after it. A download run
-  ends with `error: null` when the file is complete; any run ends with
-  `error: null` after `stop` or `remove`.
+  ends with `error: null` when the file is complete and flushed to the device
+  (fsync); any run ends with `error: null` after `stop` or `remove`.
 - `network` is sent after `ready` and whenever a field changes.
 
 ## Run rules
