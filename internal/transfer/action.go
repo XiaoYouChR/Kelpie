@@ -20,18 +20,26 @@ type Connect struct {
 	CanObfuscate bool
 }
 
-// ReaskUDP sends OP_REASKFILEPING to the source's UDP endpoint.
-type ReaskUDP struct{ Endpoint netip.AddrPort }
+// ReaskUDP sends OP_REASKFILEPING to the source's UDP endpoint, obfuscated
+// like Connect.
+type ReaskUDP struct {
+	Endpoint     netip.AddrPort
+	UserHash     wire.Hash
+	CanObfuscate bool
+}
 
 // RequestServerCallback asks our server to make a LowID source connect to us.
 type RequestServerCallback struct{ ClientID uint32 }
 
 // RequestKadCallback asks a firewalled Kad source's buddy to make it connect
-// to us; with IsDirect, Buddy is the source itself, asked over UDP.
+// to us; with IsDirect, Buddy is the source itself, asked over UDP,
+// obfuscated like Connect.
 type RequestKadCallback struct {
-	Buddy    netip.AddrPort
-	BuddyID  wire.Hash
-	IsDirect bool
+	Buddy        netip.AddrPort
+	BuddyID      wire.Hash
+	IsDirect     bool
+	UserHash     wire.Hash
+	CanObfuscate bool
 }
 
 // RequestSources asks one channel for more sources. Peer is set only for

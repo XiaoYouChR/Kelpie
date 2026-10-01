@@ -642,13 +642,14 @@ func (e *Engine) addTransferPeer(c *conn, r *run) {
 	e.addKnownSource(r.file.Hash, transfer.Source{UserHash: user})
 	caps := c.session.Capabilities()
 	hello := transfer.Hello{
-		Endpoint:    c.endpoint(),
-		ClientID:    caps.ClientID,
-		Server:      caps.Server,
-		UserHash:    user,
-		UDPPort:     caps.UDPPort,
-		CanReaskUDP: caps.UDPVersion > 0 && caps.UDPPort != 0,
-		CanExchange: caps.HasSourceExchange2,
+		Endpoint:     c.endpoint(),
+		ClientID:     caps.ClientID,
+		Server:       caps.Server,
+		UserHash:     user,
+		UDPPort:      caps.UDPPort,
+		CanReaskUDP:  caps.UDPVersion > 0 && caps.UDPPort != 0,
+		CanExchange:  caps.HasSourceExchange2,
+		CanObfuscate: caps.CryptOptions&peer.CryptSupported != 0,
 	}
 	e.runTransferActions(r, r.transfer.OnPeerConnected(c.id, hello, e.now()))
 }

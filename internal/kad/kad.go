@@ -7,7 +7,10 @@
 // protocol byte (0xE4, 0xE5) go to the engine through Received; the engine
 // sends its own datagrams through Send. Kad datagrams may be obfuscated
 // (obfuscation.ParseKadDatagram); a datagram Kad cannot read either way,
-// such as an obfuscated eD2k one, is forwarded unchanged.
+// such as an obfuscated eD2k one, is forwarded unchanged. Servers start
+// obfuscated datagrams with any byte but 0xE3 (aMule
+// EncryptedDatagramSocket.cpp:451), so about 1 in 128 of them looks like
+// Kad and is lost here; aMule keeps server UDP on a socket of its own.
 //
 // Every method other than Run is safe to call from another goroutine and
 // never blocks: inputs and outputs drop when full, as a hub's sends to the

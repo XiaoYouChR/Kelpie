@@ -327,19 +327,19 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			if e.deferUDPReask(r, a.Endpoint) {
 				continue
 			}
-			e.sendDatagram(a.Endpoint, wire.BuildPacketDatagram(nil, client.ReaskFilePing{
+			e.sendPeerDatagram(a.Endpoint, client.ReaskFilePing{
 				Hash:               r.file.Hash,
 				HasParts:           true,
 				Parts:              toStatus(r.share),
 				HasCompleteSources: true,
-			}))
+			}, a.UserHash, a.CanObfuscate)
 		case transfer.RequestServerCallback:
 			e.requestServerCallback(a.ClientID)
 		case transfer.RequestKadCallback:
 			switch {
 			case e.kad == nil:
 			case a.IsDirect:
-				e.requestDirectCallback(a.Buddy)
+				e.requestDirectCallback(a.Buddy, a.UserHash, a.CanObfuscate)
 			default:
 				e.kad.RequestCallback(toKadCallback(a, r.file.Hash))
 			}

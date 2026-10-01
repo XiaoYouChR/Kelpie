@@ -1,6 +1,7 @@
 package server
 
 import (
+	"math/rand/v2"
 	"net/netip"
 	"reflect"
 	"testing"
@@ -277,5 +278,92 @@ func TestUDPSearchVersionOne(t *testing.T) {
 	}
 	if asked[fileHash(99)] {
 		t.Fatal("asked about a large file without large-file support")
+	}
+}
+
+// sentTo collects what n ticks a second apart send to the server at ip.
+func sentTo(s *Server, ip string, from time.Time, n int) ([]Datagram, time.Time) {
+	var got []Datagram
+	now := from
+	for range n {
+		for _, d := range s.OnTick(now, downloads(1)).SendUDP {
+			if d.To.Addr() == netip.MustParseAddr(ip) {
+				got = append(got, d)
+			}
+		}
+		now = now.Add(time.Second)
+	}
+	return got, now
+}
+
+// With our public IP known, a server is pinged obfuscated at its port plus
+// 12; the answer, opened with the challenge, brings the server's UDP key,
+// which then obfuscates source requests to its UDP obfuscation port until
+// our public IP changes; then the server is pinged again 20 min after the
+// last ping.
+func TestObfuscatedStatusPing(t *testing.T) {
+	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}, {Endpoint: ep("1.0.0.2:4661")}}
+	s, _ := loggedIn(t, entries, highID, 0, downloads(1))
+	s.config.Random = rand.New(rand.NewPCG(1, 2))
+	s.SetPublicIP(wire.ToAddr(highID))
+
+	sent, now := sentTo(s, "1.0.0.2", start, 10)
+	if len(sent) != 1 || sent[0].To != ep("1.0.0.2:4673") || sent[0].Key != 0 {
+		t.Fatalf("sent %+v, want one ping to port + 12", sent)
+	}
+	ping, ok := sent[0].Packet.(packet.ObfuscatedPing)
+	if !ok || ping.Challenge == 0 || len(ping.Padding) >= 16 {
+		t.Fatalf("ping %+v", sent[0].Packet)
+	}
+	if key := s.UDPKeyByAddr(ep("1.0.0.2:4673")); key != ping.Challenge {
+		t.Fatalf("key for the answer %#x, want the challenge %#x", key, ping.Challenge)
+	}
+	flags := getSources2 | packet.UDPFlagUDPObfuscation
+	s.OnUDPPacket(ep("1.0.0.2:4673"), packet.GlobServStatRes{Challenge: ping.Challenge, UDPFlags: flags, UDPObfuscationPort: 4670, UDPKey: 0xBEEF}, now)
+	if l := s.servers[1]; l.UDPFlags != flags || l.Failures != 0 || l.isCryptPinging {
+		t.Fatalf("server after answer %+v", l.Entry)
+	}
+	for _, from := range []string{"1.0.0.2:4670", "1.0.0.2:4665"} {
+		if key := s.UDPKeyByAddr(ep(from)); key != 0xBEEF {
+			t.Fatalf("key for %s %#x", from, key)
+		}
+	}
+
+	sent, now = sentTo(s, "1.0.0.2", now, 3)
+	if len(sent) != 1 || sent[0].To != ep("1.0.0.2:4670") || sent[0].Key != 0xBEEF {
+		t.Fatalf("source request %+v, want it obfuscated", sent)
+	}
+
+	s.SetPublicIP(netip.MustParseAddr("9.8.7.5"))
+	if key := s.UDPKeyByAddr(ep("1.0.0.2:4670")); key != 0 {
+		t.Fatalf("key %#x for another public IP", key)
+	}
+	if sent, _ = sentTo(s, "1.0.0.2", start.Add(udpStatMinReaskTime-time.Minute), 55); len(sent) != 0 {
+		t.Fatalf("sent %+v before 20 min", sent)
+	}
+	if sent, _ = sentTo(s, "1.0.0.2", start.Add(udpStatMinReaskTime), 15); len(sent) != 1 || sent[0].To != ep("1.0.0.2:4673") {
+		t.Fatalf("sent %+v 20 min after the ping, want a new ping", sent)
+	}
+}
+
+// An obfuscated ping left unanswered for 20 s is followed by a plain one,
+// and only that one counts as a failure.
+func TestObfuscatedPingFallsBackToPlain(t *testing.T) {
+	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}, {Endpoint: ep("1.0.0.2:4661")}}
+	s, _ := loggedIn(t, entries, highID, 0, downloads(1))
+	s.config.Random = rand.New(rand.NewPCG(1, 2))
+	s.SetPublicIP(wire.ToAddr(highID))
+
+	sent, now := sentTo(s, "1.0.0.2", start, 60)
+	if len(sent) != 2 || sent[0].To != ep("1.0.0.2:4673") || sent[1].To != ep("1.0.0.2:4665") || sent[1].Key != 0 {
+		t.Fatalf("sent %+v, want an obfuscated ping, then a plain one", sent)
+	}
+	req, ok := sent[1].Packet.(packet.GlobServStatReq)
+	if !ok || s.servers[1].Failures != 1 || s.UDPKeyByAddr(ep("1.0.0.2:4665")) != 0 {
+		t.Fatalf("plain ping %+v, failures %d", sent[1].Packet, s.servers[1].Failures)
+	}
+	s.OnUDPPacket(ep("1.0.0.2:4665"), packet.GlobServStatRes{Challenge: req.Challenge, UDPFlags: getSources2}, now)
+	if l := s.servers[1]; l.UDPFlags != getSources2 || l.Failures != 0 {
+		t.Fatalf("server after answer %+v", l.Entry)
 	}
 }

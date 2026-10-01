@@ -113,6 +113,10 @@ type Hello struct {
 	UDPPort     uint16
 	CanReaskUDP bool
 	CanExchange bool
+	// CanObfuscate: the Hello's crypt options say the peer supports
+	// protocol obfuscation; it replaces what the channel said, as aMule
+	// takes it from the Hello (BaseClient.cpp:350, 590).
+	CanObfuscate bool
 }
 
 // Tick carries what OnTick needs to know about the engine.
@@ -384,6 +388,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Ac
 	s.UDPPort = hello.UDPPort
 	s.canReaskUDP = hello.CanReaskUDP
 	s.canExchange = hello.CanExchange
+	s.CanObfuscate = hello.CanObfuscate
 	s.state = stateAsking
 	s.isConnected = true
 	s.hasAnswered = false
@@ -655,7 +660,7 @@ func (t *Transfer) runSource(s *source, tick Tick, budget *int) []Action {
 	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s, tick) {
 		s.isUDPPending = true
 		s.udpReasks++
-		return []Action{ReaskUDP{Endpoint: netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort)}}
+		return []Action{ReaskUDP{Endpoint: netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort), UserHash: s.UserHash, CanObfuscate: s.CanObfuscate}}
 	}
 	if untilReask > 0 {
 		return nil
@@ -680,7 +685,7 @@ func (t *Transfer) requestConnect(s *source, tick Tick, budget *int) []Action {
 	var action Action
 	switch {
 	case s.Buddy.IsValid():
-		action = RequestKadCallback{Buddy: s.Buddy, BuddyID: s.BuddyID, IsDirect: s.IsDirectCallback}
+		action = RequestKadCallback{Buddy: s.Buddy, BuddyID: s.BuddyID, IsDirect: s.IsDirectCallback, UserHash: s.UserHash, CanObfuscate: s.CanObfuscate}
 	case s.ClientID != 0:
 		action = RequestServerCallback{ClientID: s.ClientID}
 	default:

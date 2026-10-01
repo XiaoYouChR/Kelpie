@@ -264,6 +264,7 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		UserHash: self.UserHash,
 		Port:     uint16(e.tcpPort),
 		Version:  config.Version,
+		Random:   e.ports.Rand,
 	}, updateLearned(loadServerLists(config.ServerLists), state.Servers))
 	if config.EnableKad {
 		e.startKad(loadNodeLists(config.NodeLists))
@@ -606,6 +607,7 @@ func (e *Engine) onTick() {
 	e.refreshKnownSources()
 	e.refreshAsked()
 	e.refreshA4AF()
+	e.server.SetPublicIP(e.publicIP)
 	e.runServer(e.server.OnTick(now, e.buildServerWanted()))
 	e.runBuddy(now)
 	if e.kad != nil {

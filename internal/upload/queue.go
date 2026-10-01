@@ -103,8 +103,14 @@ const (
 // peer fall back to TCP.
 type Answer interface{ isAnswer() }
 
-type ReaskAck struct{ Rank int }
-type FileNotFound struct{}
+// User is the asking waiter's user hash, zero when the asker is not known,
+// so that the engine can obfuscate the answer for it
+// (ClientUDPSocket.cpp:185, 226).
+type ReaskAck struct {
+	Rank int
+	User wire.Hash
+}
+type FileNotFound struct{ User wire.Hash }
 type QueueFull struct{}
 
 func (ReaskAck) isAnswer()     {}
@@ -246,10 +252,14 @@ func (q *Queue) OnRequest(conn uint64, peer Peer, file wire.Hash, now time.Time)
 
 // OnReask answers a UDP OP_REASKFILEPING for file from ip:udpPort.
 func (q *Queue) OnReask(ip netip.Addr, udpPort uint16, file wire.Hash, now time.Time) Answer {
-	if !q.files[file] {
-		return FileNotFound{}
-	}
 	w, isAmbiguous := q.waiterByUDP(ip, udpPort)
+	if !q.files[file] {
+		var user wire.Hash
+		if w != nil {
+			user = w.peer.User
+		}
+		return FileNotFound{user}
+	}
 	if w == nil {
 		if !isAmbiguous && len(q.waiters)+queueFullMargin > queueSize {
 			return QueueFull{}
@@ -260,7 +270,7 @@ func (q *Queue) OnReask(ip netip.Addr, udpPort uint16, file wire.Hash, now time.
 		return nil
 	}
 	w.lastAsk = now
-	return ReaskAck{q.rank(w, now)}
+	return ReaskAck{q.rank(w, now), w.peer.User}
 }
 
 // OnConnectionGone forgets conn. A peer losing its slot this way is not queued

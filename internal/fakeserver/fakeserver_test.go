@@ -9,6 +9,7 @@ import (
 
 	"github.com/XiaoYouChR/Kelpie/internal/clock"
 	"github.com/XiaoYouChR/Kelpie/internal/fakeserver"
+	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
 	"github.com/XiaoYouChR/Kelpie/internal/server"
 	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -276,5 +277,55 @@ func TestMetLoadsInServerList(t *testing.T) {
 	}
 	if e := entries[1]; e.TCPObfuscationPort != 4246 || e.UDPFlags&packet.UDPFlagTCPObfuscation == 0 {
 		t.Errorf("obfuscating entry = %+v", e)
+	}
+}
+
+// Kelpie's server datagram obfuscation against the fake server's own: an
+// obfuscated ping is answered with the challenge as key and brings the
+// client's UDP key, which then carries a source request.
+func TestObfuscatedUDP(t *testing.T) {
+	network := transport.BuildNetwork()
+	s := startServer(t, network, fakeserver.Config{UDPKey: 0x0BADF00D})
+	udp, err := addPeer(t, network, "10.0.0.5", true).OpenUDP(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	port := netip.AddrPortFrom(s.Addr().Addr(), s.Addr().Port()+12)
+	exchange := func(data []byte, key uint32) wire.Packet {
+		t.Helper()
+		if _, err := udp.WriteTo(data, port); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 2048)
+		n, from, err := udp.ReadFrom(buf)
+		if err != nil || from != port {
+			t.Fatalf("read from %v: %v", from, err)
+		}
+		plain, ok := obfuscation.ParseServerDatagram(buf[:n], key)
+		if !ok {
+			t.Fatalf("answer %x not obfuscated with %#x", buf[:n], key)
+		}
+		frame, err := wire.ParseDatagram(plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reply, err := packet.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reply
+	}
+
+	challenge := uint32(0x12345678)
+	ping := wire.BuildPacketDatagram(nil, packet.ObfuscatedPing{Challenge: challenge, Padding: []byte{1, 2, 3}})
+	stat := exchange(ping, challenge).(packet.GlobServStatRes)
+	if stat.Challenge != challenge || stat.UDPKey == 0 || stat.UDPObfuscationPort != port.Port() || stat.UDPFlags&packet.UDPFlagUDPObfuscation == 0 {
+		t.Fatalf("status = %+v", stat)
+	}
+	request := wire.BuildPacketDatagram(nil, packet.GlobServStatReq{Challenge: 7})
+	again := exchange(obfuscation.BuildServerDatagram(request, stat.UDPKey, 0x00C5ABCD), stat.UDPKey).(packet.GlobServStatRes)
+	if again.Challenge != 7 {
+		t.Fatalf("status over the key = %+v", again)
 	}
 }

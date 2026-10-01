@@ -44,7 +44,7 @@ func BuildKadDatagram(d KadDatagram, nodeID []byte, random uint32) []byte {
 	for matchPlainDatagram(marker) {
 		marker += 0x04
 	}
-	cipher := buildKadCipher(key, keyPart)
+	cipher := buildDatagramCipher(key, keyPart)
 	body := binary.LittleEndian.AppendUint32(nil, magicUDPSync)
 	body = append(body, 0)
 	body = binary.LittleEndian.AppendUint32(body, d.ReceiverKey)
@@ -63,7 +63,7 @@ func ParseKadDatagram(data, nodeID []byte, receiverKey uint32) (KadDatagram, boo
 	}
 	keyPart := data[1:3]
 	for _, key := range [][]byte{nodeID, binary.LittleEndian.AppendUint32(nil, receiverKey)} {
-		cipher := buildKadCipher(key, keyPart)
+		cipher := buildDatagramCipher(key, keyPart)
 		var head [5]byte
 		cipher.XORKeyStream(head[:], data[3:8])
 		if binary.LittleEndian.Uint32(head[:]) != magicUDPSync {
@@ -95,9 +95,14 @@ func BuildKadVerifyKey(secret uint32, ip netip.Addr) uint32 {
 	return x%0xFFFFFFFE + 1
 }
 
-func buildKadCipher(key, keyPart []byte) *rc4.Cipher {
-	sum := md5.Sum(append(append([]byte(nil), key...), keyPart...))
-	c, _ := rc4.NewCipher(sum[:])
+// buildDatagramCipher keys RC4 with the MD5 of the key parts in order.
+// Datagrams keep the whole keystream (EncryptedDatagramSocket.cpp:34).
+func buildDatagramCipher(parts ...[]byte) *rc4.Cipher {
+	h := md5.New()
+	for _, part := range parts {
+		h.Write(part)
+	}
+	c, _ := rc4.NewCipher(h.Sum(nil))
 	return c
 }
 
