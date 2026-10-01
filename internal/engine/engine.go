@@ -100,8 +100,8 @@ type Engine struct {
 	packetLog *log.Logger
 
 	// The limiters are shared memory, safe from any goroutine (ADR-0005).
-	downloadLimiter *transport.Limiter
-	uploadLimiter   *transport.Limiter
+	downloadLimiter *rateLimiter
+	uploadLimiter   *rateLimiter
 
 	// Everything below is owned by the hub goroutine.
 	state     store.State
@@ -195,8 +195,8 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 		inbox:           make(chan any, caps.inbox),
 		ctx:             ctx,
 		cancel:          cancel,
-		downloadLimiter: transport.BuildLimiter(ports.Clock, config.RateLimits.Download),
-		uploadLimiter:   transport.BuildLimiter(ports.Clock, config.RateLimits.Upload),
+		downloadLimiter: buildRateLimiter(ports.Clock, config.RateLimits.Download),
+		uploadLimiter:   buildRateLimiter(ports.Clock, config.RateLimits.Upload),
 		state:           state,
 		self:            self,
 		ledger:          identity.BuildLedger(toCredits(state.Credits), ports.Clock.Now()),

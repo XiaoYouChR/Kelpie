@@ -18,7 +18,6 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
-	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/upload"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
@@ -309,12 +308,12 @@ func (c *countingReader) Read(b []byte) (int, error) {
 
 // runReader is a connection's reader leaf: it decodes frames and posts
 // them, blocking while the hub is busy so that TCP pushes back.
-func (e *Engine) runReader(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, parse func(protocol, opcode byte, body []byte) (wire.Packet, error), limiter *transport.Limiter) {
+func (e *Engine) runReader(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, parse func(protocol, opcode byte, body []byte) (wire.Packet, error), limiter *rateLimiter) {
 	r := &countingReader{r: bufio.NewReaderSize(netConn, 64<<10)}
 	for {
 		frame, err := wire.ParseFrameFrom(r)
 		if err == nil && limiter != nil {
-			err = limiter.WaitN(ctx, r.n)
+			err = limiter.waitN(ctx, r.n)
 		}
 		r.n = 0
 		var p wire.Packet
@@ -336,7 +335,7 @@ func (e *Engine) runReader(ctx context.Context, id uint64, remote netip.AddrPort
 
 // runWriter is a connection's writer leaf. It reports each written packet
 // so the hub can count credit and uploaded bytes.
-func (e *Engine) runWriter(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, items <-chan outItem, limiter *transport.Limiter) {
+func (e *Engine) runWriter(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, items <-chan outItem, limiter *rateLimiter) {
 	var buf []byte
 	for {
 		var item outItem
@@ -350,7 +349,7 @@ func (e *Engine) runWriter(ctx context.Context, id uint64, remote netip.AddrPort
 			return
 		}
 		buf = wire.BuildPacket(buf[:0], item.packet)
-		if limiter != nil && limiter.WaitN(ctx, len(buf)) != nil {
+		if limiter != nil && limiter.waitN(ctx, len(buf)) != nil {
 			return
 		}
 		if _, err := netConn.Write(buf); err != nil {

@@ -39,7 +39,7 @@ var allowed = map[string][]string{
 	"internal/server":      {"internal/wire", "internal/wire/server"},
 	"internal/store":       {"internal/piece", "internal/wire"},
 	"internal/transfer":    {"internal/aich", "internal/link", "internal/piece", "internal/wire", "internal/wire/client"},
-	"internal/transport":   {"internal/clock"},
+	"internal/transport":   {},
 	"internal/upload":      {"internal/identity", "internal/piece", "internal/wire"},
 	"internal/wire":        {},
 	"internal/wire/client": {"internal/wire", "internal/wire/kad"},

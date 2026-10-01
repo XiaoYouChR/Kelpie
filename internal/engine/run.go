@@ -61,8 +61,8 @@ func (e *Engine) onCommand(command Command) {
 			e.requestSave()
 		}
 	case RateLimitsCommand:
-		e.downloadLimiter.SetRate(c.Download)
-		e.uploadLimiter.SetRate(c.Upload)
+		e.downloadLimiter.setRate(c.Download)
+		e.uploadLimiter.setRate(c.Upload)
 		e.queue.SetRate(c.Upload)
 	}
 }
