@@ -298,7 +298,7 @@ func TestCorruptPartBansSenderAndIsDownloadedAgain(t *testing.T) {
 }
 
 func TestDiskFailure(t *testing.T) {
-	for _, isDiskFull := range []bool{true, false} {
+	for isDiskFull, want := range map[bool]transfer.Status{true: transfer.StatusDiskFull, false: transfer.StatusFailed} {
 		data := buildData(1000)
 		h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
 		h.connect(1, 1, piece.Set{true})
@@ -309,7 +309,7 @@ func TestDiskFailure(t *testing.T) {
 		}
 		h.transfer.OnDiskFailed(isDiskFull, "no space left on device")
 		got := h.transfer.Outcome()
-		if got.Status != transfer.StatusFailed || got.IsDiskFull != isDiskFull {
+		if got.Status != want {
 			t.Fatalf("isDiskFull=%v: outcome = %+v", isDiskFull, got)
 		}
 		if h.transfer.Request(1, 1) != nil {
@@ -440,7 +440,7 @@ func TestSeedMode(t *testing.T) {
 	data := buildData(piece.PartSize + 100)
 	file := buildFile(data)
 	incomplete := buildHarness(t, data, transfer.Options{File: file, Mode: transfer.ModeSeed})
-	if got := incomplete.transfer.Outcome(); got.Status != transfer.StatusFailed || got.IsDiskFull {
+	if got := incomplete.transfer.Outcome(); got.Status != transfer.StatusFailed {
 		t.Fatalf("seed of an incomplete file: %+v", got)
 	}
 

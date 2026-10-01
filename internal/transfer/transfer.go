@@ -26,16 +26,16 @@ type Status int
 const (
 	StatusRunning Status = iota
 	StatusComplete
+	// StatusFailed is a file error.
 	StatusFailed
+	StatusDiskFull
 )
 
-// Outcome is the Transfer's state as its Run sees it. IsDiskFull and
-// Message are set only for StatusFailed; a failure that is not a full disk
-// is a file error.
+// Outcome is the Transfer's state as its Run sees it. Message says why it
+// failed.
 type Outcome struct {
-	Status     Status
-	IsDiskFull bool
-	Message    string
+	Status  Status
+	Message string
 }
 
 type Progress struct {
@@ -268,7 +268,10 @@ func (t *Transfer) OnDiskFailed(isDiskFull bool, message string) {
 	if !t.isRunning() {
 		return
 	}
-	t.outcome = Outcome{Status: StatusFailed, IsDiskFull: isDiskFull, Message: message}
+	t.outcome = Outcome{Status: StatusFailed, Message: message}
+	if isDiskFull {
+		t.outcome.Status = StatusDiskFull
+	}
 }
 
 func (t *Transfer) requestPartHash(part int) []Action {
