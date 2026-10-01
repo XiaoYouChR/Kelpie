@@ -87,12 +87,12 @@ type Engine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	// leaves counts the leaf goroutines, so Close returns once all are gone.
-	leaves  sync.WaitGroup
-	hubDone chan struct{}
+	leaves sync.WaitGroup
 
 	// closeOnce makes a second Close return the first one's result: once the
 	// hub has stopped, its buffered inbox would still take a closeRequested
-	// that nobody answers.
+	// that nobody answers. The hub stops only on a closeRequested, since a
+	// panic exits the Engine Process (ADR-0005).
 	closeOnce sync.Once
 	closeErr  error
 
@@ -110,10 +110,8 @@ type Engine struct {
 	queue     *upload.Queue
 	server    *server.Server
 	kad       *kad.Kad
-	kadCancel context.CancelFunc
-	kadDone   chan struct{}
+	stopKad   func()
 	kadStatus kad.Status
-	kadID     wire.Hash
 	buddy     buddy
 	listener  transport.Listener
 	udp       transport.PacketConn
@@ -131,8 +129,8 @@ type Engine struct {
 	serverAddr netip.AddrPort
 	publicIP   netip.Addr
 	mappedIP   netip.Addr
-	network    Network
-	hasNetwork bool
+	// network is the Network last reported.
+	network Network
 
 	nextConn uint64
 	conns    map[uint64]*conn
@@ -197,7 +195,6 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 		inbox:           make(chan any, caps.inbox),
 		ctx:             ctx,
 		cancel:          cancel,
-		hubDone:         make(chan struct{}),
 		downloadLimiter: transport.BuildLimiter(ports.Clock, config.RateLimits.Download),
 		uploadLimiter:   transport.BuildLimiter(ports.Clock, config.RateLimits.Upload),
 		state:           state,
@@ -266,7 +263,8 @@ func (e *Engine) start(mapPorts openNAT) error {
 	if mapPorts != nil {
 		e.startLeaf(func() { e.runNAT(mapPorts) })
 	}
-	e.refreshNetwork()
+	e.network = e.buildNetwork()
+	e.events.SetNetwork(e.network)
 	go e.run()
 	return nil
 }
@@ -381,16 +379,18 @@ func (e *Engine) startKad(nodes []kad.Node) {
 		Rand:      rand.New(rand.NewPCG(random.Uint64(), random.Uint64())),
 	})
 	e.kadStatus = kad.Status{IsFirewalled: true}
-	e.kadID = e.kad.ID()
 	ctx, cancel := context.WithCancel(e.ctx)
-	e.kadCancel = cancel
-	e.kadDone = make(chan struct{})
+	done := make(chan struct{})
 	go func() {
-		defer close(e.kadDone)
+		defer close(done)
 		if err := e.kad.Run(ctx); err != nil {
 			log.Printf("engine: kad: %v", err)
 		}
 	}()
+	e.stopKad = func() {
+		cancel()
+		<-done
+	}
 }
 
 func (e *Engine) startLeaf(f func()) {
@@ -422,11 +422,8 @@ func (e *Engine) Post(command Command) {
 func (e *Engine) Close() error {
 	e.closeOnce.Do(func() {
 		reply := make(chan error, 1)
-		select {
-		case e.inbox <- closeRequested{reply}:
-			e.closeErr = <-reply
-		case <-e.hubDone:
-		}
+		e.inbox <- closeRequested{reply}
+		e.closeErr = <-reply
 		e.cancel()
 		e.leaves.Wait()
 	})
@@ -503,7 +500,6 @@ func (q *leafQueue[T]) onDone() {
 func (e *Engine) now() time.Time { return e.ports.Clock.Now() }
 
 func (e *Engine) run() {
-	defer close(e.hubDone)
 	ticker := e.ports.Clock.CreateTicker(tickInterval)
 	defer ticker.Stop()
 	var kadMessages <-chan any
@@ -596,9 +592,16 @@ func (e *Engine) onTick() {
 	}
 }
 
-// refreshNetwork reports a changed Network; without Kad, kadStatus stays
-// zero.
+// refreshNetwork reports a changed Network.
 func (e *Engine) refreshNetwork() {
+	if network := e.buildNetwork(); network != e.network {
+		e.network = network
+		e.events.SetNetwork(network)
+	}
+}
+
+// buildNetwork is the Network now; without Kad, kadStatus stays zero.
+func (e *Engine) buildNetwork() Network {
 	network := Network{
 		IsServerConnected: e.server.IsConnected(),
 		IsHighID:          e.server.IsHighID(),
@@ -606,12 +609,7 @@ func (e *Engine) refreshNetwork() {
 		KadNodes:          e.kadStatus.Nodes,
 	}
 	network.IsBehindCarrierNat = !network.IsHighID && matchCarrierNAT(e.mappedIP, e.publicIP)
-	if e.hasNetwork && network == e.network {
-		return
-	}
-	e.hasNetwork = true
-	e.network = network
-	e.events.SetNetwork(network)
+	return network
 }
 
 // isFirewalled is whether peers cannot connect to us: neither the server nor
@@ -681,8 +679,7 @@ func (e *Engine) stop() error {
 	}
 	e.closeSockets()
 	if e.kad != nil {
-		e.kadCancel()
-		<-e.kadDone
+		e.stopKad()
 		select {
 		case s := <-e.kad.States():
 			e.state.Kad = s
