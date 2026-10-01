@@ -11,16 +11,16 @@ const (
 	TagHash      byte = 0x01
 	TagString    byte = 0x02
 	TagUint32    byte = 0x03
-	TagFloat32   byte = 0x04
-	TagBool      byte = 0x05
-	TagBoolArray byte = 0x06
-	TagBlob      byte = 0x07
+	tagFloat32   byte = 0x04
+	tagBool      byte = 0x05
+	tagBoolArray byte = 0x06
+	tagBlob      byte = 0x07
 	TagUint16    byte = 0x08
 	TagUint8     byte = 0x09
-	TagBsob      byte = 0x0A
+	tagBsob      byte = 0x0A
 	TagUint64    byte = 0x0B
-	TagStr1      byte = 0x11
-	TagStr16     byte = 0x20
+	tagStr1      byte = 0x11
+	tagStr16     byte = 0x20
 )
 
 // Tag is one eD2k tag. A tag is named either by a one-byte ID (Name empty)
@@ -65,23 +65,23 @@ func (r *Reader) Tag() Tag {
 		t.String = r.String()
 	case t.Type == TagUint32:
 		t.Uint = uint64(r.Uint32())
-	case t.Type == TagFloat32:
+	case t.Type == tagFloat32:
 		t.Float = math.Float32frombits(r.Uint32())
-	case t.Type == TagBool, t.Type == TagUint8:
+	case t.Type == tagBool, t.Type == TagUint8:
 		t.Uint = uint64(r.Uint8())
-	case t.Type == TagBoolArray:
+	case t.Type == tagBoolArray:
 		t.Uint = uint64(r.Uint16())
 		t.Blob = r.Bytes(int(t.Uint)/8 + 1)
-	case t.Type == TagBlob:
+	case t.Type == tagBlob:
 		t.Blob = r.Bytes(int(r.Uint32()))
 	case t.Type == TagUint16:
 		t.Uint = uint64(r.Uint16())
-	case t.Type == TagBsob:
+	case t.Type == tagBsob:
 		t.Blob = r.Bytes(int(r.Uint8()))
 	case t.Type == TagUint64:
 		t.Uint = r.Uint64()
-	case t.Type >= TagStr1 && t.Type <= TagStr16:
-		t.String = string(r.Bytes(int(t.Type-TagStr1) + 1))
+	case t.Type >= tagStr1 && t.Type <= tagStr16:
+		t.String = string(r.Bytes(int(t.Type-tagStr1) + 1))
 		t.Type = TagString
 	default:
 		r.SetErr(fmt.Errorf("wire: unknown tag type %#x", t.Type))
@@ -141,7 +141,7 @@ func BuildCompactTag(b []byte, t Tag) []byte {
 		t.Type = toNarrowestUint(t.Uint)
 	case TagString:
 		if n := len(t.String); n >= 1 && n <= 16 {
-			t.Type = TagStr1 + byte(n-1)
+			t.Type = tagStr1 + byte(n-1)
 		}
 	}
 	if t.Name == "" {
@@ -181,24 +181,24 @@ func buildTagValue(b []byte, t Tag) []byte {
 		return BuildString(b, t.String)
 	case t.Type == TagUint32:
 		return binary.LittleEndian.AppendUint32(b, uint32(t.Uint))
-	case t.Type == TagFloat32:
+	case t.Type == tagFloat32:
 		return binary.LittleEndian.AppendUint32(b, math.Float32bits(t.Float))
-	case t.Type == TagBool, t.Type == TagUint8:
+	case t.Type == tagBool, t.Type == TagUint8:
 		return append(b, byte(t.Uint))
-	case t.Type == TagBoolArray:
+	case t.Type == tagBoolArray:
 		b = binary.LittleEndian.AppendUint16(b, uint16(t.Uint))
 		return append(b, t.Blob...)
-	case t.Type == TagBlob:
+	case t.Type == tagBlob:
 		b = binary.LittleEndian.AppendUint32(b, uint32(len(t.Blob)))
 		return append(b, t.Blob...)
 	case t.Type == TagUint16:
 		return binary.LittleEndian.AppendUint16(b, uint16(t.Uint))
-	case t.Type == TagBsob:
+	case t.Type == tagBsob:
 		b = append(b, byte(len(t.Blob)))
 		return append(b, t.Blob...)
 	case t.Type == TagUint64:
 		return binary.LittleEndian.AppendUint64(b, t.Uint)
-	case t.Type >= TagStr1 && t.Type <= TagStr16:
+	case t.Type >= tagStr1 && t.Type <= tagStr16:
 		return append(b, t.String...)
 	}
 	panic(fmt.Sprintf("wire: unknown tag type %#x", t.Type))

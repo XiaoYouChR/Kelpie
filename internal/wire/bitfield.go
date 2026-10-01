@@ -17,7 +17,7 @@ func ToBitfield(have []bool) Bitfield {
 	f := Bitfield{bits: make([]byte, (len(have)+7)/8), size: len(have)}
 	for i, ok := range have {
 		if ok {
-			f.Set(i)
+			f.set(i)
 		}
 	}
 	return f
@@ -32,17 +32,7 @@ func (f Bitfield) Has(i int) bool {
 	return f.bits[i/8]&(1<<(i%8)) != 0
 }
 
-func (f Bitfield) Set(i int) { f.bits[i/8] |= 1 << (i % 8) }
-
-func (f Bitfield) Count() int {
-	n := 0
-	for i := range f.size {
-		if f.Has(i) {
-			n++
-		}
-	}
-	return n
-}
+func (f Bitfield) set(i int) { f.bits[i/8] |= 1 << (i % 8) }
 
 // Bitfield reads a uint16 part count followed by the packed bits. A count of
 // zero is how eMule says "I have the complete file".

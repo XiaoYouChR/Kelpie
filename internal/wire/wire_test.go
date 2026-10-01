@@ -135,13 +135,13 @@ func TestTagRoundTrip(t *testing.T) {
 		{Type: TagString, ID: 0x01, String: "Kelpie"},
 		{Type: TagString, Name: "ip6", String: "20010db8000000000000000000000001"},
 		{Type: TagUint32, ID: 0x11, Uint: 0x3C},
-		{Type: TagFloat32, ID: 0x10, Float: 1.5},
-		{Type: TagBool, ID: 0x12, Uint: 1},
-		{Type: TagBoolArray, ID: 0x13, Uint: 9, Blob: []byte{0xFF, 0x01}},
-		{Type: TagBlob, ID: 0x14, Blob: []byte{9, 8, 7}},
+		{Type: tagFloat32, ID: 0x10, Float: 1.5},
+		{Type: tagBool, ID: 0x12, Uint: 1},
+		{Type: tagBoolArray, ID: 0x13, Uint: 9, Blob: []byte{0xFF, 0x01}},
+		{Type: tagBlob, ID: 0x14, Blob: []byte{9, 8, 7}},
 		{Type: TagUint16, ID: 0x15, Uint: 4662},
 		{Type: TagUint8, ID: 0x16, Uint: 7},
-		{Type: TagBsob, ID: 0x17, Blob: []byte{1}},
+		{Type: tagBsob, ID: 0x17, Blob: []byte{1}},
 		{Type: TagUint64, ID: 0x02, Uint: 1 << 40},
 	}
 	raw := BuildTags(nil, tags)
@@ -216,7 +216,7 @@ func TestBitfieldGolden(t *testing.T) {
 	}
 	r := Reader{Rest: raw}
 	back := r.Bitfield()
-	if r.Err() != nil || !reflect.DeepEqual(toBools(back), toBools(f)) || back.Count() != 3 {
+	if r.Err() != nil || !reflect.DeepEqual(toBools(back), toBools(f)) {
 		t.Fatalf("back = %v", toBools(back))
 	}
 }
@@ -224,7 +224,7 @@ func TestBitfieldGolden(t *testing.T) {
 func TestBitfieldDropsTrailingBits(t *testing.T) {
 	r := Reader{Rest: []byte{0x03, 0x00, 0xFF}}
 	f := r.Bitfield()
-	if f.Len() != 3 || f.Count() != 3 || f.Has(3) {
+	if !reflect.DeepEqual(toBools(f), []bool{true, true, true}) || f.Has(3) {
 		t.Fatalf("bitfield = %v", toBools(f))
 	}
 	if raw := BuildBitfield(nil, f); !bytes.Equal(raw, []byte{0x03, 0x00, 0x07}) {
@@ -232,10 +232,11 @@ func TestBitfieldDropsTrailingBits(t *testing.T) {
 	}
 }
 
-func TestBitfieldSet(t *testing.T) {
-	f := ToBitfield(make([]bool, 12))
-	f.Set(11)
-	if !f.Has(11) || f.Has(0) || f.Has(12) || f.Has(-1) || f.Count() != 1 {
+func TestBitfieldHas(t *testing.T) {
+	have := make([]bool, 12)
+	have[11] = true
+	f := ToBitfield(have)
+	if !f.Has(11) || f.Has(0) || f.Has(12) || f.Has(-1) {
 		t.Fatalf("bitfield = %v", toBools(f))
 	}
 }

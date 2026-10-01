@@ -38,13 +38,13 @@ func FuzzTags(f *testing.F) {
 		{Type: TagHash, ID: 0xAE, Hash: Hash(addr)},
 		{Type: TagString, Name: "custom", String: "x"},
 		{Type: TagUint32, ID: 0xBB, Uint: 4661},
-		{Type: TagFloat32, ID: 0x10, Float: 1.5},
-		{Type: TagBool, ID: 0x11, Uint: 1},
-		{Type: TagBoolArray, ID: 0x12, Uint: 9, Blob: []byte{0xFF, 0x01}},
-		{Type: TagBlob, ID: 0x13, Blob: []byte{1, 2, 3}},
+		{Type: tagFloat32, ID: 0x10, Float: 1.5},
+		{Type: tagBool, ID: 0x11, Uint: 1},
+		{Type: tagBoolArray, ID: 0x12, Uint: 9, Blob: []byte{0xFF, 0x01}},
+		{Type: tagBlob, ID: 0x13, Blob: []byte{1, 2, 3}},
 		{Type: TagUint16, ID: 0x14, Uint: 7},
 		{Type: TagUint8, Name: "ab", Uint: 1},
-		{Type: TagBsob, ID: 0x15, Blob: []byte{4}},
+		{Type: tagBsob, ID: 0x15, Blob: []byte{4}},
 		{Type: TagUint64, ID: 0x02, Uint: 1 << 40},
 	}))
 	f.Add(append([]byte{2, 0, 0, 0}, BuildCompactTag(BuildCompactTag(nil, Tag{Type: TagString, ID: 0x01, String: "abc"}), Tag{Type: TagUint64, ID: 0x02, Uint: 4})...))
@@ -56,7 +56,6 @@ func FuzzTags(f *testing.F) {
 		}
 		r = &Reader{Rest: b}
 		field := r.Bitfield()
-		field.Count()
 		toBools(field)
 		BuildBitfield(nil, field)
 	})
