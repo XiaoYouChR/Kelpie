@@ -36,10 +36,6 @@ const (
 	SourceDirectCallback  byte = 6 // firewalled, but takes callback requests over UDP itself
 )
 
-// cryptDirectCallback is the TAG_ENCRYPTION bit of a source that takes
-// direct callbacks (CPrefs::GetMyConnectOptions).
-const cryptDirectCallback byte = 0x08
-
 // Source is one peer that has a file, as Kad reported it. For firewalled
 // types the engine cannot connect to Addr; it asks Kad to RequestCallback
 // through Buddy, or for SourceDirectCallback sends the source's Kad port
@@ -57,7 +53,7 @@ type Source struct {
 }
 
 // CanObfuscate reads the "supports" bit of TAG_ENCRYPTION.
-func (s Source) CanObfuscate() bool { return s.CryptOptions&0x01 != 0 }
+func (s Source) CanObfuscate() bool { return s.CryptOptions&wire.CryptSupported != 0 }
 
 func (s Source) IsFirewalled() bool {
 	return s.Type == SourceFirewalled || s.Type == SourceFirewalledLarge
@@ -143,7 +139,7 @@ func toSource(e kadwire.Entry, isFirewalled bool) (Source, bool) {
 		}
 		return s, true
 	case SourceDirectCallback:
-		return s, !isFirewalled && s.CryptOptions&cryptDirectCallback != 0 && ip.IsValid() && s.UDPPort != 0
+		return s, !isFirewalled && s.CryptOptions&wire.CryptDirectCallback != 0 && ip.IsValid() && s.UDPPort != 0
 	}
 	return Source{}, false
 }

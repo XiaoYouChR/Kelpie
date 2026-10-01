@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
-	packet "github.com/XiaoYouChR/Kelpie/internal/wire/server"
+	serverwire "github.com/XiaoYouChR/Kelpie/internal/wire/server"
 )
 
 func FuzzParseMet(f *testing.F) {
@@ -56,20 +56,20 @@ func buildServerScript(packets ...wire.Packet) []byte {
 func FuzzOnPacket(f *testing.F) {
 	v6 := netip.MustParseAddr("2a01:4f8::1")
 	f.Add(buildServerScript(
-		packet.IDChange{ClientID: highID, Flags: packet.FlagCompression | packet.FlagTCPObfuscation | packet.FlagIPv6, ObfuscationPort: 4665},
-		packet.ServerStatus{Users: 10, Files: 20},
-		packet.ServerMessage{Text: "welcome"},
-		packet.ServerIdent{Hash: fileHash(9), Addr: first, Name: "s", Description: "d", Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x87, Uint: 9}}},
-		packet.ServerList{Servers: []netip.AddrPort{ep("1.0.0.3:4661"), netip.AddrPortFrom(v6, 4661)}},
-		packet.FoundSources{Hash: fileHash(0), Sources: []packet.Source{{ClientID: highID, Port: 4662}, {ClientID: 5, Port: 6}, {ClientID: wire.IPv6Sentinel, Port: 7, IPv6: v6}}},
-		packet.FoundSourcesObfu{Hash: fileHash(1), Sources: []packet.Source{{ClientID: highID, Port: 4662, CryptOptions: packet.CryptHasUserHash | 0x03, UserHash: userHash}}},
-		packet.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x83, UserHash: userHash},
-		packet.CallbackRequestedIPv6{Addr: netip.AddrPortFrom(v6, 4662)},
-		packet.CallbackFailed{},
-		packet.GlobServStatRes{Challenge: 1, Users: 1, UDPFlags: packet.UDPFlagGetSources2 | packet.UDPFlagLargeFiles},
-		packet.GlobFoundSources{Files: []packet.FoundSources{{Hash: fileHash(0), Sources: []packet.Source{{ClientID: highID, Port: 2}}}}},
+		serverwire.IDChange{ClientID: highID, Flags: serverwire.FlagCompression | serverwire.FlagTCPObfuscation | serverwire.FlagIPv6, ObfuscationPort: 4665},
+		serverwire.ServerStatus{Users: 10, Files: 20},
+		serverwire.ServerMessage{Text: "welcome"},
+		serverwire.ServerIdent{Hash: fileHash(9), Addr: first, Name: "s", Description: "d", Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x87, Uint: 9}}},
+		serverwire.ServerList{Servers: []netip.AddrPort{ep("1.0.0.3:4661"), netip.AddrPortFrom(v6, 4661)}},
+		serverwire.FoundSources{Hash: fileHash(0), Sources: []serverwire.Source{{ClientID: highID, Port: 4662}, {ClientID: 5, Port: 6}, {ClientID: wire.IPv6Sentinel, Port: 7, IPv6: v6}}},
+		serverwire.FoundSourcesObfu{Hash: fileHash(1), Sources: []serverwire.Source{{ClientID: highID, Port: 4662, CryptOptions: wire.CryptHasUserHash | 0x03, UserHash: userHash}}},
+		serverwire.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x83, UserHash: userHash},
+		serverwire.CallbackRequestedIPv6{Addr: netip.AddrPortFrom(v6, 4662)},
+		serverwire.CallbackFailed{},
+		serverwire.GlobServStatRes{Challenge: 1, Users: 1, UDPFlags: serverwire.UDPFlagGetSources2 | serverwire.UDPFlagLargeFiles},
+		serverwire.GlobFoundSources{Files: []serverwire.FoundSources{{Hash: fileHash(0), Sources: []serverwire.Source{{ClientID: highID, Port: 2}}}}},
 	))
-	entries := []Entry{{Endpoint: first, Users: 100}, {Endpoint: ep("1.0.0.2:4661"), UDPFlags: packet.UDPFlagGetSources2}}
+	entries := []Entry{{Endpoint: first, Users: 100}, {Endpoint: ep("1.0.0.2:4661"), UDPFlags: serverwire.UDPFlagGetSources2}}
 	wanted := append(downloads(3), Wanted{File: fileHash(7), Size: 5 << 30, Name: "large", IsComplete: true, IsShared: true})
 	f.Fuzz(func(t *testing.T, script []byte) {
 		s := BuildServer(config, entries)
@@ -85,10 +85,10 @@ func FuzzOnPacket(f *testing.F) {
 				continue
 			}
 			if via%2 == 0 {
-				if p, err := packet.Parse(raw[0], raw[1], raw[2:]); err == nil {
+				if p, err := serverwire.Parse(raw[0], raw[1], raw[2:]); err == nil {
 					s.OnPacket(first, p, now)
 				}
-			} else if p, err := packet.ParseUDP(raw[0], raw[1], raw[2:]); err == nil {
+			} else if p, err := serverwire.ParseUDP(raw[0], raw[1], raw[2:]); err == nil {
 				s.OnUDPPacket(netip.AddrPortFrom(entries[int(via/2)%len(entries)].Endpoint.Addr(), 4665), p, now)
 			}
 			now = now.Add(time.Duration(via) * time.Second)

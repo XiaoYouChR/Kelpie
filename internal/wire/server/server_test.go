@@ -48,7 +48,7 @@ func samplePackets() []wire.Packet {
 		GetSources{Hash: fileHash, Size: 9728000},
 		GetSources{Hash: fileHash, Size: 5 << 30},
 		FoundSources{Hash: fileHash, Sources: []Source{{ClientID: 0x04030201, Port: 4662}, {ClientID: wire.IPv6Sentinel, Port: 4663, IPv6: v6}, {ClientID: 5, Port: 6}}},
-		FoundSourcesObfu{Hash: fileHash, Sources: []Source{{ClientID: 1, Port: 2, CryptOptions: 0x01}, {ClientID: wire.IPv6Sentinel, Port: 3, CryptOptions: CryptHasUserHash | 0x03, UserHash: userHash, IPv6: v6}}},
+		FoundSourcesObfu{Hash: fileHash, Sources: []Source{{ClientID: 1, Port: 2, CryptOptions: 0x01}, {ClientID: wire.IPv6Sentinel, Port: 3, CryptOptions: wire.CryptHasUserHash | 0x03, UserHash: userHash, IPv6: v6}}},
 		CallbackRequest{ClientID: 12345},
 		CallbackRequested{Addr: netip.MustParseAddrPort("1.2.3.4:4662")},
 		CallbackRequested{Addr: netip.MustParseAddrPort("1.2.3.4:4662"), CryptOptions: 0x83, UserHash: userHash},

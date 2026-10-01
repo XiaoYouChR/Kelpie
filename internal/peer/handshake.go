@@ -3,8 +3,6 @@ package peer
 import (
 	"bytes"
 	"net/netip"
-	"strconv"
-	"strings"
 
 	"github.com/XiaoYouChR/Kelpie/internal/identity"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -12,11 +10,6 @@ import (
 )
 
 const clientName = "Kelpie"
-
-// compatibleClient is Kelpie's id in the top byte of CT_EMULE_VERSION and in
-// ET_COMPATIBLECLIENT. eMule and aMule assign 0-6 (SO_EMULE .. SO_HYDRANODE),
-// 0x0A, 0x14, 0x28, 0x32-0x36, 0x44, 0x98 and 0xFF; 0x4B ('K') is free.
-const compatibleClient = 0x4B
 
 // Versions Kelpie implements, as eMule numbers them.
 const (
@@ -60,27 +53,11 @@ func (s *Session) buildHello() client.Hello {
 			CanCrypt:             true,
 			IsCryptRequested:     true,
 		},
-		EmuleVersion: s.buildEmuleVersion(),
+		EmuleVersion: wire.ToEmuleVersion(s.cfg.Version),
 		ModMisc:      modMisc,
 		YourIP:       s.remote.Addr(),
 		IPv6:         s.cfg.IPv6,
 	}
-}
-
-// buildEmuleVersion lays out CT_EMULE_VERSION: client id, then major, minor
-// and update in 7, 7 and 3 bits.
-func (s *Session) buildEmuleVersion() uint32 {
-	major, minor, update := toVersion(s.cfg.Version)
-	return compatibleClient<<24 | (major&0x7F)<<17 | (minor&0x7F)<<10 | (update&0x07)<<7
-}
-
-func toVersion(version string) (major, minor, update uint32) {
-	var numbers [3]uint32
-	for i, field := range strings.SplitN(version, ".", 3) {
-		n, _ := strconv.Atoi(strings.TrimLeft(field, "v"))
-		numbers[i] = uint32(n)
-	}
-	return numbers[0], numbers[1], numbers[2]
 }
 
 func (s *Session) onGreeting(p wire.Packet, out *Output) {
@@ -161,11 +138,11 @@ func toMuleVersion(emuleVersion uint32) byte {
 func toCryptOptions(m client.MiscOptions2) byte {
 	var options byte
 	if m.CanCrypt {
-		options |= CryptSupported
+		options |= wire.CryptSupported
 		if m.IsCryptRequested {
-			options |= CryptRequested
+			options |= wire.CryptRequested
 			if m.IsCryptRequired {
-				options |= CryptRequired
+				options |= wire.CryptRequired
 			}
 		}
 	}
@@ -180,7 +157,9 @@ func (s *Session) onEmuleInfo(p client.EmuleInfo, out *Output) {
 }
 
 func (s *Session) sendEmuleInfoAnswer(out *Output) {
-	major, minor, _ := toVersion(s.cfg.Version)
+	// The answer splits the same fields CT_EMULE_VERSION packs.
+	version := wire.ToEmuleVersion(s.cfg.Version)
+	major, minor := version>>17&0x7F, version>>10&0x7F
 	tag := func(id byte, v uint32) wire.Tag { return wire.Tag{Type: wire.TagUint32, ID: id, Uint: uint64(v)} }
 	out.send(client.EmuleInfoAnswer{
 		Version:         byte(major<<4 | minor&0x0F),
@@ -190,7 +169,7 @@ func (s *Session) sendEmuleInfoAnswer(out *Output) {
 			tag(client.InfoUDPVersion, udpVersion),
 			tag(client.InfoUDPPort, uint32(s.cfg.UDPPort)),
 			tag(client.InfoExtendedRequest, client.ExtendedRequestsVersion),
-			tag(client.InfoCompatibleClient, compatibleClient),
+			tag(client.InfoCompatibleClient, version>>24),
 			tag(client.InfoFeatures, identity.Support),
 		},
 	})

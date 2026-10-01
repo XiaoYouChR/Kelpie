@@ -31,23 +31,17 @@ type Source struct {
 	Server   netip.AddrPort
 	UserHash wire.Hash
 	// CryptOptions is the source's obfuscation setting, laid out as in
-	// Source Exchange v4 and the servers' answers: CryptSupported,
-	// CryptRequested, CryptRequired.
+	// Source Exchange v4 and the servers' answers: wire.CryptSupported,
+	// wire.CryptRequested, wire.CryptRequired.
 	CryptOptions byte
 }
-
-const (
-	CryptSupported byte = 0x01
-	CryptRequested byte = 0x02
-	CryptRequired  byte = 0x04
-)
 
 // CanObfuscate tells whether a connection to the source may be obfuscated:
 // it supports obfuscation and we know the user hash that keys it. Kelpie
 // requests obfuscation, so a supporting peer is always obfuscated, as aMule
 // does (CUpDownClient::Connect).
 func (s Source) CanObfuscate() bool {
-	return s.CryptOptions&CryptSupported != 0 && s.UserHash != wire.Hash{}
+	return s.CryptOptions&wire.CryptSupported != 0 && s.UserHash != wire.Hash{}
 }
 
 type sourceState struct {

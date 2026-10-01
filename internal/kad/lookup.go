@@ -365,7 +365,7 @@ func (c *core) buildSourceTags(size uint64) ([]wire.Tag, bool) {
 	}
 	options := connectOptions
 	if c.canDirectCallback() {
-		options |= cryptDirectCallback
+		options |= wire.CryptDirectCallback
 	}
 	return append(tags, sizeTag, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagEncryption, Uint: uint64(options)}), true
 }

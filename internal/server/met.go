@@ -27,8 +27,6 @@ const (
 type Entry struct {
 	Endpoint           netip.AddrPort
 	Host               string
-	Name               string
-	Description        string
 	Preference         Preference
 	Failures           uint32
 	Ping               uint32
@@ -44,8 +42,6 @@ type Entry struct {
 
 // server.met tags (eMule Opcodes.h ST_*).
 const (
-	metName               byte = 0x01
-	metDescription        byte = 0x0B
 	metPing               byte = 0x0C
 	metFail               byte = 0x0D
 	metPreference         byte = 0x0E
@@ -103,10 +99,6 @@ func setMetTag(e *Entry, t wire.Tag) {
 	case t.Name == "files" && isUint:
 		e.Files = uint32(t.Uint)
 	case t.Name != "":
-	case t.ID == metName && t.Type == wire.TagString:
-		e.Name = t.String
-	case t.ID == metDescription && t.Type == wire.TagString:
-		e.Description = t.String
 	case t.ID == metDynIP && t.Type == wire.TagString && e.Host == "":
 		e.Host = t.String
 	case !isUint:

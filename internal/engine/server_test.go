@@ -121,10 +121,10 @@ func TestServerStatsSurviveRestart(t *testing.T) {
 	}
 }
 
-func TestUpdateLearnedKeepsListedNames(t *testing.T) {
+func TestUpdateLearnedKeepsListedFields(t *testing.T) {
 	at := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	entries := []server.Entry{
-		{Endpoint: netip.MustParseAddrPort("198.51.100.7:4661"), Name: "listed", Preference: server.PreferenceHigh},
+		{Endpoint: netip.MustParseAddrPort("198.51.100.7:4661"), Preference: server.PreferenceHigh},
 		{Endpoint: netip.AddrPortFrom(netip.Addr{}, 4661), Host: "dyn.example"},
 		{Endpoint: netip.MustParseAddrPort("198.51.100.8:4661")},
 	}
@@ -136,7 +136,7 @@ func TestUpdateLearnedKeepsListedNames(t *testing.T) {
 	}
 	got := updateLearned(entries, saved)
 	want := []server.Entry{
-		{Endpoint: netip.MustParseAddrPort("198.51.100.7:4661"), Name: "listed", Preference: server.PreferenceHigh, Failures: 3, UDPFlags: 0x21, PingedAt: at},
+		{Endpoint: netip.MustParseAddrPort("198.51.100.7:4661"), Preference: server.PreferenceHigh, Failures: 3, UDPFlags: 0x21, PingedAt: at},
 		{Endpoint: netip.AddrPortFrom(netip.Addr{}, 4661), Host: "dyn.example", Users: 70},
 		{Endpoint: netip.MustParseAddrPort("198.51.100.8:4661")},
 	}

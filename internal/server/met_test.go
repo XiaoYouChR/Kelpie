@@ -34,14 +34,14 @@ func TestParseMetBundledList(t *testing.T) {
 		t.Fatalf("got %d servers, want 13", len(entries))
 	}
 	first := entries[0]
-	if first.Name != "ed2k-rust" || first.Description != "main server" || !first.Endpoint.IsValid() {
+	if !first.Endpoint.IsValid() {
 		t.Fatalf("first entry = %+v", first)
 	}
 	if first.Users == 0 || first.Files == 0 || first.UDPFlags == 0 || first.SoftFiles == 0 {
 		t.Fatalf("first entry lost counts or flags: %+v", first)
 	}
 	for _, e := range entries {
-		if e.Name == "" || e.Endpoint.Port() == 0 {
+		if e.Endpoint.Port() == 0 {
 			t.Fatalf("incomplete entry %+v", e)
 		}
 	}
@@ -64,7 +64,7 @@ func TestParseMetReadsSelectionTags(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Entry{
-		Endpoint: netip.MustParseAddrPort("1.2.3.4:4661"), Name: "one", Preference: PreferenceHigh,
+		Endpoint: netip.MustParseAddrPort("1.2.3.4:4661"), Preference: PreferenceHigh,
 		Failures: 3, Ping: 80, UDPFlags: 0x21, TCPObfuscationPort: 4665, Users: 5000, Files: 9000,
 	}
 	if len(entries) != 1 || entries[0] != want {

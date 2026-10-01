@@ -5,16 +5,16 @@ import (
 	"net/netip"
 )
 
-// LowIDLimit is the first HighID. A HighID is the client's IPv4 address read
+// lowIDLimit is the first HighID. A HighID is the client's IPv4 address read
 // as a little-endian uint32, so every address whose first byte is non-zero
 // lands at or above it; anything below is a server-assigned LowID.
-const LowIDLimit = 16777216
+const lowIDLimit = 16777216
 
 // IPv6Sentinel is the client id that marks a source carrying an IPv6
 // address (emule-qt ipv6-spec §1.4, §4.4).
 const IPv6Sentinel = 0xFFFFFFFF
 
-func IsLowID(id uint32) bool { return id < LowIDLimit }
+func IsLowID(id uint32) bool { return id < lowIDLimit }
 
 // ToClientID returns the HighID of an IPv4 address; other addresses give 0.
 func ToClientID(addr netip.Addr) uint32 {
