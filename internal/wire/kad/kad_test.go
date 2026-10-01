@@ -173,3 +173,20 @@ func TestUnknownOpcodesSurvive(t *testing.T) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 }
+
+func TestIsDatagram(t *testing.T) {
+	for _, c := range []struct {
+		data []byte
+		want bool
+	}{
+		{nil, false},
+		{[]byte{wire.ProtocolKad, opPing}, true},
+		{[]byte{wire.ProtocolKadPacked}, true},
+		{[]byte{wire.ProtocolEMule, 0x90}, false},
+		{[]byte{wire.ProtocolEDonkey, 0x96}, false},
+	} {
+		if got := IsDatagram(c.data); got != c.want {
+			t.Errorf("IsDatagram(% x) = %v, want %v", c.data, got, c.want)
+		}
+	}
+}

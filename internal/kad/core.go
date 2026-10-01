@@ -5,6 +5,7 @@ package kad
 import (
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
@@ -225,11 +226,8 @@ func (c *core) cancelLookup(l *lookup) {
 		return
 	}
 	l.isDone = true
-	for i, other := range c.lookups {
-		if other == l {
-			c.lookups = append(c.lookups[:i], c.lookups[i+1:]...)
-			return
-		}
+	if i := slices.Index(c.lookups, l); i >= 0 {
+		c.lookups = slices.Delete(c.lookups, i, i+1)
 	}
 }
 
@@ -298,12 +296,17 @@ func (c *core) buildHello(version byte, isAckWanted bool) kadwire.Hello {
 // parseMiscOptions reads TAG_KADMISCOPTIONS; aMule takes it from any
 // integer tag (KademliaUDPListener.cpp:400).
 func parseMiscOptions(h kadwire.Hello) byte {
-	for _, t := range h.Tags {
-		if t.Name == "" && t.ID == kadwire.TagKadMiscOptions {
-			return byte(t.Uint)
+	t, _ := tagByID(h.Tags, kadwire.TagKadMiscOptions)
+	return byte(t.Uint)
+}
+
+func tagByID(tags []wire.Tag, id byte) (wire.Tag, bool) {
+	for _, t := range tags {
+		if t.Name == "" && t.ID == id {
+			return t, true
 		}
 	}
-	return 0
+	return wire.Tag{}, false
 }
 
 // addHello adds or updates the hello's sender, unless it says it is UDP
@@ -643,7 +646,7 @@ func (c *core) runRandomLookups(now time.Time) {
 	for i := range min(deepest+2, len(c.table.buckets)) {
 		b := &c.table.buckets[i]
 		for leaf := range leafCount(i) {
-			if now.Before(b.nextLookups[leaf]) || c.table.leafSize(b, leaf) > sparseLeaf {
+			if now.Before(b.nextLookups[leaf]) || b.leafSize(leaf) > sparseLeaf {
 				continue
 			}
 			if c.startLookup(randomLookup, buildRandomID(c.id, i, leaf, c.rng), 0, now) == nil {

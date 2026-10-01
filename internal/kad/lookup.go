@@ -342,12 +342,12 @@ func (c *core) buildSourceTags(size uint64) ([]wire.Tag, bool) {
 	var tags []wire.Tag
 	switch {
 	case !c.firewall.isFirewalled():
-		tags = append(tags, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: uint64(pick(isLarge, SourceOpenLarge, SourceOpen))})
+		tags = append(tags, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: uint64(pick(isLarge, sourceOpenLarge, sourceOpen))})
 	case c.canDirectCallback():
 		tags = append(tags, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: uint64(SourceDirectCallback)})
 	case c.buddy.Addr.IsValid():
 		tags = append(tags,
-			wire.Tag{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: uint64(pick(isLarge, SourceFirewalledLarge, SourceFirewalled))},
+			wire.Tag{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: uint64(pick(isLarge, sourceFirewalledLarge, sourceFirewalled))},
 			wire.Tag{Type: wire.TagUint32, ID: kadwire.TagServerIP, Uint: uint64(wire.ToClientID(c.buddy.Addr.Addr()))},
 			wire.Tag{Type: wire.TagUint16, ID: kadwire.TagServerPort, Uint: uint64(c.buddy.Addr.Port())},
 			wire.Tag{Type: wire.TagString, ID: kadwire.TagBuddyHash, String: buildBuddyHash(c.buddyTarget())},

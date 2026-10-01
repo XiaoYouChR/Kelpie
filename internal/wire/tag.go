@@ -66,7 +66,7 @@ func (r *Reader) Tag() Tag {
 	case t.Type == TagUint32:
 		t.Uint = uint64(r.Uint32())
 	case t.Type == TagFloat32:
-		t.Float = r.Float32()
+		t.Float = math.Float32frombits(r.Uint32())
 	case t.Type == TagBool, t.Type == TagUint8:
 		t.Uint = uint64(r.Uint8())
 	case t.Type == TagBoolArray:

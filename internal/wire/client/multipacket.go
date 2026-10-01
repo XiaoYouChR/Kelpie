@@ -190,11 +190,7 @@ func parseMultiPacketExt2(r *wire.Reader) MultiPacketExt2 {
 }
 
 func parseRequests(r *wire.Reader, hash wire.Hash) []wire.Packet {
-	var out []wire.Packet
-	var isSeen [256]bool
-	for r.Len() > 0 && r.Err() == nil {
-		op := r.Uint8()
-		var p wire.Packet
+	return parseSubPackets(r, func(op byte) wire.Packet {
 		switch op {
 		case opRequestFileName:
 			f := FileRequest{Hash: hash}
@@ -204,24 +200,18 @@ func parseRequests(r *wire.Reader, hash wire.Hash) []wire.Packet {
 			if ExtendedRequestsVersion >= 2 {
 				f.HasCompleteSources, f.CompleteSources = true, r.Uint16()
 			}
-			p = f
+			return f
 		case opSetRequestFileID:
-			p = SetRequestFileID{Hash: hash}
+			return SetRequestFileID{Hash: hash}
 		case opRequestSources:
-			p = RequestSources{Hash: hash}
+			return RequestSources{Hash: hash}
 		case opRequestSources2:
-			p = RequestSources2{Version: r.Uint8(), Options: r.Uint16(), Hash: hash}
+			return RequestSources2{Version: r.Uint8(), Options: r.Uint16(), Hash: hash}
 		case opAICHFileHashRequest:
-			p = AICHFileHashRequest{Hash: hash}
-		default:
-			return append(out, wire.Unknown{Proto: wire.ProtocolEMule, Op: op, Body: r.Bytes(r.Len())})
+			return AICHFileHashRequest{Hash: hash}
 		}
-		if !isSeen[op] {
-			isSeen[op] = true
-			out = append(out, p)
-		}
-	}
-	return out
+		return nil
+	})
 }
 
 func parseMultiPacketAnswer(r *wire.Reader) MultiPacketAnswer {
@@ -237,19 +227,28 @@ func parseMultiPacketAnswerExt2(r *wire.Reader) MultiPacketAnswerExt2 {
 }
 
 func parseAnswers(r *wire.Reader, hash wire.Hash) []wire.Packet {
+	return parseSubPackets(r, func(op byte) wire.Packet {
+		switch op {
+		case opFileNameAnswer:
+			return FileNameAnswer{Hash: hash, Name: r.String()}
+		case opFileStatus:
+			return FileStatus{Hash: hash, Parts: r.Bitfield()}
+		case opAICHFileHashAnswer:
+			return AICHFileHashAnswer{Hash: hash, Root: r.AICHHash()}
+		}
+		return nil
+	})
+}
+
+// parseSubPackets reads opcode-prefixed sub-packets with parse, which
+// returns nil for an opcode it does not know.
+func parseSubPackets(r *wire.Reader, parse func(op byte) wire.Packet) []wire.Packet {
 	var out []wire.Packet
 	var isSeen [256]bool
 	for r.Len() > 0 && r.Err() == nil {
 		op := r.Uint8()
-		var p wire.Packet
-		switch op {
-		case opFileNameAnswer:
-			p = FileNameAnswer{Hash: hash, Name: r.String()}
-		case opFileStatus:
-			p = FileStatus{Hash: hash, Parts: r.Bitfield()}
-		case opAICHFileHashAnswer:
-			p = AICHFileHashAnswer{Hash: hash, Root: r.AICHHash()}
-		default:
+		p := parse(op)
+		if p == nil {
 			return append(out, wire.Unknown{Proto: wire.ProtocolEMule, Op: op, Body: r.Bytes(r.Len())})
 		}
 		if !isSeen[op] {

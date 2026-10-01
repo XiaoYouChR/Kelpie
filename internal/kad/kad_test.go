@@ -156,7 +156,7 @@ func TestKadNetworkFindsPublishedSource(t *testing.T) {
 
 	publisher, searcher := kads[1], kads[count-1]
 	publisher.SetWanted(Wanted{Publish: []Publish{{Hash: fileHash, Size: 1000}}})
-	want := Source{Type: SourceOpen, UserHash: publisher.cfg.UserHash, Addr: netip.AddrPortFrom(addrs[1], 4662), UDPPort: 4672, CryptOptions: connectOptions}
+	want := Source{Type: sourceOpen, UserHash: publisher.cfg.UserHash, Addr: netip.AddrPortFrom(addrs[1], 4662), UDPPort: 4672, CryptOptions: connectOptions}
 	for step := 0; ; step++ {
 		// A search finding nothing waits an hour to ask again, so search
 		// only once the publisher has had time to publish.
