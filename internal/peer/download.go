@@ -71,8 +71,8 @@ func (s *Session) Remove(file wire.Hash) Output {
 	return out
 }
 
-// Start asks the peer for an upload slot for file once its parts are known. Starting another file gives up the slot of
-// the previous one.
+// Start asks the peer for an upload slot for file once its parts are known.
+// Starting another file gives up the slot of the previous one.
 func (s *Session) Start(file wire.Hash) Output {
 	var out Output
 	if s.down.files[file] == nil || s.down.started == file {
