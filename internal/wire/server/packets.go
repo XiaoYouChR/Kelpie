@@ -13,26 +13,18 @@ import (
 // Login capability bits (CT_SERVER_FLAGS, client to server).
 const (
 	CapZlib         uint32 = 0x0001
-	CapIPInLogin    uint32 = 0x0002
-	CapAuxPort      uint32 = 0x0004
 	CapNewTags      uint32 = 0x0008
 	CapUnicode      uint32 = 0x0010
 	CapLargeFiles   uint32 = 0x0100
 	CapSupportCrypt uint32 = 0x0200
 	CapRequestCrypt uint32 = 0x0400
-	CapRequireCrypt uint32 = 0x0800
-	// CapIPv6 must travel together with Login.IPv6 (ipv6-spec §4.1).
-	CapIPv6 uint32 = 0x1000
 )
 
-// Server TCP flags (IDChange.Flags, server to client). Related search is a
-// server capability announced here, not something a client asks for.
+// Server TCP flags (IDChange.Flags, server to client).
 const (
 	FlagCompression    uint32 = 0x0001
 	FlagNewTags        uint32 = 0x0008
 	FlagUnicode        uint32 = 0x0010
-	FlagRelatedSearch  uint32 = 0x0040
-	FlagTypeTagInteger uint32 = 0x0080
 	FlagLargeFiles     uint32 = 0x0100
 	FlagTCPObfuscation uint32 = 0x0400
 	FlagIPv6           uint32 = 0x4000
@@ -51,7 +43,8 @@ const (
 )
 
 // Login is OP_LOGINREQUEST. Its known tags are lifted into fields; a field
-// at its zero value is not sent, and Tags holds everything else.
+// at its zero value is not sent, and Tags holds everything else. IPv6 goes
+// with the login flag 0x1000 (ipv6-spec §4.1).
 type Login struct {
 	UserHash     wire.Hash
 	ClientID     uint32
@@ -177,7 +170,8 @@ func (s ServerStatus) Build(b []byte) []byte {
 }
 
 // ServerIdent is OP_SERVERIDENT. YourIP, IPv6Status and IPv6 are the
-// emule-qt IPv6 tags (ipv6-spec §4.3).
+// emule-qt IPv6 tags (ipv6-spec §4.3); IPv6Status bits say the server has,
+// can be reached at and has probed an IPv6 address (0x01, 0x02, 0x04).
 type ServerIdent struct {
 	Hash        wire.Hash
 	Addr        netip.AddrPort
@@ -188,13 +182,6 @@ type ServerIdent struct {
 	IPv6        netip.Addr
 	Tags        []wire.Tag
 }
-
-// ServerIdent.IPv6Status bits.
-const (
-	IPv6StatusHave      byte = 0x01
-	IPv6StatusReachable byte = 0x02
-	IPv6StatusProbed    byte = 0x04
-)
 
 func (s ServerIdent) Build(b []byte) []byte {
 	b = append(b, wire.ProtocolEDonkey, opServerIdent)
@@ -243,72 +230,22 @@ func parseServerIdent(r *wire.Reader) ServerIdent {
 	return s
 }
 
-// GetServerList is OP_GETSERVERLIST.
-type GetServerList struct{}
-
-func (GetServerList) Build(b []byte) []byte { return append(b, wire.ProtocolEDonkey, opGetServerList) }
-
-// ServerList is OP_SERVERLIST. IPv6 servers travel in a trailing block only
-// IPv6-aware servers send (ipv6-spec §4.6).
-type ServerList struct{ Servers []netip.AddrPort }
-
-func (l ServerList) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEDonkey, opServerList)
-	var v4, v6 []netip.AddrPort
-	for _, s := range l.Servers {
-		if s.Addr().Is4() {
-			v4 = append(v4, s)
-		} else {
-			v6 = append(v6, s)
-		}
-	}
-	b = append(b, byte(len(v4)))
-	for _, s := range v4 {
-		b = wire.BuildAddrPort(b, s)
-	}
-	if len(v6) == 0 {
-		return b
-	}
-	b = append(b, byte(len(v6)))
-	for _, s := range v6 {
-		b = binary.LittleEndian.AppendUint16(wire.BuildIPv6(b, s.Addr()), s.Port())
-	}
-	return b
-}
-
-func parseServerList(r *wire.Reader) ServerList {
-	var l ServerList
-	for range r.Uint8() {
-		l.Servers = append(l.Servers, r.AddrPort())
-	}
-	if r.Len() == 0 {
-		return l
-	}
-	for range r.Uint8() {
-		l.Servers = append(l.Servers, netip.AddrPortFrom(r.IPv6(), r.Uint16()))
-	}
-	return l
-}
-
 // GetSources is OP_GETSOURCES. Sizes above 4 GiB are sent as a zero uint32
-// followed by the uint64 size.
+// followed by the uint64 size. IsObfu sends OP_GETSOURCES_OBFU, which the
+// server answers with a FoundSources that IsObfu too. Inside
+// GlobGetSources2 only Hash and Size travel.
 type GetSources struct {
-	Hash wire.Hash
-	Size uint64
+	Hash   wire.Hash
+	Size   uint64
+	IsObfu bool
 }
 
 func (g GetSources) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEDonkey, opGetSources)
-	return buildSizedHash(b, g.Hash, g.Size)
-}
-
-// GetSourcesObfu is OP_GETSOURCES_OBFU: the server answers it with
-// OP_FOUNDSOURCES_OBFU, which carries what obfuscated connections need.
-type GetSourcesObfu GetSources
-
-func (g GetSourcesObfu) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEDonkey, opGetSourcesObfu)
-	return buildSizedHash(b, g.Hash, g.Size)
+	op := opGetSources
+	if g.IsObfu {
+		op = opGetSourcesObfu
+	}
+	return buildSizedHash(append(b, wire.ProtocolEDonkey, op), g.Hash, g.Size)
 }
 
 func buildSizedHash(b []byte, hash wire.Hash, size uint64) []byte {
@@ -340,22 +277,21 @@ type Source struct {
 	IPv6         netip.Addr
 }
 
-// FoundSources is OP_FOUNDSOURCES.
+// FoundSources is OP_FOUNDSOURCES, or OP_FOUNDSOURCES_OBFU when IsObfu:
+// then each source carries its crypt options, which obfuscated connections
+// need. GlobFoundSources carries the plain form only.
 type FoundSources struct {
 	Hash    wire.Hash
 	Sources []Source
+	IsObfu  bool
 }
-
-// FoundSourcesObfu is OP_FOUNDSOURCES_OBFU.
-type FoundSourcesObfu FoundSources
 
 func (f FoundSources) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEDonkey, opFoundSources)
-	return buildSources(b, f, false)
-}
-func (f FoundSourcesObfu) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEDonkey, opFoundSourcesObfu)
-	return buildSources(b, FoundSources(f), true)
+	op := opFoundSources
+	if f.IsObfu {
+		op = opFoundSourcesObfu
+	}
+	return buildSources(append(b, wire.ProtocolEDonkey, op), f, f.IsObfu)
 }
 
 func buildSources(b []byte, f FoundSources, isObfu bool) []byte {
@@ -380,7 +316,7 @@ func buildSources(b []byte, f FoundSources, isObfu bool) []byte {
 // parseSources consumes the 16 IPv6 bytes after every sentinel record; a
 // reader that skipped them would misread the rest of the list.
 func parseSources(r *wire.Reader, isObfu bool) FoundSources {
-	f := FoundSources{Hash: r.Hash()}
+	f := FoundSources{Hash: r.Hash(), IsObfu: isObfu}
 	count := int(r.Uint8())
 	if count*6 > r.Len() {
 		r.SetErr(wire.ErrShort)
@@ -478,8 +414,6 @@ const (
 const (
 	FileName   byte = 0x01
 	FileSize   byte = 0x02
-	FileType   byte = 0x03
-	FileFormat byte = 0x04
 	FileSizeHi byte = 0x3A
 )
 

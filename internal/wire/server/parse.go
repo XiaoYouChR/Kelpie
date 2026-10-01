@@ -14,13 +14,11 @@ import (
 
 const (
 	opLogin                 byte = 0x01
-	opGetServerList         byte = 0x14
 	opOfferFiles            byte = 0x15
 	opGetSources            byte = 0x19
 	opGetSourcesObfu        byte = 0x23
 	opCallbackRequest       byte = 0x1C
 	opCallbackRequestedIPv6 byte = 0x26
-	opServerList            byte = 0x32
 	opServerStatus          byte = 0x34
 	opCallbackRequested     byte = 0x35
 	opCallbackFailed        byte = 0x36
@@ -49,8 +47,6 @@ func Parse(protocol, opcode byte, body []byte) (wire.Packet, error) {
 	switch opcode {
 	case opLogin:
 		p = parseLogin(r)
-	case opGetServerList:
-		p = GetServerList{}
 	case opOfferFiles:
 		p = parseOfferFiles(r)
 	case opGetSources:
@@ -58,14 +54,12 @@ func Parse(protocol, opcode byte, body []byte) (wire.Packet, error) {
 		p = GetSources{Hash: hash, Size: size}
 	case opGetSourcesObfu:
 		hash, size := parseSizedHash(r)
-		p = GetSourcesObfu{Hash: hash, Size: size}
+		p = GetSources{Hash: hash, Size: size, IsObfu: true}
 	case opCallbackRequest:
 		p = CallbackRequest{ClientID: r.Uint32()}
 	case opCallbackRequestedIPv6:
 		addr := r.IPv6()
 		p = CallbackRequestedIPv6{Addr: netip.AddrPortFrom(addr, r.Uint16())}
-	case opServerList:
-		p = parseServerList(r)
 	case opServerStatus:
 		p = ServerStatus{Users: r.Uint32(), Files: r.Uint32()}
 	case opCallbackRequested:
@@ -81,7 +75,7 @@ func Parse(protocol, opcode byte, body []byte) (wire.Packet, error) {
 	case opFoundSources:
 		p = parseSources(r, false)
 	case opFoundSourcesObfu:
-		p = FoundSourcesObfu(parseSources(r, true))
+		p = parseSources(r, true)
 	default:
 		return wire.Unknown{Proto: protocol, Op: opcode, Body: body}, nil
 	}

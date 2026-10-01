@@ -222,7 +222,7 @@ func (s *Server) runConn(ctx context.Context, conn net.Conn) {
 		case serverwire.OfferFiles:
 			s.onOfferFiles(c, p)
 		case serverwire.GetSources:
-			c.send(serverwire.FoundSources{Hash: p.Hash, Sources: s.sourcesByFile(p.Hash, c)})
+			c.send(serverwire.FoundSources{Hash: p.Hash, Sources: s.sourcesByFile(p.Hash, c), IsObfu: p.IsObfu})
 		case serverwire.CallbackRequest:
 			s.onCallbackRequest(c, p)
 		}

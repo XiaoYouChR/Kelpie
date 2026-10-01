@@ -85,14 +85,12 @@ func (g GlobServStatReq) Build(b []byte) []byte {
 // Server UDP flags (GlobServStatRes.UDPFlags).
 const (
 	UDPFlagGetSources     uint32 = 0x0001
-	UDPFlagGetFiles       uint32 = 0x0002
 	UDPFlagNewTags        uint32 = 0x0008
 	UDPFlagUnicode        uint32 = 0x0010
 	UDPFlagGetSources2    uint32 = 0x0020
 	UDPFlagLargeFiles     uint32 = 0x0100
 	UDPFlagUDPObfuscation uint32 = 0x0200
 	UDPFlagTCPObfuscation uint32 = 0x0400
-	UDPFlagIPv6           uint32 = 0x4000
 )
 
 // ObfuscatedPing is aMule's obfuscated status ping (ServerList.cpp:297-322),
