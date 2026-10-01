@@ -304,3 +304,26 @@ func TestPartlyReceivedBlockKeepsItsBytes(t *testing.T) {
 		t.Fatalf("senders of a failed part = %v, want both peers", senders)
 	}
 }
+
+func TestBlockFailedIsRequestedAlone(t *testing.T) {
+	size := 3 * piece.BlockSize
+	picker := buildPicker(t, size, piece.ResumeData{}, 1)
+	picker.OnPeerParts("a", piece.BuildFullSet(1))
+	picker.OnPeerParts("b", piece.BuildFullSet(1))
+	blocks := picker.Request("a", 2)
+	blocks = append(blocks, picker.Request("b", 1)...)
+	for i, b := range blocks {
+		picker.OnBlockReceived([]string{"a", "a", "b"}[i], b)
+		picker.OnBlockWritten(b)
+	}
+
+	if senders := picker.OnBlockFailed(blocks[2]); !slices.Equal(senders, []string{"b"}) {
+		t.Fatalf("senders = %v, want [b]", senders)
+	}
+	if got := picker.WrittenSize(); got != 2*piece.BlockSize {
+		t.Fatalf("WrittenSize = %d, want two blocks", got)
+	}
+	if got := picker.Request("a", 3); !slices.Equal(got, blocks[2:]) {
+		t.Fatalf("requested %v after the failure, want only %v", got, blocks[2:])
+	}
+}

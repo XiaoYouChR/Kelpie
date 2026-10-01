@@ -344,3 +344,12 @@ func (p *Picker[P]) OnPartFailed(part int) []P {
 	p.parts[part] = partState[P]{}
 	return senders
 }
+
+// OnBlockFailed discards one whole block of a part that failed its hash
+// check, so only that block is requested again, and returns its senders.
+func (p *Picker[P]) OnBlockFailed(b Block) []P {
+	state := p.blockState(b)
+	senders := state.senders
+	*state = blockState[P]{}
+	return senders
+}
