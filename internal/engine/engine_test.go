@@ -440,6 +440,25 @@ func TestCompleteDownloadIsSyncedBeforeItEnds(t *testing.T) {
 	}
 }
 
+func TestSeederForgetsTheEndpointOfAGoneDownloader(t *testing.T) {
+	w := buildWorld(t)
+	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+	a.start()
+	b.start()
+	f := buildTestFile("gone.bin", 600_000, 9)
+	a.seed(1, f)
+	b.download(2, f, a.endpoint())
+	requireEndedOK(t, w.waitEnded(b, 2))
+	b.close()
+	settle := w.clock.Now().Add(5 * time.Second)
+	w.waitFor("seeder ticks", func() bool { return !w.clock.Now().Before(settle) })
+	a.close()
+	// The hub has stopped, so its map is safe to read.
+	if n := len(a.engine.uploadEndpoints); n != 0 {
+		t.Fatalf("seeder keeps %d upload endpoints", n)
+	}
+}
+
 func TestDownloadFromTwoSeedersViaServer(t *testing.T) {
 	w := buildWorld(t)
 	srv := w.startFakeServer("198.51.100.100")

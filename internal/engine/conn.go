@@ -119,6 +119,20 @@ type uploadTarget struct {
 	canObfuscate bool
 }
 
+// refreshUploadEndpoints forgets peers that are neither connected nor known
+// to the upload queue: nothing will ask to reach them.
+func (e *Engine) refreshUploadEndpoints() {
+	connected := map[uploadKey]bool{}
+	for _, c := range e.conns {
+		if c.isHandshaken {
+			connected[uploadKey{c.session.UserHash(), c.remote.Addr()}] = true
+		}
+	}
+	maps.DeleteFunc(e.uploadEndpoints, func(k uploadKey, _ uploadTarget) bool {
+		return !connected[k] && !e.queue.HasPeer(k.user, k.ip)
+	})
+}
+
 func (e *Engine) runAcceptor() {
 	self := e.self.UserHash
 	for {

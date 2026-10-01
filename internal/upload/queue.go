@@ -255,6 +255,13 @@ func (q *Queue) OnConnectionGone(conn uint64) {
 	q.slots = slices.DeleteFunc(q.slots, func(s *slot) bool { return s.isConnected && s.conn == conn })
 }
 
+// HasPeer reports whether the peer is waiting or holds a slot, so the queue
+// may still ask the engine to connect to it.
+func (q *Queue) HasPeer(user wire.Hash, ip netip.Addr) bool {
+	k := key{user, ip}
+	return q.waiters[k] != nil || q.slotByKey(k) != nil
+}
+
 // OnSent counts payload bytes sent on conn.
 func (q *Queue) OnSent(conn uint64, bytes int64) {
 	q.sentSinceTick += bytes

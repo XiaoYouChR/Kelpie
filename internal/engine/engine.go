@@ -562,6 +562,7 @@ func (e *Engine) onTick() {
 		}
 	}
 	e.runTransfers(now)
+	e.refreshUploadEndpoints()
 	e.runServer(e.server.OnTick(now, e.buildServerWanted()))
 	if e.kad != nil {
 		e.kad.SetWanted(e.buildKadWanted())
