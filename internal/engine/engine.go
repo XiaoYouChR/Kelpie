@@ -18,6 +18,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync"
 	"time"
 
@@ -96,6 +97,8 @@ type Engine struct {
 	closeOnce sync.Once
 	closeErr  error
 
+	// lastStats is when logStats last wrote to packetLog.
+	lastStats time.Time
 	// packetLog is nil unless Config.PacketLog is set; leaves write to it.
 	packetLog *log.Logger
 
@@ -561,6 +564,10 @@ func (e *Engine) onTick() {
 		return
 	}
 	e.lastSecond = now
+	if e.packetLog != nil && now.Sub(e.lastStats) >= time.Minute {
+		e.lastStats = now
+		e.logStats()
+	}
 	for _, c := range e.sortedConns() {
 		if c.session != nil && !c.isClosed {
 			e.runSession(c, c.session.OnTick(now))
@@ -738,4 +745,13 @@ func toReason(err error) string {
 	default:
 		return fmt.Sprint(err)
 	}
+}
+
+// logStats writes the process's goroutine and heap counts, so a long run
+// shows whether either grows.
+func (e *Engine) logStats() {
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	e.packetLog.Printf("stats goroutines=%d heap=%d conns=%d runs=%d",
+		runtime.NumGoroutine(), memory.HeapAlloc, len(e.conns), len(e.runs))
 }
