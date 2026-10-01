@@ -7,28 +7,16 @@ import (
 )
 
 // ReaskFilePing is the UDP OP_REASKFILEPING a queued downloader sends to keep
-// its place. UDP version 4 appends the sender's part status, version 3 and
-// up its complete-source count.
-type ReaskFilePing struct {
-	Hash               wire.Hash
-	HasParts           bool
-	Parts              wire.Bitfield
-	HasCompleteSources bool
-	CompleteSources    uint16
-}
+// its place. It carries a FileRequest's fields, keyed by the UDP version
+// instead: version 4 appends the sender's part status, version 3 and up its
+// complete-source count.
+type ReaskFilePing FileRequest
 
 func (ReaskFilePing) Protocol() byte { return wire.ProtocolEMule }
 func (ReaskFilePing) Opcode() byte   { return opReaskFilePing }
 
 func (p ReaskFilePing) Build(b []byte) []byte {
-	b = append(b, p.Hash[:]...)
-	if p.HasParts {
-		b = wire.BuildBitfield(b, p.Parts)
-	}
-	if p.HasCompleteSources {
-		b = binary.LittleEndian.AppendUint16(b, p.CompleteSources)
-	}
-	return b
+	return FileRequest(p).Build(b)
 }
 
 // parseReaskFilePing tells the versions apart by length: version 4 always
