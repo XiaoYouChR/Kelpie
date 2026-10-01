@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	// CONNECTION_TIMEOUT: a connection with no packet for this long is dead.
+	// CONNECTION_TIMEOUT: a connection with no packet either way for this
+	// long is dead.
 	connectionTimeout = 40 * time.Second
 	// DOWNLOADTIMEOUT: a granted slot with blocks in flight but no data for
 	// this long is given up.
@@ -78,7 +79,7 @@ type Session struct {
 	isHandshaken bool
 	userHash     wire.Hash
 	caps         Capabilities
-	lastReceived time.Time
+	lastActive   time.Time
 	// earlyEmuleInfo is an OP_EMULEINFO that came before the peer's Hello.
 	earlyEmuleInfo *client.EmuleInfo
 
@@ -106,12 +107,12 @@ func BuildIncoming(cfg Config, remote netip.AddrPort, now time.Time) *Session {
 
 func buildSession(cfg Config, remote netip.AddrPort, now time.Time) *Session {
 	return &Session{
-		cfg:          cfg,
-		remote:       netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port()),
-		lastReceived: now,
-		down:         downloadState{files: map[wire.Hash]*download{}},
-		up:           uploadState{sizes: map[wire.Hash]int64{}, blocks: map[uploadBlock]bool{}},
-		sx:           sourceState{asked: map[wire.Hash]bool{}, answers: map[wire.Hash]byte{}},
+		cfg:        cfg,
+		remote:     netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port()),
+		lastActive: now,
+		down:       downloadState{files: map[wire.Hash]*download{}},
+		up:         uploadState{sizes: map[wire.Hash]int64{}, blocks: map[uploadBlock]bool{}},
+		sx:         sourceState{asked: map[wire.Hash]bool{}, answers: map[wire.Hash]byte{}},
 	}
 }
 
@@ -122,7 +123,7 @@ func (s *Session) IsIdentified() bool         { return s.ident.isIdentified }
 // OnPacket reacts to one packet from the peer. shares tells which of our
 // files we offer, for the packets that ask about them.
 func (s *Session) OnPacket(p wire.Packet, shares Shares, now time.Time) Output {
-	s.lastReceived = now
+	s.lastActive = now
 	var out Output
 	if !s.isHandshaken {
 		s.onGreeting(p, &out)
@@ -196,11 +197,19 @@ func (s *Session) OnPacket(p wire.Packet, shares Shares, now time.Time) Output {
 	return out
 }
 
+// OnSent notes that a packet was written to the peer. aMule resets the
+// connection timeout on every send as well as every receive
+// (ClientTCPSocket.cpp:1840-1850, 2010-2035), so a peer we upload to slowly
+// is not dropped.
+func (s *Session) OnSent(now time.Time) {
+	s.lastActive = now
+}
+
 // OnTick closes an idle connection and gives up a slot that stopped
 // delivering.
 func (s *Session) OnTick(now time.Time) Output {
 	var out Output
-	if now.Sub(s.lastReceived) > connectionTimeout {
+	if now.Sub(s.lastActive) > connectionTimeout {
 		out.Close = CloseTimeout
 		return out
 	}

@@ -299,10 +299,13 @@ func (e *Engine) onPacketSent(m packetSent) {
 		return
 	}
 	c.out.onDone()
+	now := e.now()
+	if c.session != nil {
+		c.session.OnSent(now)
+	}
 	if m.payload == 0 {
 		return
 	}
-	now := e.now()
 	e.queue.OnSent(c.id, m.payload)
 	if r := e.runByHash[m.file]; r != nil && r.transfer != nil {
 		r.transfer.OnUploaded(m.payload, now)

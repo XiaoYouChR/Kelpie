@@ -699,6 +699,17 @@ func TestIdleConnectionTimesOut(t *testing.T) {
 	}
 }
 
+func TestSendingKeepsConnectionAlive(t *testing.T) {
+	l := buildLink(t)
+	l.a.s.OnSent(start.Add(30 * time.Second))
+	if out := l.a.s.OnTick(start.Add(60 * time.Second)); out.Close != "" {
+		t.Fatal("closed a connection we sent on 30 s ago")
+	}
+	if out := l.a.s.OnTick(start.Add(71 * time.Second)); out.Close != CloseTimeout {
+		t.Fatalf("close %q", out.Close)
+	}
+}
+
 func TestStalledSlotIsGivenUp(t *testing.T) {
 	l := buildLink(t)
 	file, _ := addShare(l.b, 1, piece.BlockSize, false)
