@@ -170,10 +170,11 @@ func (k *Kad) Run(ctx context.Context) error {
 		ID: k.cfg.State.ID, UserHash: k.cfg.UserHash, TCPPort: k.cfg.TCPPort,
 		UDPPort: uint16(conn.Port()), UDPKey: k.cfg.State.UDPKey, Rand: k.cfg.Rand,
 	}, now)
+	var nodes []Node
 	for _, n := range k.cfg.State.Nodes {
-		c.addNodes([]Node{{ID: n.ID, Addr: n.Addr, Version: n.Version}}, now)
+		nodes = append(nodes, Node{ID: n.ID, Addr: n.Addr, Version: n.Version})
 	}
-	c.addNodes(k.cfg.Nodes, now)
+	c.addNodes(append(nodes, k.cfg.Nodes...), now)
 	ticker := k.cfg.Clock.CreateTicker(tickInterval)
 	defer ticker.Stop()
 

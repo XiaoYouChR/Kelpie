@@ -127,12 +127,12 @@ func (t *table) addToBucket(c *contact, isVerified bool) {
 	index := bucketIndex(t.self, c.ID)
 	b := &t.buckets[index]
 	c.leaf = leafIndex(distance(t.self, c.ID), index)
-	if t.leafSize(b, c.leaf) < bucketSize {
+	if b.leafSize(c.leaf) < bucketSize {
 		b.contacts = append(b.contacts, c)
 		return
 	}
 	if isVerified {
-		if i := t.unverifiedIndex(b, c.leaf); i >= 0 {
+		if i := b.unverifiedIndex(c.leaf); i >= 0 {
 			b.replacements = append(b.replacements, b.contacts[i])
 			b.contacts[i] = c
 			t.removeExcessReplacements(b)
@@ -143,7 +143,7 @@ func (t *table) addToBucket(c *contact, isVerified bool) {
 	t.removeExcessReplacements(b)
 }
 
-func (t *table) leafSize(b *bucket, leaf int) int {
+func (b *bucket) leafSize(leaf int) int {
 	n := 0
 	for _, c := range b.contacts {
 		if c.leaf == leaf {
@@ -153,7 +153,7 @@ func (t *table) leafSize(b *bucket, leaf int) int {
 	return n
 }
 
-func (t *table) unverifiedIndex(b *bucket, leaf int) int {
+func (b *bucket) unverifiedIndex(leaf int) int {
 	return slices.IndexFunc(b.contacts, func(o *contact) bool { return o.leaf == leaf && !o.isVerified })
 }
 
@@ -174,12 +174,12 @@ func (t *table) updateBucket(c *contact) {
 	if i < 0 {
 		return
 	}
-	if t.leafSize(b, c.leaf) < bucketSize {
+	if b.leafSize(c.leaf) < bucketSize {
 		b.replacements = slices.Delete(b.replacements, i, i+1)
 		b.contacts = append(b.contacts, c)
 		return
 	}
-	if j := t.unverifiedIndex(b, c.leaf); j >= 0 {
+	if j := b.unverifiedIndex(c.leaf); j >= 0 {
 		b.replacements[i] = b.contacts[j]
 		b.contacts[j] = c
 	}

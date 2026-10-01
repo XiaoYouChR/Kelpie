@@ -5,6 +5,7 @@ package kad
 import (
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
@@ -225,11 +226,8 @@ func (c *core) cancelLookup(l *lookup) {
 		return
 	}
 	l.isDone = true
-	for i, other := range c.lookups {
-		if other == l {
-			c.lookups = append(c.lookups[:i], c.lookups[i+1:]...)
-			return
-		}
+	if i := slices.Index(c.lookups, l); i >= 0 {
+		c.lookups = slices.Delete(c.lookups, i, i+1)
 	}
 }
 
@@ -648,7 +646,7 @@ func (c *core) runRandomLookups(now time.Time) {
 	for i := range min(deepest+2, len(c.table.buckets)) {
 		b := &c.table.buckets[i]
 		for leaf := range leafCount(i) {
-			if now.Before(b.nextLookups[leaf]) || c.table.leafSize(b, leaf) > sparseLeaf {
+			if now.Before(b.nextLookups[leaf]) || b.leafSize(leaf) > sparseLeaf {
 				continue
 			}
 			if c.startLookup(randomLookup, buildRandomID(c.id, i, leaf, c.rng), 0, now) == nil {
