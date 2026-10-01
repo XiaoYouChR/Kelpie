@@ -323,14 +323,15 @@ def test_network_is_reported_while_the_engine_runs(engine: Engine) -> None:
     run(main())
 
 
-def test_remove_starts_the_engine_and_ends_the_open_run(engine: Engine) -> None:
+def test_remove_starts_the_engine_and_cancels_the_open_run(engine: Engine) -> None:
     async def main():
         kelpie = engine.buildKelpie()
         await kelpie.remove(HASH_B)
         assert engine.starts == 1
-        async with kelpie.runDownload(LINK_A, Path("/out/a.bin")) as current:
-            async for _ in current:
-                await kelpie.remove(HASH_A)
+        with pytest.raises(asyncio.CancelledError):
+            async with kelpie.runDownload(LINK_A, Path("/out/a.bin")) as current:
+                async for _ in current:
+                    await kelpie.remove(HASH_A)
         await kelpie.close()
 
     run(main())
@@ -338,13 +339,13 @@ def test_remove_starts_the_engine_and_ends_the_open_run(engine: Engine) -> None:
     assert engine.loadMessages("stop") == []
 
 
-def test_close_ends_open_runs_as_stopped(engine: Engine) -> None:
+def test_close_cancels_open_runs(engine: Engine) -> None:
     async def main():
         kelpie = engine.buildKelpie()
-        async with kelpie.runDownload(LINK_A, Path("/out/a.bin")) as current:
-            async for _ in current:
-                await kelpie.close()
-            assert kelpie.isActive(HASH_A)
+        with pytest.raises(asyncio.CancelledError):
+            async with kelpie.runDownload(LINK_A, Path("/out/a.bin")) as current:
+                async for _ in current:
+                    await kelpie.close()
         assert not kelpie.isActive(HASH_A)
         assert kelpie.network is None
         await kelpie.close()

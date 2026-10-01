@@ -27,6 +27,7 @@ class Run:
         self.hash = hash
         self._progress: Progress | None = None
         self._isEnded = False
+        self._isCancelled = False
         self._error: Error | None = None
         self._changed = asyncio.Event()
 
@@ -35,8 +36,10 @@ class Run:
             await self._changed.wait()
             self._changed.clear()
             progress, self._progress = self._progress, None
-            if progress is not None:
+            if progress is not None and not self._isCancelled:
                 yield progress
+            if self._isCancelled:
+                raise asyncio.CancelledError()
             if self._isEnded:
                 if self._error is not None:
                     raise self._error
@@ -53,6 +56,15 @@ class Run:
             return
         self._isEnded = True
         self._error = error
+        self._changed.set()
+
+    def cancel(self) -> None:
+        # Ended by someone other than its caller: a normal end would read as a
+        # finished download, so the caller sees a cancellation instead.
+        if self._isEnded:
+            return
+        self._isEnded = True
+        self._isCancelled = True
         self._changed.set()
 
 
@@ -94,6 +106,9 @@ class Kelpie:
         return hash in self._runs
 
     async def remove(self, hash: str) -> None:
+        run = self._runs.get(hash)
+        if run is not None and self._routes.pop(run.id, None) is not None:
+            run.cancel()
         await self.start()
         if self._process is not None:
             send(self._process, {"type": "remove", "hash": hash})
@@ -111,7 +126,7 @@ class Kelpie:
         self._network = None
         routes, self._routes = self._routes, {}
         for run in routes.values():
-            run.setEnded(None)
+            run.cancel()
         routes.clear()
         process.stdin.close()
         try:
