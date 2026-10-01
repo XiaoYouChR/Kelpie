@@ -3,10 +3,8 @@ package disk
 import (
 	"io"
 	"io/fs"
-	"path"
 	"sync"
 	"syscall"
-	"time"
 )
 
 // Fake is an in-memory Disk whose operations can be made to fail.
@@ -84,14 +82,14 @@ func (f *Fake) Open(name string, mode Mode) (File, error) {
 	return &fakeFile{disk: f, name: name, data: data, canWrite: mode != Read}, nil
 }
 
-func (f *Fake) Probe(name string) (fs.FileInfo, error) {
+func (f *Fake) Probe(name string) (*Info, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	data, ok := f.files[name]
 	if !ok {
 		return nil, nil
 	}
-	return fakeInfo{name: path.Base(name), size: int64(len(data.bytes))}, nil
+	return &Info{Size: int64(len(data.bytes))}, nil
 }
 
 // matchFault consumes one occurrence of the first fault matching name and op.
@@ -177,15 +175,3 @@ func (file *fakeFile) Close() error {
 	file.isClosed = true
 	return nil
 }
-
-type fakeInfo struct {
-	name string
-	size int64
-}
-
-func (i fakeInfo) Name() string       { return i.name }
-func (i fakeInfo) Size() int64        { return i.size }
-func (i fakeInfo) Mode() fs.FileMode  { return 0o644 }
-func (i fakeInfo) ModTime() time.Time { return time.Time{} }
-func (i fakeInfo) IsDir() bool        { return false }
-func (i fakeInfo) Sys() any           { return nil }

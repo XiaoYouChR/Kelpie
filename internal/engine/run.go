@@ -88,7 +88,7 @@ func (e *Engine) startRun(c RunCommand) *Error {
 	}
 
 	if c.Mode == ModeSeed {
-		if info == nil || info.IsDir() || info.Size() != file.Size {
+		if info == nil || info.IsFolder || info.Size != file.Size {
 			return &Error{Code: CodeFileError, Message: c.File + " is not the complete file of the link"}
 		}
 		if r.handle, err = e.ports.Disk.Open(c.File, disk.Read); err != nil {
@@ -104,7 +104,7 @@ func (e *Engine) startRun(c RunCommand) *Error {
 		return nil
 	}
 
-	if info != nil && state == nil && (info.IsDir() || info.Size() > 0) {
+	if info != nil && state == nil && (info.IsFolder || info.Size > 0) {
 		return &Error{Code: CodeOutputExists, Message: c.File + " already exists"}
 	}
 	// Resume data for a file that is gone would claim blocks it no longer has.
