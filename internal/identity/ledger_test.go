@@ -56,15 +56,9 @@ func TestUserWithoutKeyIsCredited(t *testing.T) {
 	}
 }
 
-func TestOfferedKeyStopsCreditUntilIdentified(t *testing.T) {
+func TestFirstIdentificationResetsUnprovenCredits(t *testing.T) {
 	ledger := BuildLedger([]Credit{{User: alice, Downloaded: uint64(10 * megabyte)}}, today)
-	ledger.OnKeyReceived(alice, keyA)
-	if got := ledger.Ratio(alice, home); got != 1 {
-		t.Fatalf("unidentified ratio %v", got)
-	}
-	ledger.OnTransferred(alice, home, 0, megabyte)
-
-	ledger.OnIdentified(alice, home)
+	ledger.OnIdentified(alice, home, keyA)
 	want := []Credit{{User: alice, Uploaded: 1, Downloaded: 1, PublicKey: keyA, LastSeen: today}}
 	if got := ledger.ToCredits(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("credits %+v, want %+v (unproven credits reset)", got, want)
@@ -88,48 +82,40 @@ func TestStoredKeyNeedsIdentificationAfterLoad(t *testing.T) {
 	if got := ledger.Ratio(alice, home); got != 1 {
 		t.Fatalf("ratio before identification %v", got)
 	}
-	ledger.OnIdentified(alice, home)
+	ledger.OnTransferred(alice, home, 0, megabyte)
+	ledger.OnIdentified(alice, home, keyA)
 	if got := ledger.Ratio(alice, home); got != math.Sqrt(12) {
 		t.Fatalf("ratio after identification %v", got)
 	}
 	if got := ledger.ToCredits()[0].Downloaded; got != uint64(10*megabyte) {
-		t.Fatalf("stored credits reset on re-identification: %d", got)
+		t.Fatalf("downloaded %d: stored credits reset, or credited before identification", got)
 	}
 }
 
 func TestStoredKeyIsNotReplaced(t *testing.T) {
 	ledger := BuildLedger([]Credit{{User: alice, Downloaded: uint64(10 * megabyte), PublicKey: keyA}}, today)
-	ledger.OnKeyReceived(alice, keyB)
-	if got := ledger.PublicKeyByUser(alice); string(got) != string(keyA) {
-		t.Fatalf("key to verify against = %q", got)
+	ledger.OnIdentified(alice, home, keyB)
+	if got := ledger.TrustByUser(alice, home); got != TrustUnproven {
+		t.Fatalf("signature with another key: trust %v", got)
 	}
-	ledger.OnIdentityFailed(alice)
 	ledger.OnTransferred(alice, home, 0, megabyte)
 	if got := ledger.Ratio(alice, home); got != 1 {
-		t.Fatalf("failed identity ratio %v", got)
+		t.Fatalf("other key ratio %v", got)
 	}
-	if got := ledger.ToCredits()[0].Downloaded; got != uint64(10*megabyte) {
-		t.Fatalf("failed identity was credited: %d", got)
+	if got := ledger.ToCredits()[0]; got.Downloaded != uint64(10*megabyte) || string(got.PublicKey) != string(keyA) {
+		t.Fatalf("other key was credited or stored: %+v", got)
 	}
 }
 
-func TestFailureDoesNotRevokeIdentification(t *testing.T) {
+func TestOtherKeyDoesNotRevokeIdentification(t *testing.T) {
 	ledger := BuildLedger([]Credit{{User: alice, Downloaded: uint64(10 * megabyte), PublicKey: keyA}}, today)
-	ledger.OnIdentified(alice, home)
-	ledger.OnIdentityFailed(alice)
+	ledger.OnIdentified(alice, home, keyA)
+	ledger.OnIdentified(alice, away, keyB)
 	if got := ledger.Ratio(alice, home); got == 1 {
-		t.Fatal("impostor's failure revoked the identified user's credit")
+		t.Fatal("impostor's signature revoked the identified user's credit")
 	}
-}
-
-func TestPublicKeyByUser(t *testing.T) {
-	ledger := BuildLedger(nil, today)
-	if got := ledger.PublicKeyByUser(alice); got != nil {
-		t.Fatalf("unknown user key %q", got)
-	}
-	ledger.OnKeyReceived(alice, keyA)
-	if got := ledger.PublicKeyByUser(alice); string(got) != string(keyA) {
-		t.Fatalf("offered key %q", got)
+	if got := ledger.TrustByUser(alice, away); got != TrustImpostor {
+		t.Fatalf("impostor trust %v", got)
 	}
 }
 
@@ -137,7 +123,7 @@ func TestToCreditsSkipsEmptyAndSorts(t *testing.T) {
 	bob := wire.Hash{0}
 	ledger := BuildLedger(nil, today)
 	ledger.Ratio(wire.Hash{9}, home)
-	ledger.OnIdentityFailed(wire.Hash{8})
+	ledger.OnIdentified(wire.Hash{8}, home, keyA)
 	ledger.OnHello(alice, today)
 	ledger.OnHello(bob, today)
 	ledger.OnTransferred(alice, home, 5, 0)
@@ -185,7 +171,7 @@ func TestTrustByUser(t *testing.T) {
 	if got := ledger.TrustByUser(alice, home); got != TrustUnproven {
 		t.Fatalf("before identification %v", got)
 	}
-	ledger.OnIdentified(alice, home)
+	ledger.OnIdentified(alice, home, keyA)
 	if got := ledger.TrustByUser(alice, home); got != TrustIdentified {
 		t.Fatalf("identified address %v", got)
 	}
@@ -202,8 +188,7 @@ func TestIdleUsersAreRemoved(t *testing.T) {
 	for i := range 1000 {
 		user := wire.Hash{byte(i), byte(i >> 8), 5}
 		ledger.OnHello(user, today)
-		ledger.OnKeyReceived(user, keyA)
-		ledger.OnIdentified(user, home)
+		ledger.OnIdentified(user, home, keyA)
 	}
 	ledger.OnHello(alice, today)
 	ledger.OnTransferred(alice, home, 5, 0)

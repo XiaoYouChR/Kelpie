@@ -31,27 +31,18 @@ const creditExpiry = 150 * 24 * time.Hour
 // client. Without it every user hash that ever greeted us stays in memory.
 const idleTime = 2 * time.Hour
 
-type identState byte
-
-const (
-	identUnavailable identState = iota
-	identNeeded
-	identVerified
-	identFailed
-)
-
 type account struct {
-	credit     Credit
-	state      identState
+	credit Credit
+	// verifiedIP is the address the user last proved its key from; invalid
+	// until it does.
 	verifiedIP netip.Addr
-	offeredKey []byte
 }
 
-// Ledger keeps per-user credits and, for this process only, each user's
-// identification state. It follows eMule: a user with no known key and no
-// offered key is credited without identification; once a key is known or
-// offered, nothing is credited until the user is identified from the address
-// it is talking from.
+// Ledger keeps per-user credits and, for this process only, the address
+// each user proved its key from. It follows eMule: a user with no known key
+// is credited without identification; once a key is known, nothing is
+// credited until the user is identified from the address it is talking
+// from.
 type Ledger struct {
 	accounts map[wire.Hash]*account
 }
@@ -67,11 +58,7 @@ func BuildLedger(credits []Credit, now time.Time) *Ledger {
 		if now.Sub(credit.LastSeen) > creditExpiry {
 			continue
 		}
-		state := identUnavailable
-		if len(credit.PublicKey) > 0 {
-			state = identNeeded
-		}
-		ledger.accounts[credit.User] = &account{credit: credit, state: state}
+		ledger.accounts[credit.User] = &account{credit: credit}
 	}
 	return ledger
 }
@@ -87,13 +74,7 @@ func (l *Ledger) accountByUser(user wire.Hash) *account {
 
 // isTrusted reports whether credits may be counted and used for this user at ip.
 func (a *account) isTrusted(ip netip.Addr) bool {
-	switch a.state {
-	case identUnavailable:
-		return true
-	case identVerified:
-		return a.verifiedIP == ip
-	}
-	return false
+	return len(a.credit.PublicKey) == 0 || a.verifiedIP.IsValid() && a.verifiedIP == ip
 }
 
 // OnHello records that user greeted us, as aMule's GetCredit does on every
@@ -116,7 +97,7 @@ const (
 func (l *Ledger) TrustByUser(user wire.Hash, ip netip.Addr) Trust {
 	a, ok := l.accounts[user]
 	switch {
-	case !ok || a.state != identVerified:
+	case !ok || !a.verifiedIP.IsValid():
 		return TrustUnproven
 	case a.verifiedIP == ip:
 		return TrustIdentified
@@ -125,56 +106,23 @@ func (l *Ledger) TrustByUser(user wire.Hash, ip netip.Addr) Trust {
 	}
 }
 
-// PublicKeyByUser is the key a signature from user must be checked against:
-// the stored key if any, otherwise the key the user offered. Nil when neither
-// is known, in which case the request is stateKeyAndSignatureNeeded.
-func (l *Ledger) PublicKeyByUser(user wire.Hash) []byte {
-	a, ok := l.accounts[user]
-	if !ok {
-		return nil
-	}
-	if len(a.credit.PublicKey) > 0 {
-		return a.credit.PublicKey
-	}
-	return a.offeredKey
-}
-
-// OnKeyReceived records a key offered in OP_PUBLICKEY. A stored key never
-// changes, so a different key offered for a known user is ignored and that
-// user's signature will fail against the stored key.
-func (l *Ledger) OnKeyReceived(user wire.Hash, key []byte) {
+// OnIdentified records that user at ip signed with key. A user keeps the
+// first key it was identified with, so a signature with another key proves
+// nothing. Credits gathered before the first identification are unproven,
+// so they are reset to one byte each, as eMule does.
+func (l *Ledger) OnIdentified(user wire.Hash, ip netip.Addr, key []byte) {
 	a := l.accountByUser(user)
-	if len(a.credit.PublicKey) > 0 {
-		return
-	}
-	a.offeredKey = bytes.Clone(key)
-	a.state = identNeeded
-}
-
-// OnIdentified records that user at ip signed with PublicKeyByUser(user).
-// Credits gathered before the first identification are unproven, so they are
-// reset to one byte each, as eMule does.
-func (l *Ledger) OnIdentified(user wire.Hash, ip netip.Addr) {
-	a := l.accountByUser(user)
-	if len(a.credit.PublicKey) == 0 {
-		a.credit.PublicKey = a.offeredKey
+	switch {
+	case len(a.credit.PublicKey) == 0:
+		a.credit.PublicKey = bytes.Clone(key)
 		if a.credit.Downloaded > 0 {
 			a.credit.Downloaded = 1
 			a.credit.Uploaded = 1
 		}
+	case !bytes.Equal(a.credit.PublicKey, key):
+		return
 	}
-	a.offeredKey = nil
-	a.state = identVerified
 	a.verifiedIP = ip
-}
-
-// OnIdentityFailed records a signature that did not match. A user already
-// identified from another address keeps that identification.
-func (l *Ledger) OnIdentityFailed(user wire.Hash) {
-	a := l.accountByUser(user)
-	if a.state == identNeeded {
-		a.state = identFailed
-	}
 }
 
 func (l *Ledger) OnTransferred(user wire.Hash, ip netip.Addr, uploadedToThem, downloadedFromThem int64) {
