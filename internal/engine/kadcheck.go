@@ -42,9 +42,11 @@ func (e *Engine) onKadRequest(r kad.Request) {
 
 // startFirewallCheck is ClientList::RequestTCP: connect to the asker, with
 // obfuscation when it supports it, and acknowledge after the handshake.
+// aMule also acknowledges over a connection the asker opened, which proves
+// nothing about its port; we skip that check instead.
 func (e *Engine) startFirewallCheck(r kad.FirewallCheck) {
 	if c := e.connByEndpoint(r.Addr); c != nil {
-		if c.isHandshaken {
+		if c.isOutgoing && c.isHandshaken {
 			e.sendFirewallAck(c, r.KadPort)
 		}
 		return
