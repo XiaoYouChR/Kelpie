@@ -20,10 +20,18 @@ const (
 type Network struct {
 	mu    sync.Mutex
 	hosts map[netip.Addr]*Host
+	names map[string]netip.Addr
 }
 
 func BuildNetwork() *Network {
-	return &Network{hosts: map[netip.Addr]*Host{}}
+	return &Network{hosts: map[netip.Addr]*Host{}, names: map[string]netip.Addr{}}
+}
+
+// SetName makes LookupHost resolve name to addr on every host.
+func (n *Network) SetName(name string, addr netip.Addr) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.names[name] = addr
 }
 
 // AddHost adds a host owning addrs, IPv4 and/or IPv6. It can reach only
@@ -133,6 +141,16 @@ func (h *Host) OpenTCP(ctx context.Context, addr netip.AddrPort) (net.Conn, erro
 	target.addConn(server)
 	listener.queue <- server
 	return client, nil
+}
+
+func (h *Host) LookupHost(ctx context.Context, host string) ([]netip.Addr, error) {
+	h.network.mu.Lock()
+	defer h.network.mu.Unlock()
+	addr, ok := h.network.names[host]
+	if !ok || !addr.Is4() {
+		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	}
+	return []netip.Addr{addr}, nil
 }
 
 func (h *Host) OpenListener(port int) (Listener, error) {

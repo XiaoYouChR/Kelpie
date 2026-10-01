@@ -2,9 +2,12 @@ package obfuscation
 
 import (
 	"bytes"
+	"crypto/md5"
+	"crypto/rc4"
 	"encoding/binary"
 	"encoding/hex"
 	"io"
+	"math/big"
 	"net"
 	"testing"
 	"time"
@@ -165,7 +168,7 @@ func TestOutgoingReadsPaddedAnswerAndPayload(t *testing.T) {
 		answer := binary.LittleEndian.AppendUint32(nil, magicSync)
 		answer = append(answer, methodObfuscation, 3, 7, 7, 7)
 		answer = append(answer, "data"...)
-		buildCipher(user, magicServer, keyPart).XORKeyStream(answer, answer)
+		buildCipher(user[:], []byte{magicServer}, keyPart[:]).XORKeyStream(answer, answer)
 		b.Write(answer)
 	}()
 	out, err := OpenOutgoing(a, user, keyPart)
@@ -191,5 +194,90 @@ func TestIncomingSendsOnlyTheAnswer(t *testing.T) {
 	got, _ := io.ReadAll(a)
 	if len(got) != 6 {
 		t.Fatalf("sent %d bytes, want the 6-byte answer", len(got))
+	}
+}
+
+// TestServerHandshake plays the server side with its own Diffie-Hellman,
+// following aMule's EncryptedStreamSocket description: the prime is typed
+// in again here, so a wrong byte on either side fails.
+func TestServerHandshake(t *testing.T) {
+	prime, _ := new(big.Int).SetString("F2BF52C55F587ADD5371A936E886EB3C6217A33EC34CB40DC73A41A643AFFCE7"+
+		"21FC286366535BDBCE259F2286DA4A91B207CBAA5255D4F61CCEAED45AD5E0747DF7781828105F340F762387F88B2891"+
+		"42FB42688F05150F548B5F436AF70DF3", 16)
+	secret := [16]byte{0x9A, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0xFF}
+	b := big.NewInt(0x1234567890ABCDEF)
+	clientSide, serverSide := buildPair(t)
+	opened := make(chan *Conn)
+	go func() {
+		c, err := OpenServer(clientSide, secret, wire.ProtocolEDonkey)
+		if err != nil {
+			t.Error(err)
+		}
+		opened <- c
+	}()
+
+	request := make([]byte, 98)
+	if _, err := io.ReadFull(serverSide, request); err != nil {
+		t.Fatal(err)
+	}
+	if matchPlain(request[0]) || request[97] != 0 {
+		t.Fatalf("marker %#x, padding %d", request[0], request[97])
+	}
+	gA := new(big.Int).SetBytes(request[1:97])
+	if want := new(big.Int).Exp(big.NewInt(2), new(big.Int).SetBytes(secret[:]), prime); gA.Cmp(want) != 0 {
+		t.Fatalf("g^a = %x, want %x", gA, want)
+	}
+	shared := make([]byte, 97)
+	new(big.Int).Exp(gA, b, prime).FillBytes(shared[:96])
+	key := func(magic byte) *rc4.Cipher {
+		shared[96] = magic
+		sum := md5.Sum(shared)
+		c, _ := rc4.NewCipher(sum[:])
+		drop := make([]byte, 1024)
+		c.XORKeyStream(drop, drop)
+		return c
+	}
+	send, receive := key(203), key(34)
+	answer := make([]byte, 96, 96+9)
+	new(big.Int).Exp(big.NewInt(2), b, prime).FillBytes(answer)
+	tail := binary.LittleEndian.AppendUint32(nil, 0x835E6FC4)
+	tail = append(tail, 0, 0, 2, 0xEE, 0xEE)
+	send.XORKeyStream(tail, tail)
+	serverSide.Write(append(answer, tail...))
+
+	reply := make([]byte, 6)
+	if _, err := io.ReadFull(serverSide, reply); err != nil {
+		t.Fatal(err)
+	}
+	receive.XORKeyStream(reply, reply)
+	if binary.LittleEndian.Uint32(reply) != 0x835E6FC4 || reply[4] != 0 || reply[5] != 0 {
+		t.Fatalf("reply %x", reply)
+	}
+	c := <-opened
+	c.Write([]byte("login"))
+	got := make([]byte, 5)
+	io.ReadFull(serverSide, got)
+	receive.XORKeyStream(got, got)
+	if string(got) != "login" {
+		t.Fatalf("client sent %q", got)
+	}
+	idChange := []byte("id")
+	send.XORKeyStream(idChange, idChange)
+	serverSide.Write(idChange)
+	io.ReadFull(c, got[:2])
+	if string(got[:2]) != "id" {
+		t.Fatalf("client read %q", got[:2])
+	}
+}
+
+func TestServerHandshakeRejectsBadMagic(t *testing.T) {
+	clientSide, serverSide := buildPair(t)
+	go func() {
+		io.ReadFull(serverSide, make([]byte, 98))
+		serverSide.Write(make([]byte, 96+7))
+	}()
+	clientSide.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := OpenServer(clientSide, [16]byte{1}, 0x55); err != ErrHandshake {
+		t.Fatalf("err = %v, want ErrHandshake", err)
 	}
 }

@@ -125,6 +125,9 @@ type IDChange struct {
 	Flags      uint32
 	Reserved   uint32
 	ReportedIP netip.Addr
+	// ObfuscationPort is the server's obfuscation TCP port; 0 when the
+	// server does not send it.
+	ObfuscationPort uint32
 }
 
 func (IDChange) Protocol() byte { return wire.ProtocolEDonkey }
@@ -134,7 +137,11 @@ func (c IDChange) Build(b []byte) []byte {
 	b = binary.LittleEndian.AppendUint32(b, c.ClientID)
 	b = binary.LittleEndian.AppendUint32(b, c.Flags)
 	b = binary.LittleEndian.AppendUint32(b, c.Reserved)
-	return wire.BuildAddr(b, c.ReportedIP)
+	b = wire.BuildAddr(b, c.ReportedIP)
+	if c.ObfuscationPort != 0 {
+		b = binary.LittleEndian.AppendUint32(b, c.ObfuscationPort)
+	}
+	return b
 }
 
 func parseIDChange(r *wire.Reader) IDChange {
@@ -147,6 +154,9 @@ func parseIDChange(r *wire.Reader) IDChange {
 	}
 	if r.Len() >= 4 {
 		c.ReportedIP = r.Addr()
+	}
+	if r.Len() >= 4 {
+		c.ObfuscationPort = r.Uint32()
 	}
 	return c
 }

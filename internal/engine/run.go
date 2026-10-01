@@ -311,7 +311,7 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 				if a.CanObfuscate {
 					obfuscateFor = a.UserHash
 				}
-				c = e.openConn(a.Endpoint, false, obfuscateFor)
+				c = e.openConn(a.Endpoint, false, obfuscateFor, 0)
 			}
 			e.addFile(c, r)
 		case transfer.ReaskUDP:

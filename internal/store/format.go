@@ -20,6 +20,22 @@ type stateFile struct {
 	Kad        kadFile        `json:"kad"`
 	Credits    []creditFile   `json:"credits"`
 	Transfers  []transferFile `json:"transfers"`
+	Servers    []serverFile   `json:"servers"`
+}
+
+type serverFile struct {
+	Endpoint           netip.AddrPort `json:"endpoint,omitzero"`
+	Host               string         `json:"host,omitempty"`
+	Port               uint16         `json:"port,omitempty"`
+	Failures           uint32         `json:"failures"`
+	Ping               uint32         `json:"ping"`
+	Users              uint32         `json:"users"`
+	Files              uint32         `json:"files"`
+	SoftFiles          uint32         `json:"softFiles"`
+	UDPFlags           uint32         `json:"udpFlags"`
+	TCPObfuscationPort uint16         `json:"tcpObfuscationPort"`
+	UDPObfuscationPort uint16         `json:"udpObfuscationPort"`
+	PingedAt           time.Time      `json:"pingedAt"`
 }
 
 type kadFile struct {
@@ -87,6 +103,10 @@ func toFile(state State) stateFile {
 		Kad:        kadFile{ID: hashText(state.Kad.ID), IsFirewalled: state.Kad.IsFirewalled, Nodes: []kadNodeFile{}},
 		Credits:    []creditFile{},
 		Transfers:  []transferFile{},
+		Servers:    []serverFile{},
+	}
+	for _, server := range state.Servers {
+		file.Servers = append(file.Servers, serverFile(server))
 	}
 	for _, node := range state.Kad.Nodes {
 		file.Kad.Nodes = append(file.Kad.Nodes, kadNodeFile{ID: hashText(node.ID), Addr: node.Addr, Version: node.Version})
@@ -158,6 +178,9 @@ func parse(raw []byte) (State, error) {
 			transfer.WrittenBlocks = append(transfer.WrittenBlocks, Block(block))
 		}
 		state.Transfers[wire.Hash(entry.Hash)] = transfer
+	}
+	for _, server := range file.Servers {
+		state.Servers = append(state.Servers, Server(server))
 	}
 	return state, nil
 }

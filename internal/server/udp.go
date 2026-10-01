@@ -16,12 +16,13 @@ const (
 	udpStatReaskTime     = 4*time.Hour + 30*time.Minute // UDPSERVSTATREASKTIME
 	maxUDPPacketData     = 510                          // MAX_UDP_PACKET_DATA
 	maxRequestsPerServer = 35                           // MAX_REQUESTS_PER_SERVER
+	maxFilesPerUDPPacket = 31                           // aMule DownloadQueue.cpp:69, OP_GLOBGETSOURCES
 	bytesPerFile         = 20                           // BYTES_PER_FILE_G2
 	bytesPerLargeFile    = bytesPerFile + 8             // ADDITIONAL_BYTES_PER_LARGEFILE
 	challengeBase        = 0x55AA0000                   // ServerStats challenge prefix
 )
 
-// udpSearch is the OP_GLOBGETSOURCES2 series to the server being asked,
+// udpSearch is the OP_GLOBGETSOURCES(2) series to the server being asked,
 // and the status ping cycle.
 type udpSearch struct {
 	server    *listed
@@ -46,7 +47,7 @@ func (s *Server) OnUDPPacket(from netip.AddrPort, p wire.Packet, now time.Time) 
 			return out
 		}
 		l.challenge, l.Failures, l.isDead = 0, 0, false
-		l.Ping = uint32(now.Sub(l.pingedAt).Milliseconds())
+		l.Ping = uint32(now.Sub(l.PingedAt).Milliseconds())
 		l.Users, l.Files, l.SoftFiles, l.UDPFlags = p.Users, p.Files, p.SoftFiles, p.UDPFlags
 		l.TCPObfuscationPort, l.UDPObfuscationPort = p.TCPObfuscationPort, p.UDPObfuscationPort
 	case packet.GlobFoundSources:
@@ -82,7 +83,7 @@ func (s *Server) runStats(now time.Time, out *Output) {
 	for range s.servers {
 		l := s.servers[u.statCursor%len(s.servers)]
 		u.statCursor++
-		if l.isDead || (!l.pingedAt.IsZero() && now.Sub(l.pingedAt) < udpStatReaskTime) {
+		if l.isDead || !l.isResolved() || (!l.PingedAt.IsZero() && now.Sub(l.PingedAt) < udpStatReaskTime) {
 			continue
 		}
 		u.lastStat = now
@@ -92,14 +93,16 @@ func (s *Server) runStats(now time.Time, out *Output) {
 		}
 		u.pings++
 		l.challenge = challengeBase + uint32(u.pings)
-		l.pingedAt = now
+		l.PingedAt = now
 		l.Failures++
 		out.SendUDP = append(out.SendUDP, Datagram{To: toUDP(l.Endpoint), Packet: packet.GlobServStatReq{Challenge: l.challenge}})
 		return
 	}
 }
 
-// runSearch sends at most one OP_GLOBGETSOURCES2 per UDPSEARCHSPEED. A
+// runSearch sends at most one OP_GLOBGETSOURCES2, or OP_GLOBGETSOURCES to
+// a server without it (aMule DownloadQueue.cpp:924-955), per
+// UDPSEARCHSPEED. A
 // server is asked again only UDPSERVERREASKTIME after its last series, so
 // none is asked more often than in eMule's rounds, but a server whose
 // support shows up late is asked at once instead of a round later. Each
@@ -118,17 +121,28 @@ func (s *Server) runSearch(now time.Time, out *Output) {
 	}
 	files := s.searchFiles(u.server.UDPFlags)
 	quota := min(len(files), maxRequestsPerServer)
-	var batch []packet.GetSources
-	for size := 0; u.asked < quota && size < maxUDPPacketData; u.asked++ {
-		w := files[u.asked]
-		batch = append(batch, packet.GetSources{Hash: w.File, Size: w.Size})
-		size += bytesPerFile
-		if w.Size > largeFileSize {
-			size += bytesPerLargeFile - bytesPerFile
+	var request wire.Packet
+	before := u.asked
+	if u.server.UDPFlags&packet.UDPFlagGetSources2 != 0 {
+		var batch []packet.GetSources
+		for size := 0; u.asked < quota && size < maxUDPPacketData; u.asked++ {
+			w := files[u.asked]
+			batch = append(batch, packet.GetSources{Hash: w.File, Size: w.Size})
+			size += bytesPerFile
+			if w.Size > largeFileSize {
+				size += bytesPerLargeFile - bytesPerFile
+			}
 		}
+		request = packet.GlobGetSources2{Files: batch}
+	} else {
+		var batch []wire.Hash
+		for ; u.asked < quota && len(batch) < maxFilesPerUDPPacket; u.asked++ {
+			batch = append(batch, files[u.asked].File)
+		}
+		request = packet.GlobGetSources{Files: batch}
 	}
-	if len(batch) > 0 {
-		out.SendUDP = append(out.SendUDP, Datagram{To: toUDP(u.server.Endpoint), Packet: packet.GlobGetSources2{Files: batch}})
+	if u.asked > before {
+		out.SendUDP = append(out.SendUDP, Datagram{To: toUDP(u.server.Endpoint), Packet: request})
 		u.lastSent = now
 	}
 	if u.asked >= quota {
@@ -141,11 +155,13 @@ func (s *Server) runSearch(now time.Time, out *Output) {
 }
 
 // searchFiles is the incomplete files a server with udpFlags can be asked
-// about, starting at the rotation point. A server without
-// OP_GLOBGETSOURCES2 is not asked: every server Kelpie lists has it, and
-// the older OP_GLOBGETSOURCES cannot ask about large files.
+// about, starting at the rotation point; a large file only of a server
+// that announces large-file support (aMule DownloadQueue.cpp:928). A
+// server is asked only once its flags say it takes global source
+// requests. aMule also asks servers whose flags are unknown, one file per
+// packet; Kelpie waits for the status answer, which comes within minutes.
 func (s *Server) searchFiles(udpFlags uint32) []Wanted {
-	if udpFlags&packet.UDPFlagGetSources2 == 0 {
+	if udpFlags&(packet.UDPFlagGetSources|packet.UDPFlagGetSources2) == 0 {
 		return nil
 	}
 	var files []Wanted
@@ -165,7 +181,7 @@ func (s *Server) searchFiles(udpFlags uint32) []Wanted {
 func (s *Server) nextSearchServer(now time.Time) *listed {
 	for _, l := range s.servers {
 		isDue := l.searchedAt.IsZero() || now.Sub(l.searchedAt) > udpSearchTime
-		if l != s.current && isDue && l.Failures < maxFailures && len(s.searchFiles(l.UDPFlags)) > 0 {
+		if l != s.current && isDue && l.Failures < maxFailures && l.isResolved() && len(s.searchFiles(l.UDPFlags)) > 0 {
 			return l
 		}
 	}

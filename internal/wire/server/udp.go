@@ -6,6 +6,28 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
+// GlobGetSources is the UDP OP_GLOBGETSOURCES: source queries for several
+// files by hash alone, for servers without OP_GLOBGETSOURCES2.
+type GlobGetSources struct{ Files []wire.Hash }
+
+func (GlobGetSources) Protocol() byte { return wire.ProtocolEDonkey }
+func (GlobGetSources) Opcode() byte   { return opGlobGetSources }
+
+func (g GlobGetSources) Build(b []byte) []byte {
+	for _, h := range g.Files {
+		b = append(b, h[:]...)
+	}
+	return b
+}
+
+func parseGlobGetSources(r *wire.Reader) GlobGetSources {
+	var g GlobGetSources
+	for r.Len() > 0 && r.Err() == nil {
+		g.Files = append(g.Files, r.Hash())
+	}
+	return g
+}
+
 // GlobGetSources2 is the UDP OP_GLOBGETSOURCES2: source queries for several
 // files, each with its size.
 type GlobGetSources2 struct{ Files []GetSources }

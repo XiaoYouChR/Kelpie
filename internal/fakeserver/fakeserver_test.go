@@ -70,7 +70,7 @@ func login(t *testing.T, host *transport.Host, to netip.AddrPort) (net.Conn, pac
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	send(t, conn, packet.Login{Port: peerPort, Name: "test"})
+	send(t, conn, packet.Login{UserHash: wire.Hash{0x55}, Port: peerPort, Name: "test", Flags: packet.CapSupportCrypt | packet.CapRequestCrypt})
 	id := receive[packet.IDChange](t, conn)
 	receive[packet.ServerStatus](t, conn)
 	receive[packet.ServerIdent](t, conn)
@@ -212,6 +212,10 @@ func TestGlobalSourcesOverUDP(t *testing.T) {
 			t.Errorf("sources of %v = %+v", f.Hash, f.Sources)
 		}
 	}
+	found = request(packet.GlobGetSources{Files: []wire.Hash{fileB, {0xCC}}}).(packet.GlobFoundSources)
+	if len(found.Files) != 1 || found.Files[0].Hash != fileB {
+		t.Fatalf("found by hash alone = %+v", found)
+	}
 }
 
 func TestCallbackRelay(t *testing.T) {
@@ -222,8 +226,9 @@ func TestCallbackRelay(t *testing.T) {
 
 	send(t, high, packet.CallbackRequest{ClientID: lowID.ClientID})
 	got := receive[packet.CallbackRequested](t, low)
-	if got.Addr != netip.MustParseAddrPort("10.0.0.2:4662") {
-		t.Errorf("callback asks to connect to %v", got.Addr)
+	want := packet.CallbackRequested{Addr: netip.MustParseAddrPort("10.0.0.2:4662"), CryptOptions: 0x03, UserHash: wire.Hash{0x55}}
+	if got != want {
+		t.Errorf("callback = %+v, want %+v", got, want)
 	}
 	send(t, high, packet.CallbackRequest{ClientID: lowID.ClientID + 100})
 	receive[packet.CallbackFailed](t, high)
@@ -251,8 +256,13 @@ func TestDelayHoldsAnswersOnClock(t *testing.T) {
 }
 
 func TestMetLoadsInServerList(t *testing.T) {
-	addrs := []netip.AddrPort{serverAddr, netip.MustParseAddrPort("10.0.0.9:4242")}
-	entries, err := server.ParseMet(fakeserver.BuildMet(addrs...))
+	network := transport.BuildNetwork()
+	other := netip.MustParseAddrPort("10.0.0.9:4242")
+	servers := []*fakeserver.Server{
+		startServer(t, network, fakeserver.Config{}),
+		startServer(t, network, fakeserver.Config{Transport: network.AddHost(other.Addr()), Addr: other, ObfuscationPort: 4246}),
+	}
+	entries, err := server.ParseMet(fakeserver.BuildMet(servers...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,8 +270,11 @@ func TestMetLoadsInServerList(t *testing.T) {
 		t.Fatalf("got %d entries", len(entries))
 	}
 	for i, e := range entries {
-		if e.Endpoint != addrs[i] || e.UDPFlags&packet.UDPFlagGetSources2 == 0 || e.Name == "" {
+		if e.Endpoint != servers[i].Addr() || e.UDPFlags&packet.UDPFlagGetSources2 == 0 || e.Name == "" {
 			t.Errorf("entry %d = %+v", i, e)
 		}
+	}
+	if e := entries[1]; e.TCPObfuscationPort != 4246 || e.UDPFlags&packet.UDPFlagTCPObfuscation == 0 {
+		t.Errorf("obfuscating entry = %+v", e)
 	}
 }

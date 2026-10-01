@@ -74,7 +74,6 @@ func TestParseMetReadsSelectionTags(t *testing.T) {
 
 func TestParseMetAcceptsOldHeaderAndDropsUnusable(t *testing.T) {
 	data := buildMet(
-		buildMetEntry("0.0.0.0:4661", wire.Tag{Type: wire.TagString, ID: 0x85, String: "dyn.example"}),
 		buildMetEntry("1.2.3.4:0"),
 		buildMetEntry("224.0.0.1:4661"),
 		buildMetEntry("5.6.7.8:4242"),
@@ -86,6 +85,31 @@ func TestParseMetAcceptsOldHeaderAndDropsUnusable(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Endpoint != netip.MustParseAddrPort("5.6.7.8:4242") {
 		t.Fatalf("got %+v", entries)
+	}
+}
+
+// A host name wins over the stored address, which is often stale or 0.
+func TestParseMetKeepsHostNames(t *testing.T) {
+	dynIP := func(host string) wire.Tag { return wire.Tag{Type: wire.TagString, ID: 0x85, String: host} }
+	data := buildMet(
+		buildMetEntry("0.0.0.0:4661", dynIP("dyn.example")),
+		buildMetEntry("1.2.3.4:4242", dynIP("other.example")),
+		buildMetEntry("0.0.0.0:0", dynIP("noport.example")),
+	)
+	entries, err := ParseMet(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %+v", entries)
+	}
+	for i, want := range []struct {
+		host string
+		port uint16
+	}{{"dyn.example", 4661}, {"other.example", 4242}} {
+		if e := entries[i]; e.Host != want.host || e.Endpoint.Port() != want.port || e.Endpoint.Addr().IsValid() {
+			t.Errorf("entry %d = %+v", i, e)
+		}
 	}
 }
 

@@ -253,7 +253,7 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		UserHash: self.UserHash,
 		Port:     uint16(e.tcpPort),
 		Version:  config.Version,
-	}, loadServerLists(config.ServerLists))
+	}, updateLearned(loadServerLists(config.ServerLists), state.Servers))
 	if config.EnableKad {
 		e.startKad(loadNodeLists(config.NodeLists))
 	}
@@ -569,6 +569,8 @@ func (e *Engine) onMessage(m any) {
 		e.onDatagram(m.from, m.data)
 	case natOpened:
 		e.onNATOpened(m)
+	case hostResolved:
+		e.runServer(e.server.OnResolved(m.host, m.addr, e.now()))
 	}
 }
 
@@ -737,6 +739,7 @@ func (e *Engine) buildState() store.State {
 			state.Transfers[r.file.Hash] = r.transfer.ToState()
 		}
 	}
+	state.Servers = toStoreServers(e.server.Entries())
 	return state
 }
 

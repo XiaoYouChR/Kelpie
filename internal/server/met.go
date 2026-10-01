@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
@@ -21,9 +22,11 @@ const (
 	PreferenceLow    Preference = 2
 )
 
-// Entry is one server of a server.met list.
+// Entry is one server of a server.met list. A server listed by Host has
+// an Endpoint without an address until the name is resolved.
 type Entry struct {
 	Endpoint           netip.AddrPort
+	Host               string
 	Name               string
 	Description        string
 	Preference         Preference
@@ -35,6 +38,8 @@ type Entry struct {
 	UDPFlags           uint32
 	TCPObfuscationPort uint16
 	UDPObfuscationPort uint16
+	// PingedAt is when the server was last sent a status ping.
+	PingedAt time.Time
 }
 
 // server.met tags (eMule Opcodes.h ST_*).
@@ -44,6 +49,7 @@ const (
 	metPing               byte = 0x0C
 	metFail               byte = 0x0D
 	metPreference         byte = 0x0E
+	metDynIP              byte = 0x85
 	metSoftFiles          byte = 0x88
 	metUDPFlags           byte = 0x92
 	metTCPPortObfuscation byte = 0x97
@@ -52,9 +58,10 @@ const (
 
 var errMetVersion = errors.New("server: not a server.met file")
 
-// ParseMet reads a server.met file. Entries without a usable IPv4 endpoint
-// are dropped: hostname-only (ST_DYNIP) servers would need DNS, which a pure
-// state machine cannot do.
+// ParseMet reads a server.met file. A server with a host name (ST_DYNIP) is
+// always reached by that name, as aMule does (ServerSocket.cpp:598); its
+// stored address is dropped. Other entries without a usable IPv4 endpoint
+// are dropped.
 func ParseMet(data []byte) ([]Entry, error) {
 	r := &wire.Reader{Rest: data}
 	switch r.Uint8() {
@@ -77,7 +84,11 @@ func ParseMet(data []byte) ([]Entry, error) {
 		if r.Err() != nil {
 			return nil, fmt.Errorf("server: server.met: %w", r.Err())
 		}
-		if isUsable(e.Endpoint) {
+		switch {
+		case e.Host != "" && e.Endpoint.Port() != 0:
+			e.Endpoint = netip.AddrPortFrom(netip.Addr{}, e.Endpoint.Port())
+			entries = append(entries, e)
+		case isUsable(e.Endpoint):
 			entries = append(entries, e)
 		}
 	}
@@ -96,6 +107,8 @@ func setMetTag(e *Entry, t wire.Tag) {
 		e.Name = t.String
 	case t.ID == metDescription && t.Type == wire.TagString:
 		e.Description = t.String
+	case t.ID == metDynIP && t.Type == wire.TagString && e.Host == "":
+		e.Host = t.String
 	case !isUint:
 	case t.ID == metPing:
 		e.Ping = uint32(t.Uint)
