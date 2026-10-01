@@ -13,7 +13,7 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/server"
 	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
-	packet "github.com/XiaoYouChR/Kelpie/internal/wire/server"
+	serverwire "github.com/XiaoYouChR/Kelpie/internal/wire/server"
 )
 
 const peerPort = 4662
@@ -64,17 +64,17 @@ func addPeer(t *testing.T, network *transport.Network, ip string, isLowID bool) 
 	return host
 }
 
-func login(t *testing.T, host *transport.Host, to netip.AddrPort) (net.Conn, packet.IDChange) {
+func login(t *testing.T, host *transport.Host, to netip.AddrPort) (net.Conn, serverwire.IDChange) {
 	t.Helper()
 	conn, err := host.OpenTCP(context.Background(), to)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	send(t, conn, packet.Login{UserHash: wire.Hash{0x55}, Port: peerPort, Name: "test", Flags: packet.CapSupportCrypt | packet.CapRequestCrypt})
-	id := receive[packet.IDChange](t, conn)
-	receive[packet.ServerStatus](t, conn)
-	receive[packet.ServerIdent](t, conn)
+	send(t, conn, serverwire.Login{UserHash: wire.Hash{0x55}, Port: peerPort, Name: "test", Flags: serverwire.CapSupportCrypt | serverwire.CapRequestCrypt})
+	id := receive[serverwire.IDChange](t, conn)
+	receive[serverwire.ServerStatus](t, conn)
+	receive[serverwire.ServerIdent](t, conn)
 	return conn, id
 }
 
@@ -92,7 +92,7 @@ func receive[T wire.Packet](t *testing.T, conn net.Conn) T {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := packet.Parse(frame.Protocol, frame.Opcode, frame.Body)
+	p, err := serverwire.Parse(frame.Protocol, frame.Opcode, frame.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestDroppedLoginGetsNoAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	send(t, conn, packet.Login{Port: peerPort})
+	send(t, conn, serverwire.Login{Port: peerPort})
 	conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
 	if _, err := wire.ParseFrameFrom(conn); err == nil {
 		t.Fatal("dropped login was answered")
@@ -142,18 +142,18 @@ func TestOfferThenGetSources(t *testing.T) {
 	low, lowID := login(t, addPeer(t, network, "10.0.0.3", true), s.Addr())
 	asker, _ := login(t, addPeer(t, network, "10.0.0.4", false), s.Addr())
 
-	send(t, high, packet.OfferFiles{Files: []packet.OfferedFile{{Hash: fileA, ClientID: packet.CompleteID, Port: packet.CompletePort}}})
-	send(t, low, packet.OfferFiles{Files: []packet.OfferedFile{{Hash: fileA, ClientID: packet.IncompleteID, Port: packet.IncompletePort}}})
+	send(t, high, serverwire.OfferFiles{Files: []serverwire.OfferedFile{{Hash: fileA, ClientID: serverwire.CompleteID, Port: serverwire.CompletePort}}})
+	send(t, low, serverwire.OfferFiles{Files: []serverwire.OfferedFile{{Hash: fileA, ClientID: serverwire.IncompleteID, Port: serverwire.IncompletePort}}})
 	// A round trip on each connection makes sure the offers were handled.
-	send(t, high, packet.GetSources{Hash: fileB, Size: 1000})
-	receive[packet.FoundSources](t, high)
-	send(t, low, packet.GetSources{Hash: fileA, Size: 1000})
-	if got := receive[packet.FoundSources](t, low); len(got.Sources) != 1 || got.Sources[0].ClientID != highID.ClientID {
+	send(t, high, serverwire.GetSources{Hash: fileB, Size: 1000})
+	receive[serverwire.FoundSources](t, high)
+	send(t, low, serverwire.GetSources{Hash: fileA, Size: 1000})
+	if got := receive[serverwire.FoundSources](t, low); len(got.Sources) != 1 || got.Sources[0].ClientID != highID.ClientID {
 		t.Fatalf("LowID peer's sources = %+v, want only the HighID peer", got.Sources)
 	}
 
-	send(t, asker, packet.GetSources{Hash: fileA, Size: 1000})
-	got := receive[packet.FoundSources](t, asker)
+	send(t, asker, serverwire.GetSources{Hash: fileA, Size: 1000})
+	got := receive[serverwire.FoundSources](t, asker)
 	want := map[uint32]bool{highID.ClientID: true, lowID.ClientID: true}
 	if got.Hash != fileA || len(got.Sources) != 2 {
 		t.Fatalf("sources = %+v", got)
@@ -169,9 +169,9 @@ func TestGlobalSourcesOverUDP(t *testing.T) {
 	network := transport.BuildNetwork()
 	s := startServer(t, network, fakeserver.Config{})
 	high, highID := login(t, addPeer(t, network, "10.0.0.2", false), s.Addr())
-	send(t, high, packet.OfferFiles{Files: []packet.OfferedFile{{Hash: fileA}, {Hash: fileB}}})
-	send(t, high, packet.GetSources{Hash: fileA, Size: 1000})
-	receive[packet.FoundSources](t, high)
+	send(t, high, serverwire.OfferFiles{Files: []serverwire.OfferedFile{{Hash: fileA}, {Hash: fileB}}})
+	send(t, high, serverwire.GetSources{Hash: fileA, Size: 1000})
+	receive[serverwire.FoundSources](t, high)
 
 	udp, err := addPeer(t, network, "10.0.0.5", true).OpenUDP(0)
 	if err != nil {
@@ -193,27 +193,27 @@ func TestGlobalSourcesOverUDP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		reply, err := packet.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)
+		reply, err := serverwire.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return reply
 	}
 
-	stat := request(packet.GlobServStatReq{Challenge: 0x55AA1234}).(packet.GlobServStatRes)
-	if stat.Challenge != 0x55AA1234 || stat.Users != 1 || stat.Files != 2 || stat.UDPFlags&packet.UDPFlagGetSources2 == 0 {
+	stat := request(serverwire.GlobServStatReq{Challenge: 0x55AA1234}).(serverwire.GlobServStatRes)
+	if stat.Challenge != 0x55AA1234 || stat.Users != 1 || stat.Files != 2 || stat.UDPFlags&serverwire.UDPFlagGetSources2 == 0 {
 		t.Errorf("status = %+v", stat)
 	}
-	found := request(packet.GlobGetSources2{Files: []packet.GetSources{{Hash: wire.Hash{0xCC}, Size: 1000}, {Hash: fileA, Size: 1000}, {Hash: fileB, Size: 1000}}}).(packet.GlobFoundSources)
+	found := request(serverwire.GlobGetSources2{Files: []serverwire.GetSources{{Hash: wire.Hash{0xCC}, Size: 1000}, {Hash: fileA, Size: 1000}, {Hash: fileB, Size: 1000}}}).(serverwire.GlobFoundSources)
 	if len(found.Files) != 2 || found.Files[0].Hash != fileA || found.Files[1].Hash != fileB {
 		t.Fatalf("found = %+v", found)
 	}
 	for _, f := range found.Files {
-		if len(f.Sources) != 1 || f.Sources[0] != (packet.Source{ClientID: highID.ClientID, Port: peerPort}) {
+		if len(f.Sources) != 1 || f.Sources[0] != (serverwire.Source{ClientID: highID.ClientID, Port: peerPort}) {
 			t.Errorf("sources of %v = %+v", f.Hash, f.Sources)
 		}
 	}
-	found = request(packet.GlobGetSources{Files: []wire.Hash{fileB, {0xCC}}}).(packet.GlobFoundSources)
+	found = request(serverwire.GlobGetSources{Files: []wire.Hash{fileB, {0xCC}}}).(serverwire.GlobFoundSources)
 	if len(found.Files) != 1 || found.Files[0].Hash != fileB {
 		t.Fatalf("found by hash alone = %+v", found)
 	}
@@ -225,14 +225,14 @@ func TestCallbackRelay(t *testing.T) {
 	high, _ := login(t, addPeer(t, network, "10.0.0.2", false), s.Addr())
 	low, lowID := login(t, addPeer(t, network, "10.0.0.3", true), s.Addr())
 
-	send(t, high, packet.CallbackRequest{ClientID: lowID.ClientID})
-	got := receive[packet.CallbackRequested](t, low)
-	want := packet.CallbackRequested{Addr: netip.MustParseAddrPort("10.0.0.2:4662"), CryptOptions: 0x03, UserHash: wire.Hash{0x55}}
+	send(t, high, serverwire.CallbackRequest{ClientID: lowID.ClientID})
+	got := receive[serverwire.CallbackRequested](t, low)
+	want := serverwire.CallbackRequested{Addr: netip.MustParseAddrPort("10.0.0.2:4662"), CryptOptions: 0x03, UserHash: wire.Hash{0x55}}
 	if got != want {
 		t.Errorf("callback = %+v, want %+v", got, want)
 	}
-	send(t, high, packet.CallbackRequest{ClientID: lowID.ClientID + 100})
-	receive[packet.CallbackFailed](t, high)
+	send(t, high, serverwire.CallbackRequest{ClientID: lowID.ClientID + 100})
+	receive[serverwire.CallbackFailed](t, high)
 }
 
 func TestDelayHoldsAnswersOnClock(t *testing.T) {
@@ -244,7 +244,7 @@ func TestDelayHoldsAnswersOnClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	send(t, conn, packet.Login{Port: peerPort})
+	send(t, conn, serverwire.Login{Port: peerPort})
 	for fake.Waiters() == 0 {
 		time.Sleep(time.Millisecond)
 	}
@@ -253,7 +253,7 @@ func TestDelayHoldsAnswersOnClock(t *testing.T) {
 		t.Fatal("answered before the delay")
 	}
 	fake.Advance(3 * time.Second)
-	receive[packet.IDChange](t, conn)
+	receive[serverwire.IDChange](t, conn)
 }
 
 func TestMetLoadsInServerList(t *testing.T) {
@@ -271,11 +271,11 @@ func TestMetLoadsInServerList(t *testing.T) {
 		t.Fatalf("got %d entries", len(entries))
 	}
 	for i, e := range entries {
-		if e.Endpoint != servers[i].Addr() || e.UDPFlags&packet.UDPFlagGetSources2 == 0 {
+		if e.Endpoint != servers[i].Addr() || e.UDPFlags&serverwire.UDPFlagGetSources2 == 0 {
 			t.Errorf("entry %d = %+v", i, e)
 		}
 	}
-	if e := entries[1]; e.TCPObfuscationPort != 4246 || e.UDPFlags&packet.UDPFlagTCPObfuscation == 0 {
+	if e := entries[1]; e.TCPObfuscationPort != 4246 || e.UDPFlags&serverwire.UDPFlagTCPObfuscation == 0 {
 		t.Errorf("obfuscating entry = %+v", e)
 	}
 }
@@ -310,7 +310,7 @@ func TestObfuscatedUDP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		reply, err := packet.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)
+		reply, err := serverwire.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -318,13 +318,13 @@ func TestObfuscatedUDP(t *testing.T) {
 	}
 
 	challenge := uint32(0x12345678)
-	ping := wire.BuildPacketDatagram(nil, packet.ObfuscatedPing{Challenge: challenge, Padding: []byte{1, 2, 3}})
-	stat := exchange(ping, challenge).(packet.GlobServStatRes)
-	if stat.Challenge != challenge || stat.UDPKey == 0 || stat.UDPObfuscationPort != port.Port() || stat.UDPFlags&packet.UDPFlagUDPObfuscation == 0 {
+	ping := wire.BuildPacketDatagram(nil, serverwire.ObfuscatedPing{Challenge: challenge, Padding: []byte{1, 2, 3}})
+	stat := exchange(ping, challenge).(serverwire.GlobServStatRes)
+	if stat.Challenge != challenge || stat.UDPKey == 0 || stat.UDPObfuscationPort != port.Port() || stat.UDPFlags&serverwire.UDPFlagUDPObfuscation == 0 {
 		t.Fatalf("status = %+v", stat)
 	}
-	request := wire.BuildPacketDatagram(nil, packet.GlobServStatReq{Challenge: 7})
-	again := exchange(obfuscation.BuildServerDatagram(request, stat.UDPKey, 0x00C5ABCD), stat.UDPKey).(packet.GlobServStatRes)
+	request := wire.BuildPacketDatagram(nil, serverwire.GlobServStatReq{Challenge: 7})
+	again := exchange(obfuscation.BuildServerDatagram(request, stat.UDPKey, 0x00C5ABCD), stat.UDPKey).(serverwire.GlobServStatRes)
 	if again.Challenge != 7 {
 		t.Fatalf("status over the key = %+v", again)
 	}

@@ -16,7 +16,7 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/clock"
 	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
-	packet "github.com/XiaoYouChR/Kelpie/internal/wire/server"
+	serverwire "github.com/XiaoYouChR/Kelpie/internal/wire/server"
 )
 
 const (
@@ -26,9 +26,9 @@ const (
 	maxSourcesPerFile  = 255
 	fileLimit          = 100000
 
-	tcpFlags = packet.FlagCompression | packet.FlagNewTags | packet.FlagUnicode | packet.FlagLargeFiles
-	udpFlags = packet.UDPFlagGetSources | packet.UDPFlagGetSources2 | packet.UDPFlagNewTags |
-		packet.UDPFlagUnicode | packet.UDPFlagLargeFiles
+	tcpFlags = serverwire.FlagCompression | serverwire.FlagNewTags | serverwire.FlagUnicode | serverwire.FlagLargeFiles
+	udpFlags = serverwire.UDPFlagGetSources | serverwire.UDPFlagGetSources2 | serverwire.UDPFlagNewTags |
+		serverwire.UDPFlagUnicode | serverwire.UDPFlagLargeFiles
 
 	metUDPFlags           byte = 0x92 // ST_UDPFLAGS
 	metTCPPortObfuscation byte = 0x97 // ST_TCPPORTOBFUSCATION
@@ -209,7 +209,7 @@ func (s *Server) runConn(ctx context.Context, conn net.Conn) {
 		if err != nil {
 			return
 		}
-		p, err := packet.Parse(frame.Protocol, frame.Opcode, frame.Body)
+		p, err := serverwire.Parse(frame.Protocol, frame.Opcode, frame.Body)
 		if err != nil {
 			return
 		}
@@ -217,23 +217,23 @@ func (s *Server) runConn(ctx context.Context, conn net.Conn) {
 			return
 		}
 		if c == nil {
-			if login, ok := p.(packet.Login); ok && !s.config.ShouldDropLogins {
+			if login, ok := p.(serverwire.Login); ok && !s.config.ShouldDropLogins {
 				c = s.onLogin(ctx, conn, login)
 			}
 			continue
 		}
 		switch p := p.(type) {
-		case packet.OfferFiles:
+		case serverwire.OfferFiles:
 			s.onOfferFiles(c, p)
-		case packet.GetSources:
-			c.send(packet.FoundSources{Hash: p.Hash, Sources: s.sourcesByFile(p.Hash, c)})
-		case packet.CallbackRequest:
+		case serverwire.GetSources:
+			c.send(serverwire.FoundSources{Hash: p.Hash, Sources: s.sourcesByFile(p.Hash, c)})
+		case serverwire.CallbackRequest:
 			s.onCallbackRequest(c, p)
 		}
 	}
 }
 
-func (s *Server) onLogin(ctx context.Context, conn net.Conn, login packet.Login) *client {
+func (s *Server) onLogin(ctx context.Context, conn net.Conn, login serverwire.Login) *client {
 	addr := conn.RemoteAddr().(*net.TCPAddr).AddrPort().Addr().Unmap()
 	c := &client{
 		conn:         conn,
@@ -257,14 +257,14 @@ func (s *Server) onLogin(ctx context.Context, conn net.Conn, login packet.Login)
 	if addr.Is4() {
 		reported = addr
 	}
-	idChange := packet.IDChange{ClientID: c.id, Flags: tcpFlags, ReportedIP: reported}
+	idChange := serverwire.IDChange{ClientID: c.id, Flags: tcpFlags, ReportedIP: reported}
 	if s.config.ObfuscationPort != 0 {
-		idChange.Flags |= packet.FlagTCPObfuscation
+		idChange.Flags |= serverwire.FlagTCPObfuscation
 		idChange.ObfuscationPort = uint32(s.config.ObfuscationPort)
 	}
 	c.send(idChange)
 	c.send(s.status())
-	c.send(packet.ServerIdent{Hash: md5.Sum([]byte(s.config.Addr.String())), Addr: s.config.Addr, Name: s.config.Name})
+	c.send(serverwire.ServerIdent{Hash: md5.Sum([]byte(s.config.Addr.String())), Addr: s.config.Addr, Name: s.config.Name})
 	return c
 }
 
@@ -291,7 +291,7 @@ func (s *Server) probeHighID(ctx context.Context, addr netip.AddrPort) bool {
 
 // onOfferFiles adds to what c shares; complete and partial files alike are
 // sources. An empty offer is the client's keep-alive.
-func (s *Server) onOfferFiles(c *client, p packet.OfferFiles) {
+func (s *Server) onOfferFiles(c *client, p serverwire.OfferFiles) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, f := range p.Files {
@@ -299,7 +299,7 @@ func (s *Server) onOfferFiles(c *client, p packet.OfferFiles) {
 	}
 }
 
-func (s *Server) onCallbackRequest(c *client, p packet.CallbackRequest) {
+func (s *Server) onCallbackRequest(c *client, p serverwire.CallbackRequest) {
 	if wire.IsLowID(c.id) {
 		return
 	}
@@ -312,30 +312,30 @@ func (s *Server) onCallbackRequest(c *client, p packet.CallbackRequest) {
 	}
 	s.mu.Unlock()
 	if target == nil {
-		c.send(packet.CallbackFailed{})
+		c.send(serverwire.CallbackFailed{})
 		return
 	}
-	target.send(packet.CallbackRequested{Addr: netip.AddrPortFrom(c.addr, c.port), CryptOptions: c.cryptOptions, UserHash: c.user})
+	target.send(serverwire.CallbackRequested{Addr: netip.AddrPortFrom(c.addr, c.port), CryptOptions: c.cryptOptions, UserHash: c.user})
 }
 
 // sourcesByFile is every client other than except sharing file, at most
 // 255, the count a source answer can carry.
-func (s *Server) sourcesByFile(file wire.Hash, except *client) []packet.Source {
+func (s *Server) sourcesByFile(file wire.Hash, except *client) []serverwire.Source {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var sources []packet.Source
+	var sources []serverwire.Source
 	for c := range s.clients {
 		if _, ok := c.files[file]; ok && c != except && len(sources) < maxSourcesPerFile {
-			sources = append(sources, packet.Source{ClientID: c.id, Port: c.port})
+			sources = append(sources, serverwire.Source{ClientID: c.id, Port: c.port})
 		}
 	}
 	return sources
 }
 
-func (s *Server) status() packet.ServerStatus {
+func (s *Server) status() serverwire.ServerStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	status := packet.ServerStatus{Users: uint32(len(s.clients))}
+	status := serverwire.ServerStatus{Users: uint32(len(s.clients))}
 	for c := range s.clients {
 		status.Files += uint32(len(c.files))
 	}
@@ -359,7 +359,7 @@ func (s *Server) runUDP(ctx context.Context, conn transport.PacketConn, isObfusc
 				data = plain
 			} else if n >= 4 {
 				key = binary.LittleEndian.Uint32(data)
-				data = wire.BuildPacketDatagram(nil, packet.GlobServStatReq{Challenge: key})
+				data = wire.BuildPacketDatagram(nil, serverwire.GlobServStatReq{Challenge: key})
 			} else {
 				continue
 			}
@@ -384,22 +384,22 @@ func (s *Server) buildUDPAnswer(data []byte, from netip.Addr) wire.Packet {
 	if err != nil {
 		return nil
 	}
-	p, err := packet.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)
+	p, err := serverwire.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)
 	if err != nil {
 		return nil
 	}
 	switch p := p.(type) {
-	case packet.GlobGetSources:
+	case serverwire.GlobGetSources:
 		return s.buildFound(p.Files)
-	case packet.GlobGetSources2:
+	case serverwire.GlobGetSources2:
 		var files []wire.Hash
 		for _, f := range p.Files {
 			files = append(files, f.Hash)
 		}
 		return s.buildFound(files)
-	case packet.GlobServStatReq:
+	case serverwire.GlobServStatReq:
 		status := s.status()
-		res := packet.GlobServStatRes{
+		res := serverwire.GlobServStatRes{
 			Challenge: p.Challenge, Users: status.Users, Files: status.Files,
 			MaxUsers: status.Users + 1000, SoftFiles: fileLimit, HardFiles: fileLimit, UDPFlags: s.udpFlags(),
 			TCPObfuscationPort: s.config.ObfuscationPort,
@@ -418,10 +418,10 @@ func (s *Server) udpKeyByAddr(ip netip.Addr) uint32 {
 
 // buildFound answers a global source query; nil when no file has sources.
 func (s *Server) buildFound(files []wire.Hash) wire.Packet {
-	var found packet.GlobFoundSources
+	var found serverwire.GlobFoundSources
 	for _, f := range files {
 		if sources := s.sourcesByFile(f, nil); len(sources) > 0 {
-			found.Files = append(found.Files, packet.FoundSources{Hash: f, Sources: sources})
+			found.Files = append(found.Files, serverwire.FoundSources{Hash: f, Sources: sources})
 		}
 	}
 	if len(found.Files) == 0 {
@@ -456,10 +456,10 @@ func (c *client) send(p wire.Packet) {
 func (s *Server) udpFlags() uint32 {
 	flags := udpFlags
 	if s.config.ObfuscationPort != 0 {
-		flags |= packet.UDPFlagTCPObfuscation
+		flags |= serverwire.UDPFlagTCPObfuscation
 	}
 	if s.config.UDPKey != 0 {
-		flags |= packet.UDPFlagUDPObfuscation
+		flags |= serverwire.UDPFlagUDPObfuscation
 	}
 	return flags
 }

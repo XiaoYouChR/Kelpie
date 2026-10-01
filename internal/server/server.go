@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
-	packet "github.com/XiaoYouChR/Kelpie/internal/wire/server"
+	serverwire "github.com/XiaoYouChR/Kelpie/internal/wire/server"
 )
 
 // eMule's timing and limits; names are eMule's (Opcodes.h unless noted).
@@ -31,8 +31,8 @@ const (
 	edonkeyVersion      = 0x3C                        // EDONKEYVERSION
 	// CapSupportCrypt makes the server answer with OP_FOUNDSOURCES_OBFU,
 	// which carries the user hash an obfuscated connection needs.
-	loginFlags = packet.CapZlib | packet.CapNewTags | packet.CapUnicode | packet.CapLargeFiles |
-		packet.CapSupportCrypt | packet.CapRequestCrypt
+	loginFlags = serverwire.CapZlib | serverwire.CapNewTags | serverwire.CapUnicode | serverwire.CapLargeFiles |
+		serverwire.CapSupportCrypt | serverwire.CapRequestCrypt
 
 	// keepAliveTime stands in for eMule's ServerKeepAliveTimeout, which is
 	// off by default; an idle seeding Engine Process would otherwise lose
@@ -174,7 +174,7 @@ func (l *listed) isResolved() bool { return l.Endpoint.Addr().IsValid() }
 
 // canObfuscateTCP is aMule's SupportsObfuscationTCP (Server.h:146).
 func (l *listed) canObfuscateTCP() bool {
-	return l.TCPObfuscationPort != 0 && (l.UDPFlags&packet.UDPFlagTCPObfuscation != 0 || l.tcpFlags&packet.FlagTCPObfuscation != 0)
+	return l.TCPObfuscationPort != 0 && (l.UDPFlags&serverwire.UDPFlagTCPObfuscation != 0 || l.tcpFlags&serverwire.FlagTCPObfuscation != 0)
 }
 
 // attempt is a server connection that has not logged in yet.
@@ -283,7 +283,7 @@ func (s *Server) OnConnected(server netip.AddrPort, now time.Time) Output {
 	if s.attemptIndex(server) < 0 {
 		return Output{}
 	}
-	login := packet.Login{
+	login := serverwire.Login{
 		UserHash:     s.config.UserHash,
 		Port:         s.config.Port,
 		Name:         "Kelpie",
@@ -381,22 +381,22 @@ func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) Out
 		return out
 	}
 	switch p := p.(type) {
-	case packet.IDChange:
+	case serverwire.IDChange:
 		s.onIDChange(sender, p, now, &out)
-	case packet.ServerMessage:
+	case serverwire.ServerMessage:
 		out.Events = append(out.Events, MessageReceived{Text: p.Text})
-	case packet.ServerStatus:
+	case serverwire.ServerStatus:
 		sender.Users, sender.Files = p.Users, p.Files
 	}
 	if sender != s.current {
 		return out
 	}
 	switch p := p.(type) {
-	case packet.FoundSources:
+	case serverwire.FoundSources:
 		s.onFoundSources(p.Hash, p.Sources, &out)
-	case packet.FoundSourcesObfu:
+	case serverwire.FoundSourcesObfu:
 		s.onFoundSources(p.Hash, p.Sources, &out)
-	case packet.CallbackRequested:
+	case serverwire.CallbackRequested:
 		if p.Addr.IsValid() && p.Addr.Port() != 0 {
 			out.ConnectPeers = append(out.ConnectPeers, Callback{
 				Endpoint:     p.Addr,
@@ -404,11 +404,11 @@ func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) Out
 				CanObfuscate: p.CryptOptions&wire.CryptSupported != 0 && p.UserHash != wire.Hash{},
 			})
 		}
-	case packet.CallbackRequestedIPv6:
+	case serverwire.CallbackRequestedIPv6:
 		if p.Addr.IsValid() && p.Addr.Port() != 0 {
 			out.ConnectPeers = append(out.ConnectPeers, Callback{Endpoint: p.Addr})
 		}
-	case packet.CallbackFailed:
+	case serverwire.CallbackFailed:
 		out.Events = append(out.Events, CallbackFailed{})
 	}
 	return out
@@ -422,13 +422,13 @@ func (s *Server) RequestCallback(source Source, now time.Time) (Output, bool) {
 		return Output{}, false
 	}
 	s.lastSent = now
-	return Output{To: s.current.Endpoint, Send: []wire.Packet{packet.CallbackRequest{ClientID: source.ClientID}}}, true
+	return Output{To: s.current.Endpoint, Send: []wire.Packet{serverwire.CallbackRequest{ClientID: source.ClientID}}}, true
 }
 
 // onIDChange logs in to the first attempt that gets an id and closes the
 // other one, which aMule's StopConnectionTry does without counting a
 // failure.
-func (s *Server) onIDChange(sender *listed, p packet.IDChange, now time.Time, out *Output) {
+func (s *Server) onIDChange(sender *listed, p serverwire.IDChange, now time.Time, out *Output) {
 	if p.ClientID == 0 {
 		return
 	}
@@ -457,7 +457,7 @@ func (s *Server) onIDChange(sender *listed, p packet.IDChange, now time.Time, ou
 	s.runSession(now, out)
 }
 
-func (s *Server) onFoundSources(file wire.Hash, found []packet.Source, out *Output) {
+func (s *Server) onFoundSources(file wire.Hash, found []serverwire.Source, out *Output) {
 	if !s.isWanted(file) {
 		return
 	}
@@ -473,7 +473,7 @@ func (s *Server) onFoundSources(file wire.Hash, found []packet.Source, out *Outp
 	}
 }
 
-func (s *Server) toSource(f packet.Source, server netip.AddrPort) (Source, bool) {
+func (s *Server) toSource(f serverwire.Source, server netip.AddrPort) (Source, bool) {
 	src := Source{
 		ClientID:     f.ClientID,
 		Server:       server,
@@ -555,7 +555,7 @@ func (s *Server) runConnect(now time.Time, out *Output) {
 func (s *Server) nextServer() *listed {
 	var best *listed
 	for _, l := range s.servers {
-		canObfuscate := l.canObfuscateTCP() || l.UDPFlags&packet.UDPFlagUDPObfuscation != 0
+		canObfuscate := l.canObfuscateTCP() || l.UDPFlags&serverwire.UDPFlagUDPObfuscation != 0
 		if s.tried[l] || l.Failures >= maxFailures || !l.isResolved() || l.isResolving || (!s.isPlainPass && !canObfuscate) {
 			continue
 		}
@@ -591,7 +591,7 @@ func (s *Server) runSession(now time.Time, out *Output) {
 	s.runOffer(now, out)
 	if len(out.Send) == n && now.Sub(s.lastSent) >= keepAliveTime {
 		// eMule's keep-alive is an empty OP_OFFERFILES.
-		out.Send = append(out.Send, packet.OfferFiles{})
+		out.Send = append(out.Send, serverwire.OfferFiles{})
 	}
 	if len(out.Send) > n {
 		s.lastSent = now
@@ -618,9 +618,9 @@ func (s *Server) runSourceRequests(now time.Time, out *Output) {
 	}
 	slices.SortStableFunc(due, func(a, b Wanted) int { return s.askedAt[a.File].Compare(s.askedAt[b.File]) })
 	for _, w := range due[:min(len(due), sourceFilesPerFrame)] {
-		request := packet.GetSources{Hash: w.File, Size: w.Size}
-		if s.current.tcpFlags&packet.FlagTCPObfuscation != 0 {
-			out.Send = append(out.Send, packet.GetSourcesObfu(request))
+		request := serverwire.GetSources{Hash: w.File, Size: w.Size}
+		if s.current.tcpFlags&serverwire.FlagTCPObfuscation != 0 {
+			out.Send = append(out.Send, serverwire.GetSourcesObfu(request))
 		} else {
 			out.Send = append(out.Send, request)
 		}
@@ -641,7 +641,7 @@ func (s *Server) runOffer(now time.Time, out *Output) {
 	if soft := int(s.current.SoftFiles); soft > 0 && soft < limit {
 		limit = soft
 	}
-	var files []packet.OfferedFile
+	var files []serverwire.OfferedFile
 	for _, w := range s.wanted {
 		if len(files) == limit {
 			break
@@ -656,30 +656,30 @@ func (s *Server) runOffer(now time.Time, out *Output) {
 	if len(files) == 0 {
 		return
 	}
-	out.Send = append(out.Send, packet.OfferFiles{Files: files})
+	out.Send = append(out.Send, serverwire.OfferFiles{Files: files})
 	s.nextOffer = now.Add(offerTime)
 }
 
-func (s *Server) toOffered(w Wanted) packet.OfferedFile {
-	f := packet.OfferedFile{Hash: w.File}
+func (s *Server) toOffered(w Wanted) serverwire.OfferedFile {
+	f := serverwire.OfferedFile{Hash: w.File}
 	switch {
-	case s.current.tcpFlags&packet.FlagCompression != 0 && w.IsComplete:
-		f.ClientID, f.Port = packet.CompleteID, packet.CompletePort
-	case s.current.tcpFlags&packet.FlagCompression != 0:
-		f.ClientID, f.Port = packet.IncompleteID, packet.IncompletePort
+	case s.current.tcpFlags&serverwire.FlagCompression != 0 && w.IsComplete:
+		f.ClientID, f.Port = serverwire.CompleteID, serverwire.CompletePort
+	case s.current.tcpFlags&serverwire.FlagCompression != 0:
+		f.ClientID, f.Port = serverwire.IncompleteID, serverwire.IncompletePort
 	case !wire.IsLowID(s.clientID):
 		f.ClientID, f.Port = s.clientID, s.config.Port
 	}
 	f.Tags = []wire.Tag{
-		{Type: wire.TagString, ID: packet.FileName, String: w.Name},
-		{Type: wire.TagUint32, ID: packet.FileSize, Uint: w.Size & 0xFFFFFFFF},
+		{Type: wire.TagString, ID: serverwire.FileName, String: w.Name},
+		{Type: wire.TagUint32, ID: serverwire.FileSize, Uint: w.Size & 0xFFFFFFFF},
 	}
 	if w.Size > 0xFFFFFFFF {
-		f.Tags = append(f.Tags, wire.Tag{Type: wire.TagUint32, ID: packet.FileSizeHi, Uint: w.Size >> 32})
+		f.Tags = append(f.Tags, wire.Tag{Type: wire.TagUint32, ID: serverwire.FileSizeHi, Uint: w.Size >> 32})
 	}
 	return f
 }
 
 func (s *Server) canTCP(size uint64) bool {
-	return size <= largeFileSize || s.current.tcpFlags&packet.FlagLargeFiles != 0
+	return size <= largeFileSize || s.current.tcpFlags&serverwire.FlagLargeFiles != 0
 }

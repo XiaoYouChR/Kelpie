@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
-	packet "github.com/XiaoYouChR/Kelpie/internal/wire/server"
+	serverwire "github.com/XiaoYouChR/Kelpie/internal/wire/server"
 )
 
 // eMule's UDP pacing (Opcodes.h, DownloadQueue.cpp, ServerList.cpp).
@@ -46,7 +46,7 @@ func (s *Server) OnUDPPacket(from netip.AddrPort, p wire.Packet, now time.Time) 
 		return out
 	}
 	switch p := p.(type) {
-	case packet.GlobServStatRes:
+	case serverwire.GlobServStatRes:
 		if l.challenge == 0 || p.Challenge != l.challenge {
 			return out
 		}
@@ -55,7 +55,7 @@ func (s *Server) OnUDPPacket(from netip.AddrPort, p wire.Packet, now time.Time) 
 		l.Users, l.Files, l.SoftFiles, l.UDPFlags = p.Users, p.Files, p.SoftFiles, p.UDPFlags
 		l.TCPObfuscationPort, l.UDPObfuscationPort = p.TCPObfuscationPort, p.UDPObfuscationPort
 		l.udpKey, l.udpKeyIP = p.UDPKey, s.publicIP
-	case packet.GlobFoundSources:
+	case serverwire.GlobFoundSources:
 		for _, f := range p.Files {
 			if !s.isWanted(f.Hash) {
 				continue
@@ -109,14 +109,14 @@ func (s *Server) runStats(now time.Time, out *Output) {
 				padding[i] = byte(s.config.Random.Uint32())
 			}
 			to := netip.AddrPortFrom(l.Endpoint.Addr(), l.Endpoint.Port()+cryptPingPortOffset)
-			out.SendUDP = append(out.SendUDP, Datagram{To: to, Packet: packet.ObfuscatedPing{Challenge: l.challenge, Padding: padding}})
+			out.SendUDP = append(out.SendUDP, Datagram{To: to, Packet: serverwire.ObfuscatedPing{Challenge: l.challenge, Padding: padding}})
 			return
 		}
 		l.isCryptPinging = false
 		u.pings++
 		l.challenge = challengeBase + uint32(u.pings)
 		l.Failures++
-		out.SendUDP = append(out.SendUDP, s.buildDatagram(l, packet.GlobServStatReq{Challenge: l.challenge}))
+		out.SendUDP = append(out.SendUDP, s.buildDatagram(l, serverwire.GlobServStatReq{Challenge: l.challenge}))
 		return
 	}
 }
@@ -150,7 +150,7 @@ func (s *Server) buildDatagram(l *listed, p wire.Packet) Datagram {
 // udpKey is aMule's GetServerKeyUDP when SupportsObfuscationUDP
 // (Server.cpp:303-310); 0 means plain.
 func (s *Server) udpKey(l *listed) uint32 {
-	if l.UDPFlags&packet.UDPFlagUDPObfuscation == 0 || l.UDPObfuscationPort == 0 || !s.publicIP.IsValid() || l.udpKeyIP != s.publicIP {
+	if l.UDPFlags&serverwire.UDPFlagUDPObfuscation == 0 || l.UDPObfuscationPort == 0 || !s.publicIP.IsValid() || l.udpKeyIP != s.publicIP {
 		return 0
 	}
 	return l.udpKey
@@ -194,23 +194,23 @@ func (s *Server) runSearch(now time.Time, out *Output) {
 	quota := min(len(files), maxRequestsPerServer)
 	var request wire.Packet
 	before := u.asked
-	if u.server.UDPFlags&packet.UDPFlagGetSources2 != 0 {
-		var batch []packet.GetSources
+	if u.server.UDPFlags&serverwire.UDPFlagGetSources2 != 0 {
+		var batch []serverwire.GetSources
 		for size := 0; u.asked < quota && size < maxUDPPacketData; u.asked++ {
 			w := files[u.asked]
-			batch = append(batch, packet.GetSources{Hash: w.File, Size: w.Size})
+			batch = append(batch, serverwire.GetSources{Hash: w.File, Size: w.Size})
 			size += bytesPerFile
 			if w.Size > largeFileSize {
 				size += bytesPerLargeFile - bytesPerFile
 			}
 		}
-		request = packet.GlobGetSources2{Files: batch}
+		request = serverwire.GlobGetSources2{Files: batch}
 	} else {
 		var batch []wire.Hash
 		for ; u.asked < quota && len(batch) < maxFilesPerUDPPacket; u.asked++ {
 			batch = append(batch, files[u.asked].File)
 		}
-		request = packet.GlobGetSources{Files: batch}
+		request = serverwire.GlobGetSources{Files: batch}
 	}
 	if u.asked > before {
 		out.SendUDP = append(out.SendUDP, s.buildDatagram(u.server, request))
@@ -232,14 +232,14 @@ func (s *Server) runSearch(now time.Time, out *Output) {
 // requests. aMule also asks servers whose flags are unknown, one file per
 // packet; Kelpie waits for the status answer, which comes within minutes.
 func (s *Server) searchFiles(udpFlags uint32) []Wanted {
-	if udpFlags&(packet.UDPFlagGetSources|packet.UDPFlagGetSources2) == 0 {
+	if udpFlags&(serverwire.UDPFlagGetSources|serverwire.UDPFlagGetSources2) == 0 {
 		return nil
 	}
 	var files []Wanted
 	n := len(s.wanted)
 	for i := range n {
 		w := s.wanted[(s.udp.fileStart+i)%n]
-		if !w.IsComplete && (w.Size <= largeFileSize || udpFlags&packet.UDPFlagLargeFiles != 0) {
+		if !w.IsComplete && (w.Size <= largeFileSize || udpFlags&serverwire.UDPFlagLargeFiles != 0) {
 			files = append(files, w)
 		}
 	}
