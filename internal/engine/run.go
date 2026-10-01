@@ -320,6 +320,10 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			if c := e.conns[a.Peer]; a.Channel == transfer.ChannelExchange && c != nil && c.session != nil {
 				e.runSession(c, c.session.RequestSources(r.file.Hash, now))
 			}
+		case transfer.RequestHashSet:
+			if c := e.conns[a.Peer]; c != nil && c.session != nil {
+				e.runSession(c, c.session.RequestHashSet(r.file.Hash))
+			}
 		case transfer.Publish:
 			r.published = a.Parts
 		case transfer.Write:

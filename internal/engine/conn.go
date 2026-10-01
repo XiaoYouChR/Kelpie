@@ -539,7 +539,7 @@ func (e *Engine) addFile(c *conn, r *run) {
 }
 
 func (e *Engine) addSessionFile(c *conn, r *run) {
-	e.runSession(c, c.session.Add(r.file.Hash, r.file.Size, r.share.Parts, len(r.share.PartHashes) > 0))
+	e.runSession(c, c.session.Add(r.file.Hash, r.file.Size, r.share.Parts))
 }
 
 // removeFile stops c serving download h and tells the transfer.

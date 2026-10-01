@@ -30,8 +30,8 @@ type downloadState struct {
 type download struct {
 	size               int64
 	parts              piece.Set
-	hasHashSet         bool
 	isRequested        bool
+	isHashSetWanted    bool
 	isHashSetRequested bool
 	peerParts          piece.Set
 	inFlight           []*inFlight
@@ -44,15 +44,14 @@ type inFlight struct {
 	packed   []byte
 }
 
-// Add asks the peer about file, of which we have parts. hasHashSet says
-// whether we already know its part hashes; if not, the session fetches them.
-// Before the handshake completes the request waits for it.
-func (s *Session) Add(file wire.Hash, size int64, parts piece.Set, hasHashSet bool) Output {
+// Add asks the peer about file, of which we have parts. Before the
+// handshake completes the request waits for it.
+func (s *Session) Add(file wire.Hash, size int64, parts piece.Set) Output {
 	var out Output
 	if s.down.files[file] != nil {
 		return out
 	}
-	d := &download{size: size, parts: parts, hasHashSet: hasHashSet}
+	d := &download{size: size, parts: parts}
 	s.down.files[file] = d
 	if s.isHandshaken {
 		s.sendFileRequest(file, d, &out)
@@ -71,8 +70,7 @@ func (s *Session) Remove(file wire.Hash) Output {
 	return out
 }
 
-// Start asks the peer for an upload slot for file once its parts (and part
-// hashes, when needed) are known. Starting another file gives up the slot of
+// Start asks the peer for an upload slot for file once its parts are known. Starting another file gives up the slot of
 // the previous one.
 func (s *Session) Start(file wire.Hash) Output {
 	var out Output
@@ -90,6 +88,26 @@ func (s *Session) Start(file wire.Hash) Output {
 	s.down.started, s.down.isStarted = file, true
 	s.runStarted(&out)
 	return out
+}
+
+// RequestHashSet asks the peer for file's part hashes once it has told its
+// part status. aMule asks one source per file, right after its OP_FILESTATUS,
+// and asks every other source for a slot meanwhile (DownloadClient.cpp:467-482);
+// the transfer picks that source.
+func (s *Session) RequestHashSet(file wire.Hash) Output {
+	var out Output
+	if d := s.down.files[file]; d != nil {
+		d.isHashSetWanted = true
+		s.sendHashSetRequest(file, d, &out)
+	}
+	return out
+}
+
+func (s *Session) sendHashSetRequest(file wire.Hash, d *download, out *Output) {
+	if d.isHashSetWanted && !d.isHashSetRequested && d.peerParts != nil {
+		d.isHashSetRequested = true
+		out.send(client.HashSetRequest{Hash: file})
+	}
 }
 
 // Request sends block requests for file, three ranges per packet as the
@@ -205,25 +223,22 @@ func (s *Session) onFileStatus(p client.FileStatus, out *Output) {
 func (s *Session) setPeerParts(file wire.Hash, d *download, parts piece.Set, out *Output) {
 	d.peerParts = parts
 	out.add(StatusReceived{File: file, Parts: parts})
-	if !d.hasHashSet && piece.HashCount(d.size) > 0 && !d.isHashSetRequested {
-		d.isHashSetRequested = true
-		out.send(client.HashSetRequest{Hash: file})
-	}
+	s.sendHashSetRequest(file, d, out)
 	s.runStarted(out)
 }
 
 func (s *Session) onHashSet(p client.HashSetAnswer, out *Output) {
 	d := s.down.files[p.Hash]
-	if d == nil || d.hasHashSet || !d.isHashSetRequested {
+	if d == nil || !d.isHashSetRequested || !d.isHashSetWanted {
 		return
 	}
+	d.isHashSetWanted = false
+	// aMule drops a client that sends a wrong hash set (DownloadClient.cpp:584-585).
 	if len(p.Parts) != piece.HashCount(d.size) || piece.BuildFileHash(p.Parts) != p.Hash {
 		out.Close = CloseProtocol
 		return
 	}
-	d.hasHashSet = true
 	out.add(HashSetReceived{File: p.Hash, Hashes: p.Parts})
-	s.runStarted(out)
 }
 
 func (s *Session) onNoFile(file wire.Hash, out *Output) {
@@ -241,7 +256,7 @@ func (s *Session) runStarted(out *Output) {
 		return
 	}
 	d := s.down.files[s.down.started]
-	if d.peerParts == nil || !d.hasHashSet && piece.HashCount(d.size) > 0 {
+	if d.peerParts == nil {
 		return
 	}
 	switch {

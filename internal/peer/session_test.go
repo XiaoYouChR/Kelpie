@@ -264,7 +264,7 @@ func (l *link) sendRequestedBlocks(uploader *side, file wire.Hash, data []byte) 
 func TestQueueThenSlotOnOutgoingConnection(t *testing.T) {
 	l := buildLink(t)
 	file, _ := addShare(l.b, 1, 3*piece.BlockSize, false)
-	l.run(l.a, l.a.s.Add(file, 3*piece.BlockSize, piece.Set{false}, false))
+	l.run(l.a, l.a.s.Add(file, 3*piece.BlockSize, piece.Set{false}))
 	if st := lastOf[StatusReceived](t, l.a); st.File != file || !st.Parts.IsFull() {
 		t.Fatalf("status %+v", st)
 	}
@@ -297,7 +297,7 @@ func TestSlotGrantOnIncomingConnection(t *testing.T) {
 	if g := lastOf[SlotGranted](t, downloader); g.File != (wire.Hash{}) {
 		t.Fatalf("granted %+v", g)
 	}
-	l.run(downloader, downloader.s.Add(file, size, piece.Set{false}, false))
+	l.run(downloader, downloader.s.Add(file, size, piece.Set{false}))
 	l.run(downloader, downloader.s.Start(file))
 	if sentCount[client.StartUploadRequest](l) != 0 {
 		t.Fatal("asked for a slot we already hold")
@@ -327,7 +327,7 @@ func TestPipelineStaysFull(t *testing.T) {
 	l.open(ca, cb)
 	size := 10 * piece.BlockSize
 	file, data := addShare(l.b, 1, size, false)
-	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false}, false))
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false}))
 	l.run(l.a, l.a.s.Start(file))
 	l.run(l.b, l.b.s.StartUpload())
 	if w := lastOf[BlocksWanted](t, l.a); w.Count != 5 {
@@ -375,7 +375,7 @@ func TestCompressedPartReassembly(t *testing.T) {
 	l := buildLink(t)
 	size := piece.BlockSize
 	file, data := addShare(l.b, 1, size, true)
-	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}, false))
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
 	l.run(l.a, l.a.s.Start(file))
 	l.run(l.b, l.b.s.StartUpload())
 	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: size}}))
@@ -396,7 +396,7 @@ func TestIncompressibleBlockSentPlain(t *testing.T) {
 	l := buildLink(t)
 	size := piece.BlockSize
 	file, data := addShare(l.b, 1, size, false)
-	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}, false))
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
 	l.run(l.a, l.a.s.Start(file))
 	l.run(l.b, l.b.s.StartUpload())
 	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: size}}))
@@ -416,8 +416,8 @@ func TestUploadAndDownloadOnOneConnection(t *testing.T) {
 	fromB, dataB := addShare(l.b, 1, size, false)
 	fromA, dataA := addShare(l.a, 2, size, true)
 
-	l.run(l.a, l.a.s.Add(fromB, size, piece.Set{false}, false))
-	l.run(l.b, l.b.s.Add(fromA, size, piece.Set{false}, false))
+	l.run(l.a, l.a.s.Add(fromB, size, piece.Set{false}))
+	l.run(l.b, l.b.s.Add(fromA, size, piece.Set{false}))
 	l.run(l.a, l.a.s.Start(fromB))
 	l.run(l.b, l.b.s.Start(fromA))
 	if lastOf[UploadRequested](t, l.a).File != fromA || lastOf[UploadRequested](t, l.b).File != fromB {
@@ -456,21 +456,42 @@ func TestUploadAndDownloadOnOneConnection(t *testing.T) {
 	matchReceived(l.b, fromA, dataA)
 }
 
-func TestHashSetFetchedBeforeSlotRequest(t *testing.T) {
+// aMule asks for the slot right after the file status and fetches the hash
+// set only from the one source the transfer picks.
+func TestSlotRequestDoesNotWaitForHashSet(t *testing.T) {
 	l := buildLink(t)
 	size := 2*piece.PartSize + 5
 	file, _ := addShare(l.b, 1, size, false)
-	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false, false}, false))
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false, false}))
 	l.run(l.a, l.a.s.Start(file))
+	if sentCount[client.MultiPacketExt](l) != 1 || sentCount[client.StartUploadRequest](l) != 1 {
+		t.Fatal("file request or slot request missing")
+	}
+	if sentCount[client.HashSetRequest](l) != 0 {
+		t.Fatal("hash set asked without the transfer wanting it")
+	}
+	l.run(l.a, l.a.s.RequestHashSet(file))
 	h := lastOf[HashSetReceived](t, l.a)
 	if h.File != file || len(h.Hashes) != 3 {
 		t.Fatalf("hash set %+v", h)
 	}
-	if sentCount[client.MultiPacketExt](l) != 1 || sentCount[client.StartUploadRequest](l) != 1 {
-		t.Fatal("file request or slot request missing")
+	if sentCount[client.HashSetRequest](l) != 1 || sentCount[client.StartUploadRequest](l) != 1 {
+		t.Fatal("hash set fetched more than once or slot asked again")
 	}
-	if lastOf[UploadRequested](t, l.b).File != file {
-		t.Fatal("no upload request")
+}
+
+// A hash set wanted before the peer told its status is asked right after it.
+func TestHashSetWaitsForStatus(t *testing.T) {
+	l := buildLink(t)
+	size := piece.PartSize + 1
+	file, _ := addShare(l.b, 1, size, false)
+	add := l.a.s.Add(file, size, piece.Set{false, false})
+	if out := l.a.s.RequestHashSet(file); len(out.Send) != 0 {
+		t.Fatal("hash set asked before the file status")
+	}
+	l.run(l.a, add)
+	if len(lastOf[HashSetReceived](t, l.a).Hashes) != 2 {
+		t.Fatal("hash set")
 	}
 }
 
@@ -481,7 +502,8 @@ func TestWrongHashSetCloses(t *testing.T) {
 	share := l.b.shares[file]
 	share.PartHashes = []wire.Hash{{9}, {9}}
 	l.b.shares[file] = share
-	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false}, false))
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false}))
+	l.run(l.a, l.a.s.RequestHashSet(file))
 	if l.a.closed != CloseProtocol {
 		t.Fatalf("closed %q", l.a.closed)
 	}
@@ -490,7 +512,7 @@ func TestWrongHashSetCloses(t *testing.T) {
 func TestFileNotSharedIsRejected(t *testing.T) {
 	l := buildLink(t)
 	file := hashOf(5)
-	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}, false))
+	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}))
 	if lastOf[FileRejected](t, l.a).File != file {
 		t.Fatal("wrong file rejected")
 	}
@@ -506,7 +528,7 @@ func TestPartialShareStatus(t *testing.T) {
 	share := l.b.shares[file]
 	share.Parts = piece.Set{true, false, true}
 	l.b.shares[file] = share
-	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false, false}, true))
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false, false}))
 	st := lastOf[StatusReceived](t, l.a)
 	if len(st.Parts) != 3 || !st.Parts[0] || st.Parts[1] || !st.Parts[2] {
 		t.Fatalf("status %v", st.Parts)
@@ -516,7 +538,7 @@ func TestPartialShareStatus(t *testing.T) {
 func TestOutOfPartsRevokesSlot(t *testing.T) {
 	l := buildLink(t)
 	file, _ := addShare(l.b, 1, piece.BlockSize, false)
-	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}, false))
+	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}))
 	l.run(l.a, l.a.s.Start(file))
 	l.run(l.b, l.b.s.StartUpload())
 	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: piece.BlockSize}}))
@@ -535,7 +557,7 @@ func TestOutOfPartsRevokesSlot(t *testing.T) {
 func TestSourceExchange(t *testing.T) {
 	l := buildLink(t)
 	file, _ := addShare(l.b, 1, piece.BlockSize, false)
-	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}, false))
+	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}))
 	l.sent = nil
 	l.run(l.a, l.a.s.RequestSources(file, l.now))
 	// aMule 2.3 closes on a standalone OP_REQUESTSOURCES2 (seen on the real
@@ -587,7 +609,7 @@ func TestSourceExchangeWithEmule(t *testing.T) {
 		Misc1:        client.MiscOptions1{ExtendedRequestsVersion: 2, HasMultiPacket: true, DataCompressionVersion: 1},
 		Misc2:        client.MiscOptions2{HasSourceExchange2: true},
 	}, shares, start)
-	s.Add(file, piece.BlockSize, piece.Set{false}, false)
+	s.Add(file, piece.BlockSize, piece.Set{false})
 	out := s.RequestSources(file, start)
 	if r := out.Send[0].(client.MultiPacket).Requests[0].(client.RequestSources2); r.Version != client.SourceExchange2Version {
 		t.Fatalf("version %d", r.Version)
@@ -641,7 +663,7 @@ func TestIdleConnectionTimesOut(t *testing.T) {
 func TestStalledSlotIsGivenUp(t *testing.T) {
 	l := buildLink(t)
 	file, _ := addShare(l.b, 1, piece.BlockSize, false)
-	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}, false))
+	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}))
 	l.run(l.a, l.a.s.Start(file))
 	l.run(l.b, l.b.s.StartUpload())
 	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: piece.BlockSize}}))
