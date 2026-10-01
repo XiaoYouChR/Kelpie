@@ -33,8 +33,8 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
-// Ports are the engine's only ways out: sockets, files, time and randomness.
-type Ports struct {
+// seams are the engine's only ways out: sockets, files, time and randomness.
+type seams struct {
 	Transport transport.Transport
 	Disk      disk.Disk
 	Clock     clock.Clock
@@ -79,7 +79,7 @@ type openNAT func(ctx context.Context, tcpPort, udpPort int) (func(context.Conte
 
 type Engine struct {
 	config Config
-	ports  Ports
+	ports  seams
 	events Events
 	caps   capacities
 
@@ -164,7 +164,7 @@ type uploadKey struct {
 func Start(config Config, events Events) (*Engine, error) {
 	var seed [32]byte
 	crand.Read(seed[:])
-	ports := Ports{
+	ports := seams{
 		Transport: transport.Real{},
 		Disk:      disk.Real{},
 		Clock:     clock.Real{},
@@ -179,13 +179,7 @@ func Start(config Config, events Events) (*Engine, error) {
 	return build(config, ports, events, defaultCapacities, mapPorts)
 }
 
-// Build runs an Engine on the given ports; tests pass fakes. UPnP is never
-// attempted.
-func Build(config Config, ports Ports, events Events) (*Engine, error) {
-	return build(config, ports, events, defaultCapacities, nil)
-}
-
-func build(config Config, ports Ports, events Events, caps capacities, mapPorts openNAT) (*Engine, error) {
+func build(config Config, ports seams, events Events, caps capacities, mapPorts openNAT) (*Engine, error) {
 	state, err := store.Load(config.DataFolder)
 	if err != nil {
 		return nil, toStartFailed(err)

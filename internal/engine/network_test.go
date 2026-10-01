@@ -42,7 +42,7 @@ func TestMatchCarrierNAT(t *testing.T) {
 func (n *node) startMapped(external string) {
 	t := n.w.t
 	n.events = buildRecorder()
-	ports := Ports{Transport: n.host, Disk: n.disk, Clock: n.w.clock, Rand: rand.New(rand.NewPCG(1, 1))}
+	ports := seams{Transport: n.host, Disk: n.disk, Clock: n.w.clock, Rand: rand.New(rand.NewPCG(1, 1))}
 	mapPorts := func(context.Context, int, int) (func(context.Context) error, netip.Addr, error) {
 		return func(context.Context) error { return nil }, netip.MustParseAddr(external), nil
 	}
