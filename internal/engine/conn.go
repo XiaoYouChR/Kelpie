@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/disk"
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
@@ -51,10 +52,9 @@ type conn struct {
 	isOutgoing   bool
 	isObfuscated bool
 	out          *leafQueue[outItem]
-	session      *peer.Session
-	// files are the downloads this connection serves, in the order they
-	// were added; the first one is the started one.
-	files []wire.Hash
+	// session is the peer's state machine, from the dial on; nil on a server
+	// connection. Its Files are the downloads this connection serves.
+	session *peer.Session
 	// uploadFile is the file the peer queued for with us, and uploadParts
 	// what it said it has of it, for answering Source Exchange.
 	uploadFile  wire.Hash
@@ -105,6 +105,7 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 	c := e.addConn(remote, isServer, true)
 	c.isObfuscated = obfuscateFor != wire.Hash{} || obfuscationPort != 0
 	if !isServer {
+		c.session = peer.BuildOutgoing(c.remote)
 		e.recentConnects = append(e.recentConnects, e.now())
 	}
 	keyPart := [4]byte(binary.LittleEndian.AppendUint32(nil, e.ports.Rand.Uint32()))
@@ -248,15 +249,7 @@ func (e *Engine) onConnOpened(m connOpened) {
 		e.runServer(e.server.OnConnected(c.remote))
 		return
 	}
-	session, out := peer.BuildOutgoing(e.buildPeerConfig(c), c.remote, e.now())
-	c.session = session
-	e.runSession(c, out)
-	for _, h := range c.files {
-		if r := e.runByHash[h]; r != nil {
-			e.addSessionFile(c, r)
-		}
-	}
-	e.startFirstFile(c)
+	e.runSession(c, c.session.OnOpened(e.buildPeerConfig(c), e.now()))
 }
 
 func (e *Engine) startConnLeaves(c *conn) {
@@ -285,6 +278,7 @@ func (e *Engine) buildPeerConfig(c *conn) peer.Config {
 		SourcesByHash: func(file wire.Hash, parts piece.Set) []peer.Source {
 			return e.buildPeerSources(file, c, parts)
 		},
+		CanAskSlot: e.canAskSlot,
 	}
 	if e.kad != nil {
 		cfg.KadPort = uint16(e.udpPort)
@@ -435,18 +429,21 @@ func (e *Engine) closeConn(c *conn, reason string) {
 	}
 	e.onKadConnClosed(c)
 	e.onBuddyConnClosed(c)
-	for _, h := range c.files {
-		r := e.runByHash[h]
-		if r == nil || r.transfer == nil {
-			continue
-		}
-		if c.isHandshaken {
-			e.runTransferActions(r, r.transfer.OnPeerGone(c.id, reason, now))
-		} else if c.isOutgoing {
-			e.runTransferActions(r, r.transfer.OnConnectFailed(c.remote, reason, now))
+	for _, h := range c.session.Files() {
+		if r := e.runByHash[h]; r != nil && r.transfer != nil {
+			e.removeTransferPeer(c, r, reason, now)
 		}
 	}
-	c.files = nil
+}
+
+// removeTransferPeer tells r that c no longer serves it: as a peer gone once
+// the transfer knows c from its handshake, as a failed connect before.
+func (e *Engine) removeTransferPeer(c *conn, r *run, reason string, now time.Time) {
+	if c.isHandshaken {
+		e.runTransferActions(r, r.transfer.OnPeerGone(c.id, reason, now))
+	} else if c.isOutgoing {
+		e.runTransferActions(r, r.transfer.OnConnectFailed(c.remote, reason, now))
+	}
 }
 
 func (e *Engine) sortedConns() []*conn {
@@ -496,9 +493,6 @@ func (e *Engine) runSession(c *conn, out peer.Output) {
 		return
 	}
 	for _, p := range out.Send {
-		if ask, ok := p.(client.StartUploadRequest); ok {
-			e.onSlotAsked(c, ask.Hash)
-		}
 		e.sendPacket(c, p, wire.Hash{}, 0)
 	}
 	for _, event := range out.Events {
@@ -535,6 +529,8 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		if r := e.downloadByHash(ev.File); r != nil {
 			e.runTransferActions(r, r.transfer.OnQueued(c.id, int(ev.Rank), now))
 		}
+	case peer.SlotAsked:
+		e.onSlotAsked(c, ev.File)
 	case peer.SlotGranted:
 		e.onSlotGranted(c, ev.File)
 	case peer.NoNeededParts:
@@ -601,7 +597,7 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	if caps.Port != 0 {
 		e.uploadEndpoints[uploadKey{ev.UserHash, c.remote.Addr()}] = uploadTarget{c.endpoint(), wire.CanObfuscate(caps.CryptOptions, ev.UserHash)}
 	}
-	for _, h := range slices.Clone(c.files) {
+	for _, h := range c.session.Files() {
 		if r := e.downloadByHash(h); r != nil && !c.isClosed {
 			e.addTransferPeer(c, r)
 		}
@@ -613,7 +609,6 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 			}
 		}
 	}
-	e.startFirstFile(c)
 	if !c.isClosed {
 		e.onKadHandshake(c)
 		e.onBuddyHandshake(c)
@@ -655,46 +650,23 @@ func (e *Engine) addTransferPeer(c *conn, r *run) {
 // addFile makes c serve download r: right away on a handshaken
 // connection, or once the handshake completes.
 func (e *Engine) addFile(c *conn, r *run) {
-	h := r.file.Hash
-	if slices.Contains(c.files, h) {
+	if slices.Contains(c.session.Files(), r.file.Hash) {
 		return
 	}
-	c.files = append(c.files, h)
-	if c.session == nil {
-		return
-	}
-	e.addSessionFile(c, r)
+	e.runSession(c, c.session.Add(r.file.Hash, r.file.Size, r.share.Parts))
 	if c.isHandshaken && !c.isClosed {
 		e.addTransferPeer(c, r)
 	}
-	e.startFirstFile(c)
-}
-
-func (e *Engine) addSessionFile(c *conn, r *run) {
-	e.runSession(c, c.session.Add(r.file.Hash, r.file.Size, r.share.Parts))
 }
 
 // removeFile stops c serving download h and tells the transfer.
 func (e *Engine) removeFile(c *conn, h wire.Hash, reason string) {
-	i := slices.Index(c.files, h)
-	if i < 0 {
+	if c.isServer || !slices.Contains(c.session.Files(), h) {
 		return
 	}
-	c.files = slices.Delete(c.files, i, i+1)
-	if c.session != nil {
-		e.runSession(c, c.session.Remove(h))
-		e.startFirstFile(c)
-	}
+	e.runSession(c, c.session.Remove(h))
 	if r := e.downloadByHash(h); r != nil && c.isHandshaken {
 		e.runTransferActions(r, r.transfer.OnPeerGone(c.id, reason, e.now()))
-	}
-}
-
-// startFirstFile asks for a slot for the oldest download on c; eD2k grants
-// slots per client, so one file is asked for at a time (see a4af.go).
-func (e *Engine) startFirstFile(c *conn) {
-	if len(c.files) > 0 && c.session != nil && !c.isClosed && e.canAskSlot(c, c.files[0]) {
-		e.runSession(c, c.session.Start(c.files[0]))
 	}
 }
 
@@ -707,10 +679,11 @@ func (e *Engine) onSlotGranted(c *conn, file wire.Hash) {
 				e.addFile(c, e.runByHash[h])
 			}
 		}
-		if len(c.files) == 0 || c.isClosed {
+		files := c.session.Files()
+		if len(files) == 0 || c.isClosed {
 			return
 		}
-		file = c.files[0]
+		file = files[0]
 	}
 	if r := e.downloadByHash(file); r != nil {
 		e.runTransferActions(r, r.transfer.OnSlotGranted(c.id, e.now()))
@@ -834,7 +807,7 @@ func (e *Engine) buildPeerSources(file wire.Hash, asking *conn, askerParts piece
 		caps := c.session.Capabilities()
 		isLowID := caps.ClientID != 0 && wire.IsLowID(caps.ClientID)
 		if isSeed && (c.uploadFile != file || isLowID || !matchNeededSource(c.uploadParts, askerParts)) ||
-			!isSeed && !slices.Contains(c.files, file) {
+			!isSeed && !slices.Contains(c.session.Files(), file) {
 			continue
 		}
 		src := peer.Source{Port: caps.Port, UserHash: c.session.UserHash(), IPv6: caps.IPv6, CryptOptions: caps.CryptOptions}

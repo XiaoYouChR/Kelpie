@@ -69,6 +69,8 @@ const (
 	// awaitingHelloAnswer: we opened it and sent our Hello.
 	awaitingHelloAnswer
 	handshaken
+	// connecting: we are still dialling; the session has no Config yet.
+	connecting
 )
 
 func (s *Session) onGreeting(p wire.Packet, out *Output) {
@@ -102,9 +104,15 @@ func (s *Session) onGreeting(p wire.Packet, out *Output) {
 		s.earlyEmuleInfo = nil
 	}
 	s.greeting = handshaken
+	// The engine attaches a connection's files to their transfers on
+	// HandshakeCompleted, so the files the peer cannot serve go first.
+	s.rejectLargeFiles(out)
 	out.add(HandshakeCompleted{UserHash: s.userHash, YourIP: hello.YourIP})
 	s.sendIdentState(out)
-	s.sendFileRequests(out)
+	for _, d := range s.down.files {
+		s.sendFileRequest(d, out)
+	}
+	s.startFirstFile(out)
 }
 
 func (s *Session) setHello(h client.Hello) {

@@ -68,6 +68,7 @@ func (w *world) addScriptedPeer(ip string, f testFile) *scriptedPeer {
 	}
 	p.cfg.ShareByHash = p.shareByHash
 	p.cfg.SourcesByHash = func(wire.Hash, piece.Set) []peer.Source { return nil }
+	p.cfg.CanAskSlot = func(_, _ wire.Hash) bool { return true }
 	listener, err := p.host.OpenListener(peerPort)
 	if err != nil {
 		w.t.Fatal(err)
@@ -92,27 +93,24 @@ func (p *scriptedPeer) endpoint() netip.AddrPort {
 // open connects to n and sends our Hello.
 func (p *scriptedPeer) open(n *node) {
 	p.w.t.Helper()
-	netConn, session, out := p.openSession(n)
-	p.run(netConn, session, out)
+	p.openSession(n, peer.BuildOutgoing(n.endpoint()))
 }
 
 // download connects to n and queues for p's file, telling n it has parts.
 func (p *scriptedPeer) download(n *node, parts piece.Set) {
 	p.w.t.Helper()
-	netConn, session, out := p.openSession(n)
+	session := peer.BuildOutgoing(n.endpoint())
 	session.Add(p.file, p.share.Size, parts)
-	session.Start(p.file)
-	p.run(netConn, session, out)
+	p.openSession(n, session)
 }
 
-func (p *scriptedPeer) openSession(n *node) (net.Conn, *peer.Session, peer.Output) {
+func (p *scriptedPeer) openSession(n *node, session *peer.Session) {
 	p.w.t.Helper()
 	netConn, err := p.host.OpenTCP(context.Background(), n.endpoint())
 	if err != nil {
 		p.w.t.Fatal(err)
 	}
-	session, out := peer.BuildOutgoing(p.cfg, n.endpoint(), p.w.clock.Now())
-	return netConn, session, out
+	p.run(netConn, session, session.OnOpened(p.cfg, p.w.clock.Now()))
 }
 
 func (p *scriptedPeer) run(netConn net.Conn, session *peer.Session, first peer.Output) {

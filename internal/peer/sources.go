@@ -47,7 +47,8 @@ type sourceState struct {
 // SOURCECLIENTREASKS; otherwise it does nothing.
 func (s *Session) RequestSources(file wire.Hash, now time.Time) Output {
 	var out Output
-	if s.greeting != handshaken || !s.caps.HasSourceExchange2 || s.down.files[file] == nil ||
+	d := s.downloadByHash(file)
+	if s.greeting != handshaken || !s.caps.HasSourceExchange2 || d == nil ||
 		!s.sx.lastRequest.IsZero() && now.Sub(s.sx.lastRequest) < sourceInterval {
 		return out
 	}
@@ -61,7 +62,7 @@ func (s *Session) RequestSources(file wire.Hash, now time.Time) Output {
 	// aMule 2.3 closes the connection on a standalone OP_REQUESTSOURCES2
 	// (it checks the body for the 16 bytes of the old OP_REQUESTSOURCES);
 	// inside a multipacket, where eMule puts it too, it is read right.
-	s.sendMultiPacket(file, s.down.files[file].size, []wire.Packet{request}, &out)
+	s.sendMultiPacket(file, d.size, []wire.Packet{request}, &out)
 	return out
 }
 

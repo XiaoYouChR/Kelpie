@@ -28,7 +28,6 @@ func TestOversizedCompressedPartCloses(t *testing.T) {
 	size := piece.BlockSize
 	file, _ := addShare(l.b, 1, size, true)
 	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
-	l.run(l.a, l.a.s.Start(file))
 	l.run(l.b, l.b.s.StartUpload())
 	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: size}}))
 	part := client.CompressedPart{Hash: file, PackedSize: 1 << 30, Data: make([]byte, 10240)}
@@ -43,7 +42,6 @@ func TestRequestedBlocksAreCapped(t *testing.T) {
 	size := 100 * int64(1024)
 	file, data := addShare(l.b, 1, size, false)
 	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
-	l.run(l.a, l.a.s.Start(file))
 	l.run(l.b, l.b.s.StartUpload())
 	request := func(first int) {
 		p := client.RequestParts{Hash: file}

@@ -57,7 +57,7 @@ func (s *Session) RequestRecovery(file wire.Hash, part int, root wire.AICHHash) 
 }
 
 func (s *Session) onRoot(file wire.Hash, root wire.AICHHash, out *Output) {
-	if s.down.files[file] != nil {
+	if s.downloadByHash(file) != nil {
 		out.add(RootReceived{File: file, Root: root})
 	}
 }

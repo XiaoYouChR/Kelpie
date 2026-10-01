@@ -65,10 +65,13 @@ type Queued struct {
 	Rank uint32
 }
 
+// SlotAsked: we asked the peer for an upload slot for File.
+type SlotAsked struct{ File wire.Hash }
+
 // SlotGranted: the peer accepted our upload request. File is zero when the
-// grant arrives before any Start on this connection, typically on a
-// connection the peer opened to us; the engine then Adds and Starts the file
-// it queued for with this user.
+// grant arrives before any file started on this connection, typically on a
+// connection the peer opened to us; the engine then Adds the file it queued
+// for with this user.
 type SlotGranted struct{ File wire.Hash }
 
 // NoNeededParts: the peer has no part of File we still need, or its slot
@@ -115,6 +118,7 @@ func (StatusReceived) isEvent()     {}
 func (HashSetReceived) isEvent()    {}
 func (FileRejected) isEvent()       {}
 func (Queued) isEvent()             {}
+func (SlotAsked) isEvent()          {}
 func (SlotGranted) isEvent()        {}
 func (NoNeededParts) isEvent()      {}
 func (BlocksWanted) isEvent()       {}
