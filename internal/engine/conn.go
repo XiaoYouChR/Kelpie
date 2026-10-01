@@ -13,6 +13,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/disk"
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
 	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
 	"github.com/XiaoYouChR/Kelpie/internal/peer"
@@ -29,6 +30,18 @@ import (
 // TCP port sends over the connection it opened; wire/client leaves it
 // undecoded.
 const opKadFirewallAck byte = 0xA8
+
+const (
+	// uploadBufferSize is how much upload data a connection may have read
+	// and not yet written before its next block is read: aMule's
+	// 5*EMBLOCKSIZE+1 (UploadDiskIOThread.cpp:205-212).
+	uploadBufferSize = 5 * piece.BlockSize
+	// maxWriterBacklog bounds the packets waiting beyond a writer's
+	// channel; a peer that does not read past it is dropped. aMule has no
+	// such limit; upload data alone stays far below it under
+	// uploadBufferSize.
+	maxWriterBacklog = 1024
+)
 
 // conn is one TCP connection: to a peer, or to the server.
 type conn struct {
@@ -47,11 +60,15 @@ type conn struct {
 	files []wire.Hash
 	// uploadFile is the file the peer queued for with us, and uploadParts
 	// what it said it has of it, for answering Source Exchange.
-	uploadFile   wire.Hash
-	uploadParts  piece.Set
-	isHandshaken bool
-	isUploading  bool
-	isClosed     bool
+	uploadFile  wire.Hash
+	uploadParts piece.Set
+	// uploadBlocks are requested blocks not yet read; uploadBuffered counts
+	// the upload bytes being read or waiting to be written.
+	uploadBlocks   []diskJob
+	uploadBuffered int64
+	isHandshaken   bool
+	isUploading    bool
+	isClosed       bool
 }
 
 // outItem is one packet for a writer. Payload counts upload data, for the
@@ -322,7 +339,11 @@ func (e *Engine) runWriter(ctx context.Context, id uint64, remote netip.AddrPort
 }
 
 func (e *Engine) sendPacket(c *conn, p wire.Packet, file wire.Hash, payload int64) {
-	if !c.isClosed {
+	switch {
+	case c.isClosed:
+	case len(c.out.backlog) >= maxWriterBacklog:
+		e.closeConn(c, "send queue full")
+	default:
 		c.out.send(outItem{p, file, payload})
 	}
 }
@@ -340,6 +361,8 @@ func (e *Engine) onPacketSent(m packetSent) {
 	if m.payload == 0 {
 		return
 	}
+	c.uploadBuffered -= m.payload
+	e.sendUploadReads(c)
 	e.queue.OnSent(c.id, m.payload)
 	if r := e.runByHash[m.file]; r != nil && r.transfer != nil {
 		r.transfer.OnUploaded(m.payload, now)
@@ -516,6 +539,7 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 	case peer.UploadCancelled:
 		c.isUploading = false
 		c.uploadFile = wire.Hash{}
+		c.uploadBlocks = nil
 		e.queue.OnConnectionGone(c.id)
 	case peer.SourcesRequested:
 		e.runSession(c, c.session.SendSources(ev.File, e.buildPeerSources(ev.File, c, ev.Parts)))
@@ -692,15 +716,46 @@ func (e *Engine) onBlocksRequested(c *conn, ev peer.BlocksRequested) {
 		if r.share.Parts.Count() == 0 || !r.share.Parts[block.Part()] || !r.share.Parts[piece.Block{Begin: block.End - 1}.Part()] {
 			continue
 		}
-		e.sendDiskJob(diskJob{kind: jobRead, run: r.id, file: r.handle, block: block, conn: c.id, hash: ev.File})
+		c.uploadBlocks = append(c.uploadBlocks, diskJob{kind: jobRead, run: r.id, file: r.handle, block: block, conn: c.id, hash: ev.File})
+	}
+	e.sendUploadReads(c)
+}
+
+// sendUploadReads reads c's next requested blocks while less than
+// uploadBufferSize of its upload data is read and not yet written.
+func (e *Engine) sendUploadReads(c *conn) {
+	for len(c.uploadBlocks) > 0 && c.uploadBuffered < uploadBufferSize && !c.isClosed {
+		job := c.uploadBlocks[0]
+		c.uploadBlocks = c.uploadBlocks[1:]
+		if e.runs[job.run] == nil {
+			continue
+		}
+		c.uploadBuffered += job.block.End - job.block.Begin
+		e.sendDiskJob(job)
 	}
 }
 
-func (e *Engine) onBlockRead(c *conn, file wire.Hash, block piece.Block, data []byte) {
-	out := c.session.SendBlock(file, block, data)
-	for _, p := range out.Send {
-		e.sendPacket(c, p, file, toPayload(p))
+// onBlockRead uploads a block read for a connection; from then on its
+// packets, not the block, count in uploadBuffered.
+func (e *Engine) onBlockRead(d diskDone) {
+	c := e.conns[d.job.conn]
+	if c == nil {
+		return
 	}
+	c.uploadBuffered -= d.job.block.End - d.job.block.Begin
+	r := e.runs[d.job.run]
+	switch {
+	case r == nil || r.transfer == nil:
+	case d.err != nil:
+		r.transfer.OnDiskFailed(disk.IsFull(d.err), d.err.Error())
+	case c.session != nil:
+		for _, p := range c.session.SendBlock(d.job.hash, d.job.block, d.data).Send {
+			payload := toPayload(p)
+			c.uploadBuffered += payload
+			e.sendPacket(c, p, d.job.hash, payload)
+		}
+	}
+	e.sendUploadReads(c)
 }
 
 func toPayload(p wire.Packet) int64 {
@@ -739,6 +794,7 @@ func (e *Engine) runQueueActions(actions []upload.Action) {
 		case upload.Revoke:
 			if c := e.conns[a.Conn]; c != nil && c.session != nil {
 				c.isUploading = false
+				c.uploadBlocks = nil
 				e.runSession(c, c.session.StopUpload())
 			}
 		case upload.SendRank:
