@@ -200,7 +200,7 @@ func toKadCallback(a transfer.RequestKadCallback, file wire.Hash) kad.Callback {
 // offered. The source count is the last Progress, at most a second old.
 func (e *Engine) buildServerWanted() []server.Wanted {
 	var wanted []server.Wanted
-	for _, r := range e.runList {
+	for _, r := range e.runs {
 		if r.transfer == nil {
 			continue
 		}
@@ -220,7 +220,7 @@ func (e *Engine) buildServerWanted() []server.Wanted {
 // own searches, so it is sent every second.
 func (e *Engine) buildKadWanted() kad.Wanted {
 	var wanted kad.Wanted
-	for _, r := range e.runList {
+	for _, r := range e.runs {
 		if r.transfer == nil {
 			continue
 		}
@@ -295,7 +295,7 @@ func (e *Engine) onDatagram(from netip.AddrPort, data []byte) {
 		case client.DirectCallbackReq:
 			e.onDirectCallbackReq(from, p)
 		case client.ReaskAck:
-			for _, r := range slices.Clone(e.runList) {
+			for _, r := range slices.Clone(e.runs) {
 				if e.downloadByHash(r.file.Hash) != nil {
 					e.runTransferActions(r, r.transfer.OnReaskAnswered(from, int(p.Rank), now))
 				}

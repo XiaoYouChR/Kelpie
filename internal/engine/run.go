@@ -49,7 +49,7 @@ func (e *Engine) onCommand(command Command) {
 			e.events.SendEnded(c.ID, err)
 		}
 	case StopCommand:
-		if r := e.runs[c.ID]; r != nil {
+		if r := e.runByID(c.ID); r != nil {
 			e.stopRun(r, nil)
 		}
 	case RemoveCommand:
@@ -132,9 +132,16 @@ func isComplete(state *transfer.State) bool {
 }
 
 func (e *Engine) addRun(r *run) {
-	e.runs[r.id] = r
 	e.runByHash[r.file.Hash] = r
-	e.runList = append(e.runList, r)
+	e.runs = append(e.runs, r)
+}
+
+// runByID searches the runs: only commands and disk results name a run by id.
+func (e *Engine) runByID(id RunID) *run {
+	if i := slices.IndexFunc(e.runs, func(r *run) bool { return r.id == id }); i >= 0 {
+		return e.runs[i]
+	}
+	return nil
 }
 
 func (e *Engine) startTransfer(r *run, state *transfer.State) {
@@ -211,9 +218,8 @@ func (e *Engine) stopRun(r *run, err *Error) {
 		e.state.Transfers[h] = store.Transfer(r.transfer.ToState())
 	}
 	r.handle.Close()
-	delete(e.runs, r.id)
 	delete(e.runByHash, h)
-	e.runList = slices.DeleteFunc(e.runList, func(other *run) bool { return other == r })
+	e.runs = slices.DeleteFunc(e.runs, func(other *run) bool { return other == r })
 	e.removeKnownSources(h)
 	e.events.SendEnded(r.id, err)
 	e.requestSave()
@@ -221,7 +227,7 @@ func (e *Engine) stopRun(r *run, err *Error) {
 
 // refreshRuns ends every run whose Transfer reached its outcome.
 func (e *Engine) refreshRuns() {
-	for _, r := range slices.Clone(e.runList) {
+	for _, r := range slices.Clone(e.runs) {
 		if r.transfer == nil {
 			continue
 		}
@@ -265,14 +271,14 @@ func (e *Engine) refreshProgress(r *run, isFirst bool) {
 
 func (e *Engine) runTransfers(now time.Time) {
 	budget := e.connectBudget(now)
-	n := len(e.runList)
+	n := len(e.runs)
 	order := make([]*run, 0, n)
 	for i := range n {
-		order = append(order, e.runList[(e.budgetCursor+i)%n])
+		order = append(order, e.runs[(e.budgetCursor+i)%n])
 	}
 	e.budgetCursor++
 	for _, r := range order {
-		if r.transfer == nil || e.runs[r.id] != r {
+		if r.transfer == nil || e.runByHash[r.file.Hash] != r {
 			continue
 		}
 		actions := r.transfer.OnTick(transfer.Tick{
@@ -305,7 +311,7 @@ func (e *Engine) connectBudget(now time.Time) int {
 func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 	now := e.now()
 	for _, action := range actions {
-		if e.runs[r.id] != r {
+		if e.runByHash[r.file.Hash] != r {
 			return
 		}
 		switch a := action.(type) {
@@ -401,7 +407,7 @@ func addToSet[K comparable](sets map[K]map[wire.Hash]bool, key K, file wire.Hash
 func (e *Engine) refreshKnownSources() {
 	clear(e.sourceUsers)
 	clear(e.sourceLowIDs)
-	for _, r := range e.runList {
+	for _, r := range e.runs {
 		if r.transfer == nil {
 			continue
 		}
@@ -415,7 +421,7 @@ func (e *Engine) refreshKnownSources() {
 // longer hold back a request on an incoming connection.
 func (e *Engine) refreshAsked() {
 	now := e.now()
-	for _, r := range e.runList {
+	for _, r := range e.runs {
 		maps.DeleteFunc(r.asked, func(_ wire.Hash, asked time.Time) bool {
 			return now.Sub(asked) >= fileReaskTime
 		})
@@ -439,7 +445,7 @@ func (e *Engine) removeKnownSources(file wire.Hash) {
 // run order.
 func (e *Engine) matchKnownSource(user wire.Hash, caps peer.Capabilities) []wire.Hash {
 	var files []wire.Hash
-	for _, r := range e.runList {
+	for _, r := range e.runs {
 		h := r.file.Hash
 		if e.downloadByHash(h) != nil && (e.sourceUsers[user][h] || e.sourceLowIDs[lowIDKey{caps.ClientID, caps.Server}][h]) {
 			files = append(files, h)

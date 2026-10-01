@@ -312,7 +312,7 @@ func buildIdleEngine(t *testing.T, clock *clock.Fake) (*Engine, *run) {
 	e := &Engine{
 		ports:        seams{Clock: clock},
 		runByHash:    map[wire.Hash]*run{file.Hash: r},
-		runList:      []*run{r},
+		runs:         []*run{r},
 		sourceUsers:  map[wire.Hash]map[wire.Hash]bool{},
 		sourceLowIDs: map[lowIDKey]map[wire.Hash]bool{},
 		a4afClients:  map[wire.Hash]*a4afClient{},

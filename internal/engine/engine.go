@@ -136,9 +136,10 @@ type Engine struct {
 
 	nextConn        uint64
 	conns           map[uint64]*conn
-	runs            map[RunID]*run
+	// runs are the open runs in the order they started; runByHash indexes
+	// them.
+	runs            []*run
 	runByHash       map[wire.Hash]*run
-	runList         []*run
 	sourceUsers     map[wire.Hash]map[wire.Hash]bool
 	sourceLowIDs    map[lowIDKey]map[wire.Hash]bool
 	uploadEndpoints map[uploadKey]uploadTarget
@@ -207,7 +208,6 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 		saverDone:       make(chan struct{}),
 		disk:            buildLeafQueue[diskJob](caps.disk),
 		conns:           map[uint64]*conn{},
-		runs:            map[RunID]*run{},
 		runByHash:       map[wire.Hash]*run{},
 		sourceUsers:     map[wire.Hash]map[wire.Hash]bool{},
 		sourceLowIDs:    map[lowIDKey]map[wire.Hash]bool{},
@@ -588,7 +588,7 @@ func (e *Engine) onTick() {
 	if e.kad != nil {
 		e.kad.SetWanted(e.buildKadWanted())
 	}
-	for _, r := range e.runList {
+	for _, r := range e.runs {
 		e.refreshProgress(r, false)
 	}
 	if now.Sub(e.lastSave) >= saveInterval {
@@ -672,7 +672,7 @@ func (e *Engine) closeNAT(unmap func(context.Context) error) {
 // stop is the hub's last step: end every run, then save and close
 // everything it owns.
 func (e *Engine) stop() error {
-	for _, r := range append([]*run(nil), e.runList...) {
+	for _, r := range append([]*run(nil), e.runs...) {
 		e.stopRun(r, nil)
 	}
 	if unmap := e.unmapNAT; unmap != nil {
@@ -732,7 +732,7 @@ func (e *Engine) buildState() store.State {
 	for _, c := range e.ledger.ToCredits() {
 		state.Credits[c.User] = store.Credit{Uploaded: c.Uploaded, Downloaded: c.Downloaded, PublicKey: c.PublicKey, LastSeen: c.LastSeen}
 	}
-	for _, r := range e.runList {
+	for _, r := range e.runs {
 		if r.transfer != nil {
 			state.Transfers[r.file.Hash] = store.Transfer(r.transfer.ToState())
 		}

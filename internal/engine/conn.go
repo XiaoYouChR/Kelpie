@@ -757,7 +757,7 @@ func (e *Engine) sendUploadReads(c *conn) {
 	for len(c.uploadBlocks) > 0 && c.uploadBuffered < uploadBufferSize && !c.isClosed {
 		job := c.uploadBlocks[0]
 		c.uploadBlocks = c.uploadBlocks[1:]
-		if e.runs[job.run] == nil {
+		if e.runByID(job.run) == nil {
 			continue
 		}
 		c.uploadBuffered += job.block.End - job.block.Begin
@@ -773,7 +773,7 @@ func (e *Engine) onBlockRead(d diskDone) {
 		return
 	}
 	c.uploadBuffered -= d.job.block.End - d.job.block.Begin
-	r := e.runs[d.job.run]
+	r := e.runByID(d.job.run)
 	switch {
 	case r == nil || r.transfer == nil:
 	case d.err != nil:
