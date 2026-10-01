@@ -149,7 +149,8 @@ func buildAddr(b []byte, addr netip.Addr) []byte {
 }
 
 // ToAddr converts a Kad IPv4 integer, as carried in packets and in the
-// TagSourceIP and TagServerIP tags, to an address.
+// TagSourceIP tag, to an address. TagServerIP holds a buddy IP in eD2k byte
+// order (eMule publishes the buddy's GetIP()); decode it with wire.ToAddr.
 func ToAddr(v uint32) netip.Addr {
 	var a [4]byte
 	binary.BigEndian.PutUint32(a[:], v)
