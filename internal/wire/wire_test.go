@@ -307,3 +307,18 @@ func TestTagListCap(t *testing.T) {
 		t.Fatalf("%d tags: got %d, want an error", maxTags+1, len(tags))
 	}
 }
+
+func TestToEmuleVersion(t *testing.T) {
+	for version, want := range map[string]uint32{
+		"v1.2.3":    0x4B<<24 | 1<<17 | 2<<10 | 3<<7,
+		"1.2.3":     0x4B<<24 | 1<<17 | 2<<10 | 3<<7,
+		"1.2.3-dev": 0x4B<<24 | 1<<17 | 2<<10 | 3<<7,
+		"v0.10":     0x4B<<24 | 10<<10,
+		"dev":       0x4B << 24,
+		"1.2.9":     0x4B<<24 | 1<<17 | 2<<10 | 1<<7,
+	} {
+		if got := ToEmuleVersion(version); got != want {
+			t.Errorf("ToEmuleVersion(%q) = %#x, want %#x", version, got, want)
+		}
+	}
+}

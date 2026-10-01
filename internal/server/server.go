@@ -5,7 +5,6 @@ import (
 	"math/rand/v2"
 	"net/netip"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -43,11 +42,6 @@ const (
 	// source-request traffic on the same connection.
 	keepAliveTime = 20 * time.Minute
 )
-
-// compatibleClient is Kelpie's id in CT_EMULE_VERSION. eMule and aMule
-// assign 0-6, 0x0A, 0x14, 0x28, 0x32-0x36, 0x44, 0x98 and 0xFF (SO_*);
-// 0x4B ('K') is unassigned.
-const compatibleClient = 0x4B
 
 // Config is what the login needs about us.
 type Config struct {
@@ -298,7 +292,7 @@ func (s *Server) OnConnected(server netip.AddrPort, now time.Time) Output {
 		Name:         "Kelpie",
 		Version:      edonkeyVersion,
 		Flags:        loginFlags,
-		EmuleVersion: toEmuleVersion(s.config.Version),
+		EmuleVersion: wire.ToEmuleVersion(s.config.Version),
 	}
 	return Output{To: server, Send: []wire.Packet{login}}
 }
@@ -695,19 +689,4 @@ func (s *Server) toOffered(w Wanted) packet.OfferedFile {
 
 func (s *Server) canTCP(size uint64) bool {
 	return size <= largeFileSize || s.tcpFlags&packet.FlagLargeFiles != 0
-}
-
-// toEmuleVersion packs "v1.2.3" into CT_EMULE_VERSION: compatible client,
-// then major, minor and update in 7, 7 and 3 bits.
-func toEmuleVersion(version string) uint32 {
-	var parts [3]uint32
-	for i, part := range strings.SplitN(strings.TrimPrefix(version, "v"), ".", 3) {
-		for _, r := range part {
-			if r < '0' || r > '9' {
-				break
-			}
-			parts[i] = parts[i]*10 + uint32(r-'0')
-		}
-	}
-	return compatibleClient<<24 | (parts[0]&0x7F)<<17 | (parts[1]&0x7F)<<10 | (parts[2]&0x07)<<7
 }

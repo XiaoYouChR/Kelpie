@@ -201,7 +201,7 @@ func TestLogin(t *testing.T) {
 		UserHash: userHash, Port: 4662, Name: "Kelpie", Version: 0x3C,
 		Flags: packet.CapZlib | packet.CapNewTags | packet.CapUnicode | packet.CapLargeFiles |
 			packet.CapSupportCrypt | packet.CapRequestCrypt,
-		EmuleVersion: compatibleClient<<24 | 1<<17 | 2<<10 | 3<<7,
+		EmuleVersion: 0x4B<<24 | 1<<17 | 2<<10 | 3<<7,
 	}
 	if len(out.Send) != 1 || !reflect.DeepEqual(out.Send[0], want) {
 		t.Fatalf("login = %+v, want %+v", out.Send, want)
