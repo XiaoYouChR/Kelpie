@@ -52,7 +52,7 @@ func (e *Engine) a4afClientByUser(user wire.Hash) *a4afClient {
 
 // onSlotAsked records that c sent OP_STARTUPLOADREQ for file.
 func (e *Engine) onSlotAsked(c *conn, file wire.Hash) {
-	client := e.a4afClientByUser(c.session.UserHash())
+	client := e.a4afClientByUser(c.session.Capabilities().UserHash)
 	client.file = file
 	client.lastAsked = e.now()
 	client.endpoint = c.endpoint()
@@ -100,14 +100,10 @@ func (e *Engine) deferUDPReask(r *run, to netip.AddrPort) bool {
 	return false
 }
 
-// canAskSlot tells whether c may ask its peer for a slot for file now: never
-// before the handshake names the peer, and for another download than the
-// one it was last asked for only after MIN_REQUESTTIME.
-func (e *Engine) canAskSlot(c *conn, file wire.Hash) bool {
-	if !c.isHandshaken {
-		return false
-	}
-	client := e.a4afClients[c.session.UserHash()]
+// canAskSlot is peer.Config.CanAskSlot: a client is asked for another
+// download than the one it was last asked for only after MIN_REQUESTTIME.
+func (e *Engine) canAskSlot(user, file wire.Hash) bool {
+	client := e.a4afClients[user]
 	return client == nil || client.file == file || e.now().Sub(client.lastAsked) >= minRequestTime
 }
 
@@ -121,11 +117,11 @@ func (e *Engine) canAskSlot(c *conn, file wire.Hash) bool {
 // the peer's AICH recovery data (PartFile.cpp:3838-3846).
 func (e *Engine) onNoNeededParts(c *conn, file wire.Hash) {
 	r := e.downloadByHash(file)
-	if r == nil || len(c.files) == 0 || c.files[0] != file {
+	if files := c.session.Files(); r == nil || len(files) == 0 || files[0] != file {
 		return
 	}
 	r.transfer.OnNoNeededParts(c.id)
-	user := c.session.UserHash()
+	user := c.session.Capabilities().UserHash
 	target := e.swapTarget(c, user, file, false)
 	if target == nil {
 		return
@@ -137,15 +133,17 @@ func (e *Engine) onNoNeededParts(c *conn, file wire.Hash) {
 	}
 }
 
-// onFileRejected swaps a peer that does not have a download to any other
-// download that knows it (aMule ClientTCPSocket.cpp:480-500,
-// SwapToAnotherFile(true, true, true)).
+// onFileRejected swaps a peer that does not have a download, which its
+// session already forgot, to any other download that knows it (aMule
+// ClientTCPSocket.cpp:480-500, SwapToAnotherFile(true, true, true)).
 func (e *Engine) onFileRejected(c *conn, file wire.Hash) {
-	e.removeFile(c, file, "no file")
-	if len(c.files) > 0 || c.isClosed {
+	if r := e.downloadByHash(file); r != nil {
+		e.removeTransferPeer(c, r, "no file", e.now())
+	}
+	if len(c.session.Files()) > 0 || c.isClosed {
 		return
 	}
-	if target := e.swapTarget(c, c.session.UserHash(), file, true); target != nil {
+	if target := e.swapTarget(c, c.session.Capabilities().UserHash, file, true); target != nil {
 		e.addFile(c, target)
 	}
 }
@@ -176,7 +174,7 @@ func (e *Engine) releaseA4AF(file wire.Hash) {
 func (e *Engine) swapTarget(c *conn, user, file wire.Hash, isAnyFile bool) *run {
 	var candidates []wire.Hash
 	if c != nil {
-		candidates = append(candidates, c.files...)
+		candidates = append(candidates, c.session.Files()...)
 	}
 	for _, r := range e.runs {
 		if r.transfer != nil && r.transfer.MatchSource(transfer.Source{UserHash: user}) {

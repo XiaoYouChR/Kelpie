@@ -89,7 +89,7 @@ func (e *Engine) onBuddyHandshake(c *conn) {
 		b.candidates = nil
 	case b.conn == nil && !c.isOutgoing:
 		in, ok := b.incoming[c.remote.Addr()]
-		if !ok || in.user != c.session.UserHash() {
+		if !ok || in.user != c.session.Capabilities().UserHash {
 			return
 		}
 		b.conn, b.isServing, b.id = c, true, in.id

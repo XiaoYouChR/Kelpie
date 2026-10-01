@@ -17,9 +17,10 @@ const largeFileSize = 4_290_048_000
 
 // downloadState is the download role. Every added file is probed for the
 // peer's parts, but the upload slot, which eD2k grants per client and not per
-// file, is asked for one started file at a time; started is zero until then.
+// file, is asked for one file at a time: the first one added, once
+// Config.CanAskSlot lets it start. started is that file, zero until then.
 type downloadState struct {
-	files    map[wire.Hash]*download
+	files    []*download
 	started  wire.Hash
 	slot     slot
 	lastData time.Time
@@ -36,6 +37,7 @@ const (
 )
 
 type download struct {
+	file      wire.Hash
 	size      int64
 	parts     piece.Set
 	hashSet   hashSet
@@ -64,49 +66,65 @@ type inFlight struct {
 	packed []byte
 }
 
-// Add asks the peer about file, of which we have parts. Before the
-// handshake completes the request waits for it.
+// Add asks the peer about file, of which we have parts. It may be called
+// from the moment the session is built; before the handshake completes the
+// request waits for it.
 func (s *Session) Add(file wire.Hash, size int64, parts piece.Set) Output {
 	var out Output
-	if s.down.files[file] != nil {
+	if s.downloadByHash(file) != nil {
 		return out
 	}
-	d := &download{size: size, parts: parts}
-	s.down.files[file] = d
+	d := &download{file: file, size: size, parts: parts}
+	s.down.files = append(s.down.files, d)
 	if s.greeting == handshaken {
-		s.sendFileRequest(file, d, &out)
+		s.sendFileRequest(d, &out)
 	}
+	s.startFirstFile(&out)
 	return out
 }
 
-// Remove forgets file, cancelling its slot if it holds one. The engine
-// releases the blocks it had requested.
+// Remove forgets file, cancelling its slot if it holds one, and lets the
+// next file start. The engine releases the blocks it had requested.
 func (s *Session) Remove(file wire.Hash) Output {
 	var out Output
 	if s.down.started == file && s.down.slot == slotGranted {
 		out.send(client.CancelTransfer{})
 	}
 	s.removeFile(file, &out)
+	s.startFirstFile(&out)
 	return out
 }
 
-// Start asks the peer for an upload slot for file once its parts are known.
-// Starting another file gives up the slot of the previous one.
-func (s *Session) Start(file wire.Hash) Output {
-	var out Output
-	if s.down.files[file] == nil || s.down.started == file {
-		return out
+// Files lists the files the connection serves, in the order added.
+func (s *Session) Files() []wire.Hash {
+	files := make([]wire.Hash, 0, len(s.down.files))
+	for _, d := range s.down.files {
+		files = append(files, d.file)
 	}
-	if s.down.started != (wire.Hash{}) {
-		if s.down.slot == slotGranted {
-			out.send(client.CancelTransfer{})
+	return files
+}
+
+func (s *Session) downloadByHash(file wire.Hash) *download {
+	for _, d := range s.down.files {
+		if d.file == file {
+			return d
 		}
-		s.cancelInFlight(s.down.started, &out)
-		s.down.slot = slotIdle
 	}
-	s.down.started = file
-	s.runStarted(&out)
-	return out
+	return nil
+}
+
+// startFirstFile starts the oldest file once the handshake names the peer
+// and the engine's A4AF rules let us ask this client for it.
+func (s *Session) startFirstFile(out *Output) {
+	if s.greeting != handshaken || s.down.started != (wire.Hash{}) || len(s.down.files) == 0 {
+		return
+	}
+	first := s.down.files[0].file
+	if !s.cfg.CanAskSlot(s.caps.UserHash, first) {
+		return
+	}
+	s.down.started = first
+	s.runStarted(out)
 }
 
 // RequestHashSet asks the peer for file's part hashes once it has told its
@@ -115,17 +133,17 @@ func (s *Session) Start(file wire.Hash) Output {
 // the transfer picks that source.
 func (s *Session) RequestHashSet(file wire.Hash) Output {
 	var out Output
-	if d := s.down.files[file]; d != nil && d.hashSet == hashSetNone {
+	if d := s.downloadByHash(file); d != nil && d.hashSet == hashSetNone {
 		d.hashSet = hashSetWanted
-		s.sendHashSetRequest(file, d, &out)
+		s.sendHashSetRequest(d, &out)
 	}
 	return out
 }
 
-func (s *Session) sendHashSetRequest(file wire.Hash, d *download, out *Output) {
+func (s *Session) sendHashSetRequest(d *download, out *Output) {
 	if d.hashSet == hashSetWanted && d.peerParts != nil {
 		d.hashSet = hashSetRequested
-		out.send(client.HashSetRequest{Hash: file})
+		out.send(client.HashSetRequest{Hash: d.file})
 	}
 }
 
@@ -134,7 +152,7 @@ func (s *Session) sendHashSetRequest(file wire.Hash, d *download, out *Output) {
 // BlocksWanted.
 func (s *Session) Request(file wire.Hash, blocks []piece.Block) Output {
 	var out Output
-	d := s.down.files[file]
+	d := s.downloadByHash(file)
 	if d == nil || s.down.slot != slotGranted || s.down.started != file {
 		return out
 	}
@@ -168,30 +186,36 @@ func (s *Session) Stop() Output {
 
 func (s *Session) removeFile(file wire.Hash, out *Output) {
 	s.cancelInFlight(file, out)
-	delete(s.down.files, file)
+	s.down.files = slices.DeleteFunc(s.down.files, func(d *download) bool { return d.file == file })
 	delete(s.sx.asked, file)
 	if s.down.started == file {
 		s.down = downloadState{files: s.down.files}
 	}
 }
 
-func (s *Session) sendFileRequests(out *Output) {
-	files := make([]wire.Hash, 0, len(s.down.files))
-	for file := range s.down.files {
-		files = append(files, file)
-	}
-	slices.SortFunc(files, func(a, b wire.Hash) int { return bytes.Compare(a[:], b[:]) })
-	for _, file := range files {
-		s.sendFileRequest(file, s.down.files[file], out)
+// canServe tells whether the peer can serve d: one without large file
+// support cannot serve a file above 4 GB.
+func (s *Session) canServe(d *download) bool {
+	return d.size <= largeFileSize || s.features.hasLargeFiles
+}
+
+// rejectLargeFiles drops, at the handshake, the files the peer cannot serve.
+func (s *Session) rejectLargeFiles(out *Output) {
+	for _, d := range slices.Clone(s.down.files) {
+		if !s.canServe(d) {
+			s.removeFile(d.file, out)
+			out.add(FileRejected{File: d.file})
+		}
 	}
 }
 
-func (s *Session) sendFileRequest(file wire.Hash, d *download, out *Output) {
-	if d.size > largeFileSize && !s.features.hasLargeFiles {
-		s.removeFile(file, out)
-		out.add(FileRejected{File: file})
+func (s *Session) sendFileRequest(d *download, out *Output) {
+	if !s.canServe(d) {
+		s.removeFile(d.file, out)
+		out.add(FileRejected{File: d.file})
 		return
 	}
+	file := d.file
 	request := client.FileRequest{Hash: file}
 	// eMule reads these extensions by the version the sender advertised,
 	// which for us is client.ExtendedRequestsVersion.
@@ -231,7 +255,7 @@ func (s *Session) sendMultiPacket(file wire.Hash, size int64, requests []wire.Pa
 // file's and takes its AICH root as the peer's report, as eMule does
 // (ListenSocket.cpp:1312-1324).
 func (s *Session) onMultiPacketAnswerExt2(p client.MultiPacketAnswerExt2, out *Output) {
-	d := s.down.files[p.File.Hash]
+	d := s.downloadByHash(p.File.Hash)
 	if d == nil {
 		return
 	}
@@ -259,15 +283,15 @@ func (s *Session) onMultiPacketAnswer(answers []wire.Packet, out *Output) {
 }
 
 func (s *Session) onFileName(file wire.Hash, out *Output) {
-	d := s.down.files[file]
+	d := s.downloadByHash(file)
 	if d == nil || d.peerParts != nil || piece.PartCount(d.size) > 1 {
 		return
 	}
-	s.setPeerParts(file, d, piece.BuildFullSet(1), out)
+	s.setPeerParts(d, piece.BuildFullSet(1), out)
 }
 
 func (s *Session) onFileStatus(p client.FileStatus, out *Output) {
-	d := s.down.files[p.Hash]
+	d := s.downloadByHash(p.Hash)
 	if d == nil {
 		return
 	}
@@ -276,18 +300,18 @@ func (s *Session) onFileStatus(p client.FileStatus, out *Output) {
 		out.Close = closeProtocol
 		return
 	}
-	s.setPeerParts(p.Hash, d, parts, out)
+	s.setPeerParts(d, parts, out)
 }
 
-func (s *Session) setPeerParts(file wire.Hash, d *download, parts piece.Set, out *Output) {
+func (s *Session) setPeerParts(d *download, parts piece.Set, out *Output) {
 	d.peerParts = parts
-	out.add(StatusReceived{File: file, Parts: parts})
-	s.sendHashSetRequest(file, d, out)
+	out.add(StatusReceived{File: d.file, Parts: parts})
+	s.sendHashSetRequest(d, out)
 	s.runStarted(out)
 }
 
 func (s *Session) onHashSet(p client.HashSetAnswer, out *Output) {
-	d := s.down.files[p.Hash]
+	d := s.downloadByHash(p.Hash)
 	if d == nil || d.hashSet != hashSetRequested {
 		return
 	}
@@ -301,11 +325,12 @@ func (s *Session) onHashSet(p client.HashSetAnswer, out *Output) {
 }
 
 func (s *Session) onNoFile(file wire.Hash, out *Output) {
-	if s.down.files[file] == nil {
+	if s.downloadByHash(file) == nil {
 		return
 	}
 	s.removeFile(file, out)
 	out.add(FileRejected{File: file})
+	s.startFirstFile(out)
 }
 
 // runStarted moves the started file on as far as what we know allows: ask for
@@ -313,7 +338,7 @@ func (s *Session) onNoFile(file wire.Hash, out *Output) {
 // still need is not asked for a slot (aMule DS_NONEEDEDPARTS,
 // DownloadClient.cpp:459-466).
 func (s *Session) runStarted(out *Output) {
-	d := s.down.files[s.down.started]
+	d := s.downloadByHash(s.down.started)
 	if d == nil || d.peerParts == nil {
 		return
 	}
@@ -323,6 +348,7 @@ func (s *Session) runStarted(out *Output) {
 	case s.down.slot == slotIdle && hasNeededPart(d):
 		s.down.slot = slotAsked
 		out.send(client.StartUploadRequest{Hash: s.down.started})
+		out.add(SlotAsked{File: s.down.started})
 	case s.down.slot == slotIdle:
 		out.add(NoNeededParts{File: s.down.started})
 	}
@@ -370,12 +396,12 @@ func (s *Session) stopSlot(out *Output) {
 }
 
 func (s *Session) hasBlocksInFlight() bool {
-	d := s.down.files[s.down.started]
+	d := s.downloadByHash(s.down.started)
 	return d != nil && len(d.inFlight) > 0
 }
 
 func (s *Session) onPart(file wire.Hash, start int64, data []byte, now time.Time, out *Output) {
-	d := s.down.files[file]
+	d := s.downloadByHash(file)
 	if d == nil {
 		return
 	}
@@ -416,7 +442,7 @@ func (f *inFlight) updatePrefix() {
 // later asks only for the gaps (DownloadClient.cpp:835-848), and inflates a
 // compressed block as its packets arrive.
 func (s *Session) cancelInFlight(file wire.Hash, out *Output) {
-	d := s.down.files[file]
+	d := s.downloadByHash(file)
 	if d == nil {
 		return
 	}
@@ -442,7 +468,7 @@ func toReceived(f *inFlight) []byte {
 // onCompressedPart collects one block's zlib stream, which the uploader
 // splits across packets that all carry the block's start and packed size.
 func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint32, data []byte, now time.Time, out *Output) {
-	d := s.down.files[file]
+	d := s.downloadByHash(file)
 	if d == nil {
 		return
 	}

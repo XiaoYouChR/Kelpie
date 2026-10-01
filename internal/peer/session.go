@@ -54,10 +54,15 @@ type Config struct {
 	// answer; parts is what the asking peer said it has of file, nil when it
 	// did not say.
 	SourcesByHash func(file wire.Hash, parts piece.Set) []Source
+	// CanAskSlot tells whether the client user may be asked for an upload
+	// slot for file now: the engine's A4AF rules, as a client counts every
+	// ask as aggressive whatever file it names.
+	CanAskSlot func(user, file wire.Hash) bool
 }
 
 // Capabilities is what the peer told us about itself in the handshake.
 type Capabilities struct {
+	UserHash   wire.Hash
 	ClientID   uint32
 	Port       uint16
 	Server     netip.AddrPort
@@ -98,7 +103,6 @@ type Session struct {
 	cfg        Config
 	remote     netip.AddrPort
 	greeting   greeting
-	userHash   wire.Hash
 	caps       Capabilities
 	features   features
 	lastActive time.Time
@@ -113,14 +117,24 @@ type Session struct {
 	sx    sourceState
 }
 
-// BuildOutgoing starts a session on a connection we opened to remote; the
-// returned Output carries our Hello.
-func BuildOutgoing(cfg Config, remote netip.AddrPort, now time.Time) (*Session, Output) {
-	s := buildSession(cfg, remote, now)
+// BuildOutgoing builds the session of a connection we are dialling to
+// remote. Files may be added at once; it speaks once OnOpened.
+func BuildOutgoing(remote netip.AddrPort) *Session {
+	s := buildSession(Config{}, remote, time.Time{})
+	s.greeting = connecting
+	return s
+}
+
+// OnOpened starts a session built by BuildOutgoing on the opened connection;
+// the returned Output carries our Hello. cfg is taken now, not at the dial,
+// so the Hello tells what we know once connected.
+func (s *Session) OnOpened(cfg Config, now time.Time) Output {
+	s.cfg = cfg
+	s.lastActive = now
 	s.greeting = awaitingHelloAnswer
 	var out Output
 	out.send(client.Hello(s.buildHello()))
-	return s, out
+	return out
 }
 
 // BuildIncoming starts a session on a connection remote opened to us; it
@@ -135,14 +149,12 @@ func buildSession(cfg Config, remote netip.AddrPort, now time.Time) *Session {
 		remote:     netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port()),
 		lastActive: now,
 		timeout:    connectionTimeout,
-		down:       downloadState{files: map[wire.Hash]*download{}},
 		up:         uploadState{parts: map[wire.Hash]piece.Set{}},
 		sx:         sourceState{asked: map[wire.Hash]bool{}},
 	}
 }
 
 func (s *Session) Capabilities() Capabilities { return s.caps }
-func (s *Session) UserHash() wire.Hash        { return s.userHash }
 
 // IsUploading tells whether the peer holds an upload slot with us.
 func (s *Session) IsUploading() bool { return s.up.slot != nil }
@@ -254,6 +266,9 @@ func (s *Session) SetIdleTimeout(d time.Duration) {
 // delivering.
 func (s *Session) OnTick(now time.Time) Output {
 	var out Output
+	if s.greeting == connecting {
+		return out
+	}
 	if now.Sub(s.lastActive) > s.timeout {
 		out.Close = closeTimeout
 		return out

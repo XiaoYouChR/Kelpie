@@ -283,7 +283,7 @@ func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, out *Outp
 		key := uploadBlock{file, b}
 		_, isPending := slot.pending[key]
 		isFull := len(slot.pending) >= maxUploadBlocks
-		if isPending || isFull || slices.Contains(slot.sent, key) || b.End > share.Size || b.End-b.Begin > maxRequestSize {
+		if isPending || isFull || slices.Contains(slot.sent, key) || !canUpload(share, b) {
 			continue
 		}
 		slot.pending[key] = share.Size
@@ -292,6 +292,15 @@ func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, out *Outp
 	if len(fresh) > 0 {
 		out.add(BlocksRequested{File: file, Blocks: fresh})
 	}
+}
+
+// canUpload tells whether we can send b of share: a range eMule's
+// AddReqBlock accepts, within parts we have.
+func canUpload(share Share, b piece.Block) bool {
+	if b.End > share.Size || b.End-b.Begin > maxRequestSize {
+		return false
+	}
+	return share.Parts[b.Part()] && share.Parts[piece.Block{Begin: b.End - 1}.Part()]
 }
 
 func (s *Session) onUploadCancelled(out *Output) {

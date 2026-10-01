@@ -138,7 +138,7 @@ func (e *Engine) onKadPacket(c *conn, p wire.Packet) {
 		if e.kad != nil {
 			e.kad.Post(kad.FirewallUDP{
 				IP: c.remote.Addr(), InternPort: p.InternPort, ExternPort: p.ExternPort, Key: p.Key,
-				IsKnown: len(c.files) > 0 || c.session.IsUploading(),
+				IsKnown: len(c.session.Files()) > 0 || c.session.IsUploading(),
 			})
 		}
 	case client.BuddyPing:

@@ -88,11 +88,10 @@ func (w *world) openRawPeer(ip string, n *node) *rawPeer {
 		Random:        rand.New(rand.NewPCG(7, 7)),
 		ShareByHash:   func(wire.Hash) (peer.Share, bool) { return peer.Share{}, false },
 		SourcesByHash: func(wire.Hash, piece.Set) []peer.Source { return nil },
+		CanAskSlot:    func(_, _ wire.Hash) bool { return true },
 	}
-	p := &rawPeer{w: w, conn: w.openRaw(ip, n)}
-	session, out := peer.BuildOutgoing(cfg, n.endpoint(), w.clock.Now())
-	p.session = session
-	p.send(out.Send...)
+	p := &rawPeer{w: w, conn: w.openRaw(ip, n), session: peer.BuildOutgoing(n.endpoint())}
+	p.send(p.session.OnOpened(cfg, w.clock.Now()).Send...)
 	return p
 }
 
@@ -214,7 +213,6 @@ func TestUploadReadAheadIsBounded(t *testing.T) {
 	p := w.openRawPeer("198.51.100.9", a)
 	size := int64(len(f.data))
 	p.session.Add(f.hash, size, make(piece.Set, piece.PartCount(size)))
-	p.session.Start(f.hash)
 	p.readUntil("a slot", isEvent[peer.SlotGranted])
 	for i := int64(0); i < 33; i += 3 {
 		request := client.RequestParts{Hash: f.hash}

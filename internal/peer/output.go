@@ -28,19 +28,11 @@ type Event interface{ isEvent() }
 
 // HandshakeCompleted: both hellos are exchanged and Capabilities is final.
 // YourIP is the address the peer sees us at, a vote rather than a fact.
-type HandshakeCompleted struct {
-	UserHash wire.Hash
-	YourIP   netip.Addr
-}
+type HandshakeCompleted struct{ YourIP netip.Addr }
 
 // Identified: the peer proved it holds PublicKey. The engine checks the key
-// against the one it stored for UserHash, if any.
-type Identified struct {
-	UserHash  wire.Hash
-	PublicKey []byte
-}
-
-type IdentityFailed struct{ UserHash wire.Hash }
+// against the one it stored for the peer's user hash, if any.
+type Identified struct{ PublicKey []byte }
 
 // StatusReceived carries which parts of File the peer has.
 type StatusReceived struct {
@@ -67,10 +59,13 @@ type Queued struct {
 	Rank uint32
 }
 
+// SlotAsked: we asked the peer for an upload slot for File.
+type SlotAsked struct{ File wire.Hash }
+
 // SlotGranted: the peer accepted our upload request. File is zero when the
-// grant arrives before any Start on this connection, typically on a
-// connection the peer opened to us; the engine then Adds and Starts the file
-// it queued for with this user.
+// grant arrives before any file started on this connection, typically on a
+// connection the peer opened to us; the engine then Adds the file it queued
+// for with this user.
 type SlotGranted struct{ File wire.Hash }
 
 // NoNeededParts: the peer has no part of File we still need, or its slot
@@ -97,7 +92,8 @@ type UploadRequested struct {
 	Parts piece.Set
 }
 
-// BlocksRequested asks the engine to read Blocks and SendBlock each one.
+// BlocksRequested asks the engine to read Blocks, all within parts of File we
+// have, and SendBlock each one.
 type BlocksRequested struct {
 	File   wire.Hash
 	Blocks []piece.Block
@@ -113,11 +109,11 @@ type SourcesFound struct {
 
 func (HandshakeCompleted) isEvent() {}
 func (Identified) isEvent()         {}
-func (IdentityFailed) isEvent()     {}
 func (StatusReceived) isEvent()     {}
 func (HashSetReceived) isEvent()    {}
 func (FileRejected) isEvent()       {}
 func (Queued) isEvent()             {}
+func (SlotAsked) isEvent()          {}
 func (SlotGranted) isEvent()        {}
 func (NoNeededParts) isEvent()      {}
 func (BlocksWanted) isEvent()       {}

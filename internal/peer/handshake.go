@@ -69,6 +69,8 @@ const (
 	// awaitingHelloAnswer: we opened it and sent our Hello.
 	awaitingHelloAnswer
 	handshaken
+	// connecting: we are still dialling; the session has no Config yet.
+	connecting
 )
 
 func (s *Session) onGreeting(p wire.Packet, out *Output) {
@@ -102,14 +104,20 @@ func (s *Session) onGreeting(p wire.Packet, out *Output) {
 		s.earlyEmuleInfo = nil
 	}
 	s.greeting = handshaken
-	out.add(HandshakeCompleted{UserHash: s.userHash, YourIP: hello.YourIP})
+	// The engine attaches a connection's files to their transfers on
+	// HandshakeCompleted, so the files the peer cannot serve go first.
+	s.rejectLargeFiles(out)
+	out.add(HandshakeCompleted{YourIP: hello.YourIP})
 	s.sendIdentState(out)
-	s.sendFileRequests(out)
+	for _, d := range s.down.files {
+		s.sendFileRequest(d, out)
+	}
+	s.startFirstFile(out)
 }
 
 func (s *Session) setHello(h client.Hello) {
-	s.userHash = h.UserHash
 	s.caps = Capabilities{
+		UserHash:           h.UserHash,
 		ClientID:           h.ClientID,
 		Port:               h.Port,
 		Server:             h.Server,
@@ -271,11 +279,9 @@ func (s *Session) onSignature(p client.Signature, out *Output) {
 	}
 	challenge := identity.Challenge{Value: s.ident.challenge, IPKind: identity.IPKind(p.IPKind), SignerIP: s.remote.Addr(), VerifierIP: s.toPublicIP()}
 	s.ident.challenge = 0
-	if s.ident.peerKey == nil || !identity.MatchSignature(s.ident.peerKey, p.Signature, s.cfg.Self.PublicKey(), challenge) {
-		out.add(IdentityFailed{UserHash: s.userHash})
-		return
+	if s.ident.peerKey != nil && identity.MatchSignature(s.ident.peerKey, p.Signature, s.cfg.Self.PublicKey(), challenge) {
+		out.add(Identified{PublicKey: s.ident.peerKey})
 	}
-	out.add(Identified{UserHash: s.userHash, PublicKey: s.ident.peerKey})
 }
 
 func (s *Session) toPublicIP() netip.Addr {

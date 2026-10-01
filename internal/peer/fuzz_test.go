@@ -17,7 +17,7 @@ import (
 // calls, one record each: kind, uint16 payload length, payload.
 const (
 	stepPacket byte = iota // payload: protocol, opcode, body
-	stepStart
+	stepAdd
 	stepRequest // payload[0]: how many blocks after the last requested one
 	stepRequestRecovery
 	stepRequestHashSet
@@ -79,14 +79,15 @@ func buildFuzzSession(cfg Config, isOutgoing bool, files fuzzFiles) *fuzzSession
 	remote := netip.MustParseAddrPort("198.51.100.2:4662")
 	f := &fuzzSession{files: files, now: start}
 	cfg.ShareByHash, cfg.SourcesByHash = f.shares, f.sources
+	cfg.CanAskSlot = func(_, _ wire.Hash) bool { return true }
 	if isOutgoing {
-		var out Output
-		f.s, out = BuildOutgoing(cfg, remote, f.now)
-		f.hello = out.Send
+		f.s = BuildOutgoing(remote)
+		f.s.Add(files.down, files.downSize, piece.Set{false, false, false})
+		f.hello = f.s.OnOpened(cfg, f.now).Send
 	} else {
 		f.s = BuildIncoming(cfg, remote, f.now)
+		f.s.Add(files.down, files.downSize, piece.Set{false, false, false})
 	}
-	f.s.Add(files.down, files.downSize, piece.Set{false, false, false})
 	return f
 }
 
@@ -127,8 +128,8 @@ func (f *fuzzSession) run(kind byte, payload []byte) []wire.Packet {
 			return nil
 		}
 		out = f.s.OnPacket(p, f.now)
-	case stepStart:
-		out = f.s.Start(f.files.down)
+	case stepAdd:
+		out = f.s.Add(f.files.down, f.files.downSize, piece.Set{false, false, false})
 	case stepRequest:
 		var blocks []piece.Block
 		for range int(arg % 4) {
@@ -218,11 +219,9 @@ func recordSession(t testing.TB, ours, theirs Config, isOutgoing bool, files fuz
 		r.peer.s = BuildIncoming(theirs, ourAddr, start)
 		r.toPeer(r.f.hello)
 	} else {
-		var hello Output
-		r.peer.s, hello = BuildOutgoing(theirs, ourAddr, start)
-		r.fromPeer(hello)
+		r.peer.s = BuildOutgoing(ourAddr)
+		r.fromPeer(r.peer.s.OnOpened(theirs, start))
 	}
-	r.call(stepStart, 0)
 	r.fromPeer(r.peer.s.StartUpload())
 	r.call(stepRequest, 3)
 	r.sendRequested(files.down, files.downData)
@@ -230,7 +229,6 @@ func recordSession(t testing.TB, ours, theirs Config, isOutgoing bool, files fuz
 	r.call(stepRequestRecovery, 1)
 	r.call(stepRequestSources, 0)
 	r.fromPeer(r.peer.s.Add(files.up, files.upSize, piece.Set{false}))
-	r.fromPeer(r.peer.s.Start(files.up))
 	r.call(stepSendQueueRank, 3)
 	r.call(stepStartUpload, 0)
 	r.fromPeer(r.peer.s.Request(files.up, []piece.Block{r.f.blockOf(0, files.upSize), r.f.blockOf(1, files.upSize)}))
@@ -240,6 +238,7 @@ func recordSession(t testing.TB, ours, theirs Config, isOutgoing bool, files fuz
 	r.call(stepRequest, 2)
 	r.call(stepStop, 0)
 	r.call(stepRemove, 0)
+	r.call(stepAdd, 0)
 	replayed := replay(ours, isOutgoing, files, r.script)
 	if len(r.f.events) < 15 || len(replayed.events) != len(r.f.events) {
 		t.Fatalf("recorded %d events, replayed %d", len(r.f.events), len(replayed.events))
