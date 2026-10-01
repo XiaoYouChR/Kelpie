@@ -89,20 +89,24 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 		netConn, err := e.ports.Transport.OpenTCP(ctx, c.remote)
 		cancel()
 		if err == nil && obfuscateFor != (wire.Hash{}) {
-			var obfuscated *obfuscation.Conn
-			obfuscated, err = obfuscation.OpenOutgoing(netConn, obfuscateFor, keyPart)
-			if err != nil {
-				netConn.Close()
-				netConn = nil
-			} else {
-				netConn = obfuscated
-			}
+			netConn, err = openObfuscated(netConn, obfuscateFor, keyPart)
 		}
 		if !e.send(c.ctx, connOpened{c.id, netConn, err}) && netConn != nil {
 			netConn.Close()
 		}
 	})
 	return c
+}
+
+func openObfuscated(netConn net.Conn, user wire.Hash, keyPart [4]byte) (net.Conn, error) {
+	netConn.SetDeadline(time.Now().Add(connectTimeout))
+	obfuscated, err := obfuscation.OpenOutgoing(netConn, user, keyPart)
+	if err != nil {
+		netConn.Close()
+		return nil, err
+	}
+	netConn.SetDeadline(time.Time{})
+	return obfuscated, nil
 }
 
 func (e *Engine) runAcceptor() {

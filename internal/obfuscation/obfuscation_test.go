@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
@@ -38,7 +39,7 @@ func buildPair(t *testing.T) (net.Conn, net.Conn) {
 // obfuscation accepted this handshake on the real network.
 func TestOutgoingRequestBytes(t *testing.T) {
 	a, b := buildPair(t)
-	OpenOutgoing(a, user, [4]byte{1, 2, 3, 4})
+	go OpenOutgoing(a, user, [4]byte{1, 2, 3, 4})
 	got := make([]byte, 12)
 	if _, err := io.ReadFull(b, got); err != nil {
 		t.Fatal(err)
@@ -114,8 +115,41 @@ func TestIncomingPlainPassesThrough(t *testing.T) {
 
 func TestWrongUserHashFails(t *testing.T) {
 	a, b := buildPair(t)
-	OpenOutgoing(a, wire.Hash{1}, [4]byte{1, 2, 3, 4})
+	go OpenOutgoing(a, wire.Hash{1}, [4]byte{1, 2, 3, 4})
 	if _, err := OpenIncoming(b, user); err != ErrHandshake {
+		t.Fatalf("err %v", err)
+	}
+}
+
+// eMule holds its Hello until the peer answered; aMule drops a peer that
+// sends more than a handshake step needs.
+func TestOutgoingWaitsForAnswer(t *testing.T) {
+	a, b := buildPair(t)
+	opened := make(chan error)
+	go func() {
+		_, err := OpenOutgoing(a, user, [4]byte{1, 2, 3, 4})
+		opened <- err
+	}()
+	io.ReadFull(b, make([]byte, 12))
+	select {
+	case err := <-opened:
+		t.Fatalf("returned before the answer: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	answer, _ := hex.DecodeString("a3fb30fc2126")
+	b.Write(answer)
+	if err := <-opened; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOutgoingRejectsBadAnswer(t *testing.T) {
+	a, b := buildPair(t)
+	go func() {
+		io.ReadFull(b, make([]byte, 12))
+		b.Write([]byte{1, 2, 3, 4, 5, 6})
+	}()
+	if _, err := OpenOutgoing(a, user, [4]byte{1, 2, 3, 4}); err != ErrHandshake {
 		t.Fatalf("err %v", err)
 	}
 }

@@ -38,18 +38,9 @@ type Conn struct {
 	in   *rc4.Cipher
 	out  *rc4.Cipher
 	wbuf []byte
-	// isPending: the peer's handshake answer is still to be read, before
-	// the first byte of data on a connection we opened.
-	isPending bool
 }
 
 func (c *Conn) Read(b []byte) (int, error) {
-	if c.isPending {
-		c.isPending = false
-		if err := c.readAnswer(); err != nil {
-			return 0, err
-		}
-	}
 	n, err := c.r.Read(b)
 	c.in.XORKeyStream(b[:n], b[:n])
 	return n, err
@@ -98,19 +89,19 @@ func matchPlain(b byte) bool {
 }
 
 // OpenOutgoing starts obfuscation on a connection we opened to the client
-// with user hash user. keyPart is random; it salts both keys. The
-// handshake is written now, and the peer's answer is read with the first
-// Read, so the caller can send its Hello right away as eMule does.
+// with user hash user. keyPart is random; it salts both keys. It blocks
+// until the peer has answered, as eMule holds its Hello until then (aMule
+// drops a peer that sends more than the handshake step needs): the caller
+// sets a deadline.
 //
 // Request: <Marker 1><KeyPart 4>, then encrypted <MagicValue 4>
 // <MethodsSupported 1><MethodPreferred 1><PaddingLen 1>.
 func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (*Conn, error) {
 	c := &Conn{
-		Conn:      conn,
-		r:         bufio.NewReader(conn),
-		in:        buildCipher(user, magicServer, keyPart),
-		out:       buildCipher(user, magicRequester, keyPart),
-		isPending: true,
+		Conn: conn,
+		r:    bufio.NewReader(conn),
+		in:   buildCipher(user, magicServer, keyPart),
+		out:  buildCipher(user, magicRequester, keyPart),
 	}
 	marker := keyPart[0] ^ keyPart[3]
 	for matchPlain(marker) {
@@ -120,6 +111,9 @@ func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (*Conn, error)
 	request = append(request, methodObfuscation, methodObfuscation, 0)
 	c.out.XORKeyStream(request, request)
 	if _, err := conn.Write(append(append([]byte{marker}, keyPart[:]...), request...)); err != nil {
+		return nil, err
+	}
+	if err := c.readAnswer(); err != nil {
 		return nil, err
 	}
 	return c, nil
