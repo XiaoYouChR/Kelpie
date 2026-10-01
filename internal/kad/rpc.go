@@ -37,9 +37,6 @@ type rpc struct {
 	target wire.Hash
 	sent   time.Time
 	lookup *lookup
-	// isAnswered marks a search request after its first answer; it stays
-	// open for more SearchRes packets until it times out.
-	isAnswered bool
 }
 
 type rpcs struct{ pending []*rpc }
@@ -47,14 +44,14 @@ type rpcs struct{ pending []*rpc }
 func (p *rpcs) add(r *rpc) { p.pending = append(p.pending, r) }
 
 // match finds the request a response answers. eMule tracks requests by IP
-// only, since NATs may answer from another port; so do we.
+// only, since NATs may answer from another port; so do we. A search request
+// stays open for more SearchRes packets until it times out.
 func (p *rpcs) match(from netip.AddrPort, kind rpcKind, target wire.Hash) *rpc {
 	for i, r := range p.pending {
 		if r.kind != kind || r.node.Addr.Addr() != from.Addr() || r.target != target {
 			continue
 		}
 		if kind == rpcSearchSources {
-			r.isAnswered = true
 			return r
 		}
 		p.pending = slices.Delete(p.pending, i, i+1)

@@ -13,7 +13,7 @@ func FuzzParseFrame(f *testing.F) {
 	f.Add([]byte{0xE3, 0xFF, 0xFF, 0xFF, 0x7F, 1})
 	f.Fuzz(func(t *testing.T, b []byte) {
 		frame, n, err := ParseFrame(b)
-		if n > len(b) || (err == nil && n > 0 && len(frame.Body) > max(MaxFrameSize, MaxInflatedSize)) {
+		if n > len(b) || (err == nil && n > 0 && len(frame.Body) > max(MaxFrameSize, maxInflatedSize)) {
 			t.Fatalf("n=%d body=%d", n, len(frame.Body))
 		}
 		ParseFrameFrom(bytes.NewReader(b))
@@ -23,10 +23,10 @@ func FuzzParseFrame(f *testing.F) {
 func FuzzParseDatagram(f *testing.F) {
 	f.Add(BuildPackedDatagram(nil, ProtocolKad, 0x3B, []byte{1, 2, 3, 4}))
 	f.Add(BuildPackedDatagram(nil, ProtocolEMule, 0x90, make([]byte, 16)))
-	f.Add(BuildDatagram(nil, ProtocolEDonkey, 0x96, []byte{1, 2, 3, 4}))
+	f.Add(buildDatagram(nil, ProtocolEDonkey, 0x96, []byte{1, 2, 3, 4}))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		frame, err := ParseDatagram(b)
-		if err == nil && len(frame.Body) > max(MaxFrameSize, MaxInflatedSize) {
+		if err == nil && len(frame.Body) > max(MaxFrameSize, maxInflatedSize) {
 			t.Fatalf("body=%d", len(frame.Body))
 		}
 	})
@@ -57,7 +57,7 @@ func FuzzTags(f *testing.F) {
 		r = &Reader{Rest: b}
 		field := r.Bitfield()
 		field.Count()
-		field.Bools()
+		field.bools()
 		BuildBitfield(nil, field)
 	})
 }

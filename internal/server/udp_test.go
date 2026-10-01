@@ -8,15 +8,15 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
-	packet "github.com/XiaoYouChR/Kelpie/internal/wire/server"
+	serverwire "github.com/XiaoYouChR/Kelpie/internal/wire/server"
 )
 
-const getSources2 = packet.UDPFlagGetSources | packet.UDPFlagGetSources2
+const getSources2 = serverwire.UDPFlagGetSources | serverwire.UDPFlagGetSources2
 
 func searches(out Output) []Datagram {
 	var got []Datagram
 	for _, d := range out.SendUDP {
-		if _, ok := d.Packet.(packet.GlobGetSources2); ok {
+		if _, ok := d.Packet.(serverwire.GlobGetSources2); ok {
 			got = append(got, d)
 		}
 	}
@@ -26,7 +26,7 @@ func searches(out Output) []Datagram {
 func pings(out Output) []Datagram {
 	var got []Datagram
 	for _, d := range out.SendUDP {
-		if _, ok := d.Packet.(packet.GlobServStatReq); ok {
+		if _, ok := d.Packet.(serverwire.GlobServStatReq); ok {
 			got = append(got, d)
 		}
 	}
@@ -47,13 +47,13 @@ func TestUDPSearchBatchingAndRotation(t *testing.T) {
 	type sentTo struct {
 		at    time.Time
 		to    netip.AddrPort
-		files []packet.GetSources
+		files []serverwire.GetSources
 	}
 	var log []sentTo
 	now := start
 	for range 3600 {
 		for _, d := range searches(s.OnTick(now, wanted)) {
-			log = append(log, sentTo{now, d.To, d.Packet.(packet.GlobGetSources2).Files})
+			log = append(log, sentTo{now, d.To, d.Packet.(serverwire.GlobGetSources2).Files})
 		}
 		now = now.Add(time.Second)
 	}
@@ -122,7 +122,7 @@ func TestUDPSearchAsksLateServerAtOnce(t *testing.T) {
 		out := s.OnTick(now, wanted)
 		for _, d := range pings(out) {
 			if d.To == ep("1.0.0.3:4665") {
-				s.OnUDPPacket(d.To, packet.GlobServStatRes{Challenge: d.Packet.(packet.GlobServStatReq).Challenge, UDPFlags: getSources2}, now)
+				s.OnUDPPacket(d.To, serverwire.GlobServStatRes{Challenge: d.Packet.(serverwire.GlobServStatReq).Challenge, UDPFlags: getSources2}, now)
 			}
 		}
 		for _, d := range searches(out) {
@@ -139,14 +139,14 @@ func TestUDPSearchSkipsLargeFilesWithoutSupport(t *testing.T) {
 	entries := []Entry{
 		{Endpoint: ep("1.0.0.1:4661")},
 		{Endpoint: ep("1.0.0.2:4661"), UDPFlags: getSources2},
-		{Endpoint: ep("1.0.0.3:4661"), UDPFlags: getSources2 | packet.UDPFlagLargeFiles},
+		{Endpoint: ep("1.0.0.3:4661"), UDPFlags: getSources2 | serverwire.UDPFlagLargeFiles},
 	}
 	wanted := []Wanted{{File: fileHash(1), Size: 100}, {File: fileHash(2), Size: 5 << 30}}
 	s, _ := loggedIn(t, entries, highID, 0, wanted)
 	got := map[netip.AddrPort]int{}
 	for now := start; now.Before(start.Add(10 * time.Second)); now = now.Add(time.Second) {
 		for _, d := range searches(s.OnTick(now, wanted)) {
-			got[d.To] = len(d.Packet.(packet.GlobGetSources2).Files)
+			got[d.To] = len(d.Packet.(serverwire.GlobGetSources2).Files)
 		}
 	}
 	if !reflect.DeepEqual(got, map[netip.AddrPort]int{ep("1.0.0.2:4665"): 1, ep("1.0.0.3:4665"): 2}) {
@@ -193,15 +193,15 @@ func TestStatusPings(t *testing.T) {
 
 	// Server 2 answers and turns out to take OP_GLOBGETSOURCES2; server 3
 	// stays silent.
-	challenge := reqs[1].Packet.(packet.GlobServStatReq).Challenge
+	challenge := reqs[1].Packet.(serverwire.GlobServStatReq).Challenge
 	if reqs[1].To != ep("1.0.0.2:4665") {
 		t.Fatalf("second ping to %v", reqs[1].To)
 	}
-	s.OnUDPPacket(ep("1.0.0.2:4665"), packet.GlobServStatRes{Challenge: challenge + 1, UDPFlags: getSources2}, now)
+	s.OnUDPPacket(ep("1.0.0.2:4665"), serverwire.GlobServStatRes{Challenge: challenge + 1, UDPFlags: getSources2}, now)
 	if s.servers[1].UDPFlags != 0 {
 		t.Fatal("accepted a wrong challenge")
 	}
-	s.OnUDPPacket(ep("1.0.0.2:4665"), packet.GlobServStatRes{Challenge: challenge, Users: 42, UDPFlags: getSources2}, now)
+	s.OnUDPPacket(ep("1.0.0.2:4665"), serverwire.GlobServStatRes{Challenge: challenge, Users: 42, UDPFlags: getSources2}, now)
 	if l := s.servers[1]; l.Users != 42 || l.Failures != 0 || l.UDPFlags != getSources2 {
 		t.Fatalf("server after answer = %+v", l.Entry)
 	}
@@ -217,7 +217,7 @@ func TestStatusPings(t *testing.T) {
 	}
 
 	// After UDPSERVSTATREASKTIME the silent server is dead and no longer pinged.
-	s.OnUDPPacket(ep("1.0.0.1:4665"), packet.GlobServStatRes{Challenge: reqs[0].Packet.(packet.GlobServStatReq).Challenge}, now)
+	s.OnUDPPacket(ep("1.0.0.1:4665"), serverwire.GlobServStatRes{Challenge: reqs[0].Packet.(serverwire.GlobServStatReq).Challenge}, now)
 	now = start.Add(udpStatReaskTime + time.Minute)
 	var later []netip.AddrPort
 	for range 120 {
@@ -235,10 +235,10 @@ func TestGlobFoundSources(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}, {Endpoint: ep("1.0.0.2:4661"), UDPFlags: getSources2}}
 	s, _ := loggedIn(t, entries, highID, 0, downloads(2))
 	high := wire.ToClientID(netip.MustParseAddr("5.6.7.8"))
-	res := packet.GlobFoundSources{Files: []packet.FoundSources{
-		{Hash: fileHash(0), Sources: []packet.Source{{ClientID: high, Port: 4662}, {ClientID: 77, Port: 4662}}},
-		{Hash: fileHash(9), Sources: []packet.Source{{ClientID: high, Port: 4662}}},
-		{Hash: fileHash(1), Sources: []packet.Source{{ClientID: 78, Port: 4662}}},
+	res := serverwire.GlobFoundSources{Files: []serverwire.FoundSources{
+		{Hash: fileHash(0), Sources: []serverwire.Source{{ClientID: high, Port: 4662}, {ClientID: 77, Port: 4662}}},
+		{Hash: fileHash(9), Sources: []serverwire.Source{{ClientID: high, Port: 4662}}},
+		{Hash: fileHash(1), Sources: []serverwire.Source{{ClientID: 78, Port: 4662}}},
 	}}
 	out := s.OnUDPPacket(ep("1.0.0.2:4665"), res, start)
 	want := []Event{SourcesFound{File: fileHash(0), IsGlobal: true, Sources: []Source{
@@ -257,7 +257,7 @@ func TestGlobFoundSources(t *testing.T) {
 func TestUDPSearchVersionOne(t *testing.T) {
 	entries := []Entry{
 		{Endpoint: ep("1.0.0.1:4661")},
-		{Endpoint: ep("1.0.0.2:4661"), UDPFlags: packet.UDPFlagGetSources},
+		{Endpoint: ep("1.0.0.2:4661"), UDPFlags: serverwire.UDPFlagGetSources},
 	}
 	wanted := append(downloads(40), Wanted{File: fileHash(99), Size: 5 << 30})
 	s, _ := loggedIn(t, entries, highID, 0, wanted)
@@ -265,7 +265,7 @@ func TestUDPSearchVersionOne(t *testing.T) {
 	asked := map[wire.Hash]bool{}
 	for now := start; now.Before(start.Add(10 * time.Second)); now = now.Add(time.Second) {
 		for _, d := range s.OnTick(now, wanted).SendUDP {
-			if g, ok := d.Packet.(packet.GlobGetSources); ok && d.To == ep("1.0.0.2:4665") {
+			if g, ok := d.Packet.(serverwire.GlobGetSources); ok && d.To == ep("1.0.0.2:4665") {
 				counts = append(counts, len(g.Files))
 				for _, h := range g.Files {
 					asked[h] = true
@@ -311,15 +311,15 @@ func TestObfuscatedStatusPing(t *testing.T) {
 	if len(sent) != 1 || sent[0].To != ep("1.0.0.2:4673") || sent[0].Key != 0 {
 		t.Fatalf("sent %+v, want one ping to port + 12", sent)
 	}
-	ping, ok := sent[0].Packet.(packet.ObfuscatedPing)
+	ping, ok := sent[0].Packet.(serverwire.ObfuscatedPing)
 	if !ok || ping.Challenge == 0 || len(ping.Padding) >= 16 {
 		t.Fatalf("ping %+v", sent[0].Packet)
 	}
 	if key := s.UDPKeyByAddr(ep("1.0.0.2:4673")); key != ping.Challenge {
 		t.Fatalf("key for the answer %#x, want the challenge %#x", key, ping.Challenge)
 	}
-	flags := getSources2 | packet.UDPFlagUDPObfuscation
-	s.OnUDPPacket(ep("1.0.0.2:4673"), packet.GlobServStatRes{Challenge: ping.Challenge, UDPFlags: flags, UDPObfuscationPort: 4670, UDPKey: 0xBEEF}, now)
+	flags := getSources2 | serverwire.UDPFlagUDPObfuscation
+	s.OnUDPPacket(ep("1.0.0.2:4673"), serverwire.GlobServStatRes{Challenge: ping.Challenge, UDPFlags: flags, UDPObfuscationPort: 4670, UDPKey: 0xBEEF}, now)
 	if l := s.servers[1]; l.UDPFlags != flags || l.Failures != 0 || l.isCryptPinging {
 		t.Fatalf("server after answer %+v", l.Entry)
 	}
@@ -358,11 +358,11 @@ func TestObfuscatedPingFallsBackToPlain(t *testing.T) {
 	if len(sent) != 2 || sent[0].To != ep("1.0.0.2:4673") || sent[1].To != ep("1.0.0.2:4665") || sent[1].Key != 0 {
 		t.Fatalf("sent %+v, want an obfuscated ping, then a plain one", sent)
 	}
-	req, ok := sent[1].Packet.(packet.GlobServStatReq)
+	req, ok := sent[1].Packet.(serverwire.GlobServStatReq)
 	if !ok || s.servers[1].Failures != 1 || s.UDPKeyByAddr(ep("1.0.0.2:4665")) != 0 {
 		t.Fatalf("plain ping %+v, failures %d", sent[1].Packet, s.servers[1].Failures)
 	}
-	s.OnUDPPacket(ep("1.0.0.2:4665"), packet.GlobServStatRes{Challenge: req.Challenge, UDPFlags: getSources2}, now)
+	s.OnUDPPacket(ep("1.0.0.2:4665"), serverwire.GlobServStatRes{Challenge: req.Challenge, UDPFlags: getSources2}, now)
 	if l := s.servers[1]; l.UDPFlags != getSources2 || l.Failures != 0 {
 		t.Fatalf("server after answer %+v", l.Entry)
 	}

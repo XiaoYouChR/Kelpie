@@ -69,12 +69,12 @@ type candidate struct {
 }
 
 type lookup struct {
-	kind   lookupKind
-	target wire.Hash
-	size   uint64
+	kind    lookupKind
+	target  wire.Hash
+	size    uint64
+	created time.Time
 	// deadline is when the lookup ends; isStopping lookups send nothing new
 	// and only collect late answers.
-	created      time.Time
 	deadline     time.Time
 	isStopping   bool
 	isDone       bool
@@ -232,7 +232,7 @@ func (c *core) onRes(from netip.AddrPort, res kadwire.Res, now time.Time) {
 		return
 	}
 	for _, ct := range res.Contacts {
-		c.table.add(Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}, false, now)
+		c.table.add(toNode(ct), false, now)
 	}
 	if l.isDone || l.isStopping {
 		return
@@ -253,7 +253,7 @@ func (c *core) onRes(from netip.AddrPort, res kadwire.Res, now time.Time) {
 	seenIPs := map[netip.Addr]bool{from.Addr(): true}
 	bySubnet := map[netip.Prefix]int{}
 	for _, ct := range res.Contacts {
-		n := Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}
+		n := toNode(ct)
 		if n.ID == c.id || !matchGoodAddr(n.Addr) || seenIPs[ct.Addr] {
 			continue
 		}
@@ -365,7 +365,7 @@ func (c *core) buildSourceTags(size uint64) ([]wire.Tag, bool) {
 	}
 	options := connectOptions
 	if c.canDirectCallback() {
-		options |= cryptDirectCallback
+		options |= wire.CryptDirectCallback
 	}
 	return append(tags, sizeTag, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagEncryption, Uint: uint64(options)}), true
 }

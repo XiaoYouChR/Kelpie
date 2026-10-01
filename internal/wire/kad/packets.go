@@ -19,13 +19,9 @@ const (
 	opReq                 byte = 0x21
 	opHelloResAck         byte = 0x22
 	opRes                 byte = 0x29
-	opSearchKeysReq       byte = 0x33
 	opSearchSourcesReq    byte = 0x34
-	opSearchNotesReq      byte = 0x35
 	opSearchRes           byte = 0x3B
-	opPublishKeysReq      byte = 0x43
 	opPublishSourcesReq   byte = 0x44
-	opPublishNotesRes     byte = 0x4A
 	opPublishRes          byte = 0x4B
 	opLegacyFirewalledReq byte = 0x50
 	opFindBuddyReq        byte = 0x51
@@ -70,7 +66,7 @@ const (
 
 // Parse decodes a Kad packet body; wire.ParseDatagram has already inflated
 // packed (0xE5) packets to 0xE4. Opcodes not listed here, including the
-// notes packets Kelpie does not use, come back as wire.Unknown.
+// keyword and notes packets Kelpie does not use, come back as wire.Unknown.
 func Parse(protocol, opcode byte, body []byte) (wire.Packet, error) {
 	if protocol != wire.ProtocolKad {
 		return wire.Unknown{Proto: protocol, Op: opcode, Body: body}, nil
@@ -87,27 +83,19 @@ func Parse(protocol, opcode byte, body []byte) (wire.Packet, error) {
 	case opHelloRes:
 		p = HelloRes(parseHello(r))
 	case opHelloResAck:
-		p = HelloResAck{ID: ParseID(r), Tags: parseTags(r, int(r.Uint8()))}
+		p = HelloResAck(parseEntry(r))
 	case opReq:
 		p = Req{SearchType: r.Uint8(), Target: ParseID(r), Receiver: ParseID(r)}
 	case opRes:
 		p = Res{Target: ParseID(r), Contacts: parseContacts(r, int(r.Uint8()))}
-	case opSearchKeysReq:
-		p = SearchKeysReq{Target: ParseID(r), StartPos: r.Uint16()}
 	case opSearchSourcesReq:
 		p = SearchSourcesReq{Target: ParseID(r), StartPos: r.Uint16(), Size: r.Uint64()}
-	case opSearchNotesReq:
-		p = SearchNotesReq{Target: ParseID(r), Size: r.Uint64()}
 	case opSearchRes:
 		p = SearchRes{Source: ParseID(r), Target: ParseID(r), Results: parseEntries(r, int(r.Uint16()))}
-	case opPublishKeysReq:
-		p = PublishKeysReq{KeywordID: ParseID(r), Sources: parseEntries(r, int(r.Uint16()))}
 	case opPublishSourcesReq:
 		p = PublishSourcesReq{FileID: ParseID(r), Source: parseEntry(r)}
 	case opPublishRes:
 		p = PublishRes{FileID: ParseID(r), Load: r.Uint8()}
-	case opPublishNotesRes:
-		p = PublishNotesRes{FileID: ParseID(r), Load: r.Uint8()}
 	case opLegacyFirewalledReq:
 		p = LegacyFirewalledReq{TCPPort: r.Uint16()}
 	case opFirewalledReq:
@@ -219,8 +207,7 @@ func parseContacts(r *wire.Reader, count int) []Contact {
 	return out
 }
 
-// Entry is an ID with tags: a search result or a published source or
-// keyword.
+// Entry is an ID with tags: a search result or a published source.
 type Entry struct {
 	ID   wire.Hash
 	Tags []wire.Tag
@@ -235,22 +222,14 @@ func (e Entry) TagByID(id byte) (wire.Tag, bool) {
 	return wire.Tag{}, false
 }
 
-// SourceAddrPort is the source's IPv4 address and TCP port. Whether the
-// source type allows a direct connection is the caller's question.
-func (e Entry) SourceAddrPort() (netip.AddrPort, bool) {
-	ip, hasIP := e.TagByID(TagSourceIP)
-	port, hasPort := e.TagByID(TagSourcePort)
-	if !hasIP || !hasPort {
-		return netip.AddrPort{}, false
-	}
-	return netip.AddrPortFrom(ToAddr(uint32(ip.Uint)), uint16(port.Uint)), true
-}
+func buildEntry(b []byte, e Entry) []byte { return buildTags(BuildID(b, e.ID), e.Tags) }
 
-// Kad tags always use the classic form with a uint16 name length; eMule's
-// Kad reader rejects the compact eD2k form.
-func buildEntry(b []byte, e Entry) []byte {
-	b = append(BuildID(b, e.ID), byte(len(e.Tags)))
-	for _, t := range e.Tags {
+// buildTags writes a one-byte count and the tags. Kad tags always use the
+// classic form with a uint16 name length; eMule's Kad reader rejects the
+// compact eD2k form.
+func buildTags(b []byte, tags []wire.Tag) []byte {
+	b = append(b, byte(len(tags)))
+	for _, t := range tags {
 		b = wire.BuildTag(b, t)
 	}
 	return b
@@ -328,11 +307,7 @@ func (h HelloRes) Build(b []byte) []byte { return buildHello(b, Hello(h)) }
 
 func buildHello(b []byte, h Hello) []byte {
 	b = binary.LittleEndian.AppendUint16(BuildID(b, h.ID), h.TCPPort)
-	b = append(b, h.Version, byte(len(h.Tags)))
-	for _, t := range h.Tags {
-		b = wire.BuildTag(b, t)
-	}
-	return b
+	return buildTags(append(b, h.Version), h.Tags)
 }
 
 func parseHello(r *wire.Reader) Hello {
@@ -356,15 +331,9 @@ type HelloResAck struct {
 	Tags []wire.Tag
 }
 
-func (HelloResAck) Protocol() byte { return wire.ProtocolKad }
-func (HelloResAck) Opcode() byte   { return opHelloResAck }
-func (p HelloResAck) Build(b []byte) []byte {
-	b = append(BuildID(b, p.ID), byte(len(p.Tags)))
-	for _, t := range p.Tags {
-		b = wire.BuildTag(b, t)
-	}
-	return b
-}
+func (HelloResAck) Protocol() byte          { return wire.ProtocolKad }
+func (HelloResAck) Opcode() byte            { return opHelloResAck }
+func (p HelloResAck) Build(b []byte) []byte { return buildEntry(b, Entry(p)) }
 
 type Req struct {
 	SearchType byte
@@ -393,19 +362,6 @@ func (p Res) Build(b []byte) []byte {
 	return b
 }
 
-// SearchKeysReq is KADEMLIA2_SEARCH_KEY_REQ. Keyword search expressions,
-// which follow when StartPos has bit 15 set, are not decoded.
-type SearchKeysReq struct {
-	Target   wire.Hash
-	StartPos uint16
-}
-
-func (SearchKeysReq) Protocol() byte { return wire.ProtocolKad }
-func (SearchKeysReq) Opcode() byte   { return opSearchKeysReq }
-func (p SearchKeysReq) Build(b []byte) []byte {
-	return binary.LittleEndian.AppendUint16(BuildID(b, p.Target), p.StartPos)
-}
-
 type SearchSourcesReq struct {
 	Target   wire.Hash
 	StartPos uint16
@@ -417,17 +373,6 @@ func (SearchSourcesReq) Opcode() byte   { return opSearchSourcesReq }
 func (p SearchSourcesReq) Build(b []byte) []byte {
 	b = binary.LittleEndian.AppendUint16(BuildID(b, p.Target), p.StartPos)
 	return binary.LittleEndian.AppendUint64(b, p.Size)
-}
-
-type SearchNotesReq struct {
-	Target wire.Hash
-	Size   uint64
-}
-
-func (SearchNotesReq) Protocol() byte { return wire.ProtocolKad }
-func (SearchNotesReq) Opcode() byte   { return opSearchNotesReq }
-func (p SearchNotesReq) Build(b []byte) []byte {
-	return binary.LittleEndian.AppendUint64(BuildID(b, p.Target), p.Size)
 }
 
 type SearchRes struct {
@@ -442,21 +387,6 @@ func (p SearchRes) Build(b []byte) []byte {
 	b = BuildID(BuildID(b, p.Source), p.Target)
 	b = binary.LittleEndian.AppendUint16(b, uint16(len(p.Results)))
 	for _, e := range p.Results {
-		b = buildEntry(b, e)
-	}
-	return b
-}
-
-type PublishKeysReq struct {
-	KeywordID wire.Hash
-	Sources   []Entry
-}
-
-func (PublishKeysReq) Protocol() byte { return wire.ProtocolKad }
-func (PublishKeysReq) Opcode() byte   { return opPublishKeysReq }
-func (p PublishKeysReq) Build(b []byte) []byte {
-	b = binary.LittleEndian.AppendUint16(BuildID(b, p.KeywordID), uint16(len(p.Sources)))
-	for _, e := range p.Sources {
 		b = buildEntry(b, e)
 	}
 	return b
@@ -483,12 +413,6 @@ type PublishRes struct {
 func (PublishRes) Protocol() byte          { return wire.ProtocolKad }
 func (PublishRes) Opcode() byte            { return opPublishRes }
 func (p PublishRes) Build(b []byte) []byte { return append(BuildID(b, p.FileID), p.Load) }
-
-type PublishNotesRes PublishRes
-
-func (PublishNotesRes) Protocol() byte          { return wire.ProtocolKad }
-func (PublishNotesRes) Opcode() byte            { return opPublishNotesRes }
-func (p PublishNotesRes) Build(b []byte) []byte { return append(BuildID(b, p.FileID), p.Load) }
 
 // LegacyFirewalledReq is the Kad 1 firewall check, still sent by old nodes.
 type LegacyFirewalledReq struct{ TCPPort uint16 }

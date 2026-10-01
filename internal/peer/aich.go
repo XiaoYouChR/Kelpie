@@ -109,7 +109,7 @@ func (s *Session) onRecoveryRequest(p client.AICHRequest, shares shareByHash, ou
 	case !ok:
 	case share.Tree == nil:
 		s.requestTree(p.Hash, share, out)
-	case share.Tree.Root() == p.Root && part < piece.PartCount(share.Size) && share.Size-int64(part)*piece.PartSize > piece.BlockSize:
+	case share.Tree.Root() == p.Root && part < piece.PartCount(share.Size) && piece.BlockCount(share.Size, part) > 1:
 		answer = client.AICHAnswer{
 			Hash:          p.Hash,
 			HasData:       true,

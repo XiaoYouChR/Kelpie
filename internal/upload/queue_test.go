@@ -71,16 +71,16 @@ func matchActions(t *testing.T, got []Action, want ...Action) {
 // startSlots gives peers 1 and 2 the two minimum slots, one second apart.
 func startSlots(t *testing.T, q *Queue) {
 	t.Helper()
-	matchActions(t, q.OnRequest(1, buildPeer(1), file, toTime(0)), Grant{1, file})
-	matchActions(t, q.OnRequest(2, buildPeer(2), file, toTime(1)), Grant{2, file})
+	matchActions(t, q.OnRequest(1, buildPeer(1), file, toTime(0)), Grant{1})
+	matchActions(t, q.OnRequest(2, buildPeer(2), file, toTime(1)), Grant{2})
 }
 
 func TestFirstRequestsGetSlotsOneSecondApart(t *testing.T) {
 	_, q := buildWorld()
-	matchActions(t, q.OnRequest(1, buildPeer(1), file, toTime(0)), Grant{1, file})
+	matchActions(t, q.OnRequest(1, buildPeer(1), file, toTime(0)), Grant{1})
 	matchActions(t, q.OnRequest(2, buildPeer(2), file, toTime(0.5)), SendRank{2, 1})
 	matchActions(t, q.OnTick(toTime(0.9)))
-	matchActions(t, q.OnTick(toTime(1.1)), Grant{2, file})
+	matchActions(t, q.OnTick(toTime(1.1)), Grant{2})
 	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(3)), SendRank{3, 1})
 	matchActions(t, q.OnTick(toTime(5)))
 }
@@ -88,7 +88,7 @@ func TestFirstRequestsGetSlotsOneSecondApart(t *testing.T) {
 func TestRequestFromSlotHolderSwitchesFile(t *testing.T) {
 	_, q := buildWorld()
 	startSlots(t, q)
-	matchActions(t, q.OnRequest(1, buildPeer(1), other, toTime(2)), Grant{1, other})
+	matchActions(t, q.OnRequest(1, buildPeer(1), other, toTime(2)), Grant{1})
 }
 
 func TestUnsharedFileAndBannedPeerAreIgnored(t *testing.T) {
@@ -113,7 +113,7 @@ func TestCreditsOutrankWaitingTime(t *testing.T) {
 	}
 
 	q.OnSent(1, sessionMaxTrans+1)
-	matchActions(t, q.OnTick(toTime(60)), Revoke{1, ReasonRotated}, SendRank{1, 3}, Grant{4, file})
+	matchActions(t, q.OnTick(toTime(60)), Revoke{1}, SendRank{1, 3}, Grant{4})
 }
 
 func TestRotationWaitsForSomeoneQueued(t *testing.T) {
@@ -130,7 +130,7 @@ func TestRotationAfterSessionTime(t *testing.T) {
 	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(10)), SendRank{3, 1})
 	matchActions(t, q.OnTick(toTime(3600)))
 	q.OnReask(buildPeer(3).IP, 4672, file, toTime(3600))
-	matchActions(t, q.OnTick(toTime(3600.5)), Revoke{1, ReasonRotated}, SendRank{1, 2}, Grant{3, file})
+	matchActions(t, q.OnTick(toTime(3600.5)), Revoke{1}, SendRank{1, 2}, Grant{3})
 }
 
 func TestDisconnectedHighIDWaiterIsCalled(t *testing.T) {
@@ -141,8 +141,23 @@ func TestDisconnectedHighIDWaiterIsCalled(t *testing.T) {
 	q.OnConnectionGone(3)
 	q.OnConnectionGone(1)
 	matchActions(t, q.OnTick(toTime(20)), Connect{p})
-	matchActions(t, q.OnConnected(30, p, toTime(25)), Grant{30, file})
+	matchActions(t, q.OnConnected(30, p, toTime(25)), Grant{30})
 	q.OnSent(30, 100)
+}
+
+func TestBanningPeerBeingCalledRevokesNothing(t *testing.T) {
+	w, q := buildWorld()
+	startSlots(t, q)
+	p := buildPeer(3)
+	matchActions(t, q.OnRequest(3, p, file, toTime(10)), SendRank{3, 1})
+	q.OnConnectionGone(3)
+	q.OnConnectionGone(1)
+	matchActions(t, q.OnTick(toTime(20)), Connect{p})
+	w.banned[p.User] = true
+	matchActions(t, q.OnTick(toTime(21)))
+	if q.HasPeer(p.User, p.IP) {
+		t.Fatal("banned peer still holds its slot")
+	}
 }
 
 func TestCallThatNeverConnectsFreesSlot(t *testing.T) {
@@ -154,7 +169,7 @@ func TestCallThatNeverConnectsFreesSlot(t *testing.T) {
 	q.OnConnectionGone(1)
 	matchActions(t, q.OnTick(toTime(20)), Connect{buildPeer(3)})
 	matchActions(t, q.OnTick(toTime(50)))
-	matchActions(t, q.OnTick(toTime(61)), Grant{4, file})
+	matchActions(t, q.OnTick(toTime(61)), Grant{4})
 }
 
 func TestLowIDWaiterTakesSlotWhenItReconnects(t *testing.T) {
@@ -166,17 +181,17 @@ func TestLowIDWaiterTakesSlotWhenItReconnects(t *testing.T) {
 	matchActions(t, q.OnRequest(4, buildPeer(4), file, toTime(50)), SendRank{4, 2})
 	q.OnConnectionGone(3)
 	q.OnConnectionGone(1)
-	matchActions(t, q.OnTick(toTime(60)), Grant{4, file})
+	matchActions(t, q.OnTick(toTime(60)), Grant{4})
 
 	matchActions(t, q.OnRequest(5, buildPeer(5), file, toTime(61)), SendRank{5, 2})
-	matchActions(t, q.OnRequest(33, low, file, toTime(70)), Grant{33, file})
+	matchActions(t, q.OnRequest(33, low, file, toTime(70)), Grant{33})
 }
 
 func TestWaiterThatStopsReaskingIsPurged(t *testing.T) {
 	_, q := buildWorld()
 	low := buildPeer(2)
 	low.IsLowID = true
-	matchActions(t, q.OnRequest(1, buildPeer(1), file, toTime(0)), Grant{1, file})
+	matchActions(t, q.OnRequest(1, buildPeer(1), file, toTime(0)), Grant{1})
 	matchActions(t, q.OnRequest(2, low, file, toTime(0)), SendRank{2, 1})
 	q.OnConnectionGone(2)
 	q.OnConnectionGone(1)
@@ -239,7 +254,7 @@ func TestAtMostThreeWaitersPerIP(t *testing.T) {
 
 func TestQueueFull(t *testing.T) {
 	w, q := buildWorld()
-	matchActions(t, q.OnRequest(1, buildPeer(1), file, toTime(0)), Grant{1, file})
+	matchActions(t, q.OnRequest(1, buildPeer(1), file, toTime(0)), Grant{1})
 	for n := 2; n < 2+queueSize; n++ {
 		w.ratios[buildPeer(n).User] = 2
 		q.OnRequest(uint64(n), buildPeer(n), file, toTime(0))
@@ -275,7 +290,7 @@ func TestBannedPeersLoseTheirPlace(t *testing.T) {
 	matchActions(t, q.OnRequest(4, buildPeer(4), file, toTime(20)), SendRank{4, 2})
 	w.banned[buildPeer(3).User] = true
 	w.banned[buildPeer(1).User] = true
-	matchActions(t, q.OnTick(toTime(30)), Revoke{1, ReasonBanned}, Grant{4, file})
+	matchActions(t, q.OnTick(toTime(30)), Revoke{1}, Grant{4})
 	if got := q.OnReask(buildPeer(3).IP, 4672, file, toTime(31)); got != nil {
 		t.Fatalf("banned waiter still queued: %#v", got)
 	}
@@ -284,9 +299,9 @@ func TestBannedPeersLoseTheirPlace(t *testing.T) {
 func TestRemoveFile(t *testing.T) {
 	_, q := buildWorld()
 	startSlots(t, q)
-	matchActions(t, q.OnRequest(2, buildPeer(2), other, toTime(2)), Grant{2, other})
+	matchActions(t, q.OnRequest(2, buildPeer(2), other, toTime(2)), Grant{2})
 	matchActions(t, q.OnRequest(3, buildPeer(3), other, toTime(10)), SendRank{3, 1})
-	matchActions(t, q.RemoveFile(other), Revoke{2, ReasonFileRemoved})
+	matchActions(t, q.RemoveFile(other), Revoke{2})
 	if got := q.OnReask(buildPeer(3).IP, 4672, other, toTime(11)); got != (FileNotFound{}) {
 		t.Fatalf("reask for removed file = %#v", got)
 	}
@@ -389,7 +404,7 @@ func TestImpostorNeverGetsSlot(t *testing.T) {
 	w.identified[buildPeer(3).User] = buildPeer(9).IP
 	matchActions(t, q.OnRequest(4, buildPeer(4), file, toTime(100)), SendRank{4, 1})
 	q.OnConnectionGone(1)
-	matchActions(t, q.OnTick(toTime(101)), Grant{4, file})
+	matchActions(t, q.OnTick(toTime(101)), Grant{4})
 }
 
 func TestOldClientScoresHalf(t *testing.T) {

@@ -80,7 +80,7 @@ func parseGoed2k(raw []byte) (State, error) {
 			for _, part := range resume.Hashes {
 				transfer.PartHashes = append(transfer.PartHashes, wire.Hash(part))
 			}
-			transfer.VerifiedParts = resume.Pieces
+			transfer.VerifiedParts = piece.Set(resume.Pieces)
 			written := map[int]map[int]bool{}
 			for _, block := range resume.DownloadedBlocks {
 				if written[block.PieceIndex] == nil {
@@ -99,21 +99,21 @@ func parseGoed2k(raw []byte) (State, error) {
 // block counts as written only when goed2k blocks cover every byte of it.
 const goed2kBlockSize = 190 * 1024
 
-func toWrittenBlocks(size int64, written map[int]map[int]bool) []Block {
-	var blocks []Block
+func toWrittenBlocks(size int64, written map[int]map[int]bool) []piece.Block {
+	var blocks []piece.Block
 	for part := 0; part < piece.PartCount(size); part++ {
 		if len(written[part]) == 0 {
 			continue
 		}
-		partSize := min(piece.PartSize, size-int64(part)*piece.PartSize)
-		for begin := int64(0); begin < partSize; begin += piece.BlockSize {
-			end := min(begin+piece.BlockSize, partSize)
+		partBegin := piece.PartRange(size, part).Begin
+		for index := range piece.BlockCount(size, part) {
+			block := piece.BlockOf(size, part, index)
 			isCovered := true
-			for index := begin / goed2kBlockSize; index <= (end-1)/goed2kBlockSize; index++ {
-				isCovered = isCovered && written[part][int(index)]
+			for old := (block.Begin - partBegin) / goed2kBlockSize; old <= (block.End-1-partBegin)/goed2kBlockSize; old++ {
+				isCovered = isCovered && written[part][int(old)]
 			}
 			if isCovered {
-				blocks = append(blocks, Block{Part: part, Index: int(begin / piece.BlockSize)})
+				blocks = append(blocks, block)
 			}
 		}
 	}

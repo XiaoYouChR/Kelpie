@@ -27,8 +27,6 @@ const (
 type Entry struct {
 	Endpoint           netip.AddrPort
 	Host               string
-	Name               string
-	Description        string
 	Preference         Preference
 	Failures           uint32
 	Ping               uint32
@@ -44,8 +42,6 @@ type Entry struct {
 
 // server.met tags (eMule Opcodes.h ST_*).
 const (
-	metName               byte = 0x01
-	metDescription        byte = 0x0B
 	metPing               byte = 0x0C
 	metFail               byte = 0x0D
 	metPreference         byte = 0x0E
@@ -88,7 +84,7 @@ func ParseMet(data []byte) ([]Entry, error) {
 		case e.Host != "" && e.Endpoint.Port() != 0:
 			e.Endpoint = netip.AddrPortFrom(netip.Addr{}, e.Endpoint.Port())
 			entries = append(entries, e)
-		case isUsable(e.Endpoint):
+		case wire.IsDialable(e.Endpoint):
 			entries = append(entries, e)
 		}
 	}
@@ -103,10 +99,6 @@ func setMetTag(e *Entry, t wire.Tag) {
 	case t.Name == "files" && isUint:
 		e.Files = uint32(t.Uint)
 	case t.Name != "":
-	case t.ID == metName && t.Type == wire.TagString:
-		e.Name = t.String
-	case t.ID == metDescription && t.Type == wire.TagString:
-		e.Description = t.String
 	case t.ID == metDynIP && t.Type == wire.TagString && e.Host == "":
 		e.Host = t.String
 	case !isUint:
@@ -125,9 +117,4 @@ func setMetTag(e *Entry, t wire.Tag) {
 	case t.ID == metUDPPortObfuscation:
 		e.UDPObfuscationPort = uint16(t.Uint)
 	}
-}
-
-func isUsable(ep netip.AddrPort) bool {
-	a := ep.Addr()
-	return a.Is4() && ep.Port() != 0 && !a.IsUnspecified() && !a.IsMulticast() && a != netip.AddrFrom4([4]byte{255, 255, 255, 255})
 }

@@ -185,7 +185,7 @@ func TestHandshakeBothDirections(t *testing.T) {
 	if !caps.IsEmule || !caps.CanCompress || !caps.HasSourceExchange2 ||
 		!caps.HasExtMultiPacket || !caps.HasLargeFiles || !caps.HasExtendedSources || caps.UDPVersion != 4 ||
 		caps.SecureIdent != identity.Support || caps.IPv6 != l.b.s.cfg.IPv6 || caps.UDPPort != 4672 ||
-		caps.CryptOptions != cryptSupported|cryptRequested {
+		caps.CryptOptions != wire.CryptSupported|wire.CryptRequested {
 		t.Fatalf("capabilities %+v", caps)
 	}
 	hello := l.sent[0].(client.Hello)
@@ -680,7 +680,7 @@ func TestSourceExchange(t *testing.T) {
 	}
 	server := netip.MustParseAddrPort("1.2.3.4:4661")
 	sources := []Source{
-		{IPv4: netip.MustParseAddr("5.6.7.8"), IPv6: netip.MustParseAddr("2001:db8::7"), Port: 4662, UserHash: hashOf(9), CryptOptions: cryptSupported | cryptRequested},
+		{IPv4: netip.MustParseAddr("5.6.7.8"), IPv6: netip.MustParseAddr("2001:db8::7"), Port: 4662, UserHash: hashOf(9), CryptOptions: wire.CryptSupported | wire.CryptRequested},
 		{LowID: 42, Port: 4663, Server: server},
 		{IPv6: netip.MustParseAddr("2001:db8::8"), Port: 4664},
 	}
@@ -730,7 +730,7 @@ func TestSourceExchangeWithEmule(t *testing.T) {
 	out = s.OnPacket(answer, shares, start)
 	found := out.Events[0].(SourcesFound).Sources
 	if found[0].IPv4 != netip.MustParseAddr("5.6.7.0") || found[1].LowID != 42 ||
-		found[0].CryptOptions != 0x07 || !CanObfuscate(found[0].CryptOptions, found[0].UserHash) || CanObfuscate(found[1].CryptOptions, found[1].UserHash) {
+		found[0].CryptOptions != 0x07 || !wire.CanObfuscate(found[0].CryptOptions, found[0].UserHash) || wire.CanObfuscate(found[1].CryptOptions, found[1].UserHash) {
 		t.Fatalf("found %+v", found)
 	}
 
@@ -739,12 +739,12 @@ func TestSourceExchangeWithEmule(t *testing.T) {
 		t.Fatal("request not seen")
 	}
 	out = s.SendSources(file, []Source{
-		{IPv4: netip.MustParseAddr("5.6.7.0"), Port: 4662, UserHash: hashOf(3), CryptOptions: cryptSupported},
+		{IPv4: netip.MustParseAddr("5.6.7.0"), Port: 4662, UserHash: hashOf(3), CryptOptions: wire.CryptSupported},
 		{IPv6: netip.MustParseAddr("2001:db8::8"), Port: 4664},
 	})
 	sent := out.Send[0].(client.AnswerSources2)
 	if sent.Version != 4 || len(sent.Sources) != 1 || sent.Sources[0].ClientID != 0x05060700 ||
-		sent.Sources[0].UserHash != hashOf(3) || sent.Sources[0].CryptOptions != cryptSupported {
+		sent.Sources[0].UserHash != hashOf(3) || sent.Sources[0].CryptOptions != wire.CryptSupported {
 		t.Fatalf("answer %+v", sent)
 	}
 	if out := s.OnPacket(client.RequestSources2{Version: 4, Hash: file}, shares, start.Add(time.Minute)); len(out.Events) != 0 {
@@ -850,8 +850,8 @@ func TestCryptOptionsReadAsEmuleDoes(t *testing.T) {
 		want  byte
 	}{
 		{client.MiscOptions2{IsCryptRequested: true, IsCryptRequired: true}, 0},
-		{client.MiscOptions2{CanCrypt: true, IsCryptRequired: true}, cryptSupported},
-		{client.MiscOptions2{CanCrypt: true, IsCryptRequested: true, IsCryptRequired: true}, cryptSupported | cryptRequested | cryptRequired},
+		{client.MiscOptions2{CanCrypt: true, IsCryptRequired: true}, wire.CryptSupported},
+		{client.MiscOptions2{CanCrypt: true, IsCryptRequested: true, IsCryptRequired: true}, wire.CryptSupported | wire.CryptRequested | wire.CryptRequired},
 	} {
 		s, _ := BuildOutgoing(buildConfig(t, 1), netip.MustParseAddrPort("10.0.0.2:4662"), start)
 		s.OnPacket(client.HelloAnswer{UserHash: hashOf(2), Misc2: c.misc2}, nil, start)

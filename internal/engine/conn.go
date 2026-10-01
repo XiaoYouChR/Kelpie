@@ -607,7 +607,7 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 		e.publicIP = ev.YourIP
 	}
 	if caps.Port != 0 {
-		e.uploadEndpoints[uploadKey{ev.UserHash, c.remote.Addr()}] = uploadTarget{c.endpoint(), peer.CanObfuscate(caps.CryptOptions, ev.UserHash)}
+		e.uploadEndpoints[uploadKey{ev.UserHash, c.remote.Addr()}] = uploadTarget{c.endpoint(), wire.CanObfuscate(caps.CryptOptions, ev.UserHash)}
 	}
 	for _, h := range slices.Clone(c.files) {
 		if r := e.downloadByHash(h); r != nil && !c.isClosed {
@@ -655,7 +655,7 @@ func (e *Engine) addTransferPeer(c *conn, r *run) {
 		UDPPort:      caps.UDPPort,
 		CanReaskUDP:  caps.UDPVersion > 0 && caps.UDPPort != 0,
 		CanExchange:  caps.HasSourceExchange2,
-		CanObfuscate: peer.CanObfuscate(caps.CryptOptions, user),
+		CanObfuscate: wire.CanObfuscate(caps.CryptOptions, user),
 	}
 	e.runTransferActions(r, r.transfer.OnPeerConnected(c.id, hello, e.now()))
 }
@@ -889,7 +889,7 @@ func matchNeededSource(source, asker piece.Set) bool {
 func toExchangeSources(found []peer.Source) []transfer.Source {
 	var sources []transfer.Source
 	for _, f := range found {
-		src := transfer.Source{UserHash: f.UserHash, CanObfuscate: peer.CanObfuscate(f.CryptOptions, f.UserHash)}
+		src := transfer.Source{UserHash: f.UserHash, CanObfuscate: wire.CanObfuscate(f.CryptOptions, f.UserHash)}
 		switch {
 		case f.LowID != 0:
 			src.ClientID, src.Server = f.LowID, f.Server
@@ -906,7 +906,7 @@ func toExchangeSources(found []peer.Source) []transfer.Source {
 func toKadSources(found []kad.Source) []transfer.Source {
 	var sources []transfer.Source
 	for _, f := range found {
-		src := transfer.Source{UserHash: f.UserHash, UDPPort: f.UDPPort, CanObfuscate: f.CanObfuscate()}
+		src := transfer.Source{UserHash: f.UserHash, UDPPort: f.UDPPort, CanObfuscate: wire.CanObfuscate(f.CryptOptions, f.UserHash)}
 		switch {
 		case f.IsFirewalled():
 			src.Buddy, src.BuddyID = f.Buddy, f.BuddyID

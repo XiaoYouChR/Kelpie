@@ -319,7 +319,7 @@ func TestSimulatedBuddy(t *testing.T) {
 	if len(got) != 1 || got[0].Type != SourceFirewalled || got[0].Buddy != buddy.addr || got[0].BuddyID != firewalled.c.buddyTarget() {
 		t.Fatalf("searcher found %+v, want the firewalled node behind its buddy", got)
 	}
-	s.record(searcher, searcher.c.requestCallback(Callback{Buddy: got[0].Buddy, BuddyID: got[0].BuddyID, Hash: fileHash}))
+	s.record(searcher, searcher.c.onMessage(Callback{Buddy: got[0].Buddy, BuddyID: got[0].BuddyID, Hash: fileHash}))
 	s.drain()
 	want := CallbackRequested{BuddyID: firewalled.c.buddyTarget(), Hash: fileHash, Addr: netip.AddrPortFrom(searcher.addr.Addr(), 4662)}
 	if len(s.callbacks) != 1 || s.callbacks[0] != want {

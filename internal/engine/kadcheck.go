@@ -4,7 +4,6 @@ import (
 	"net/netip"
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
-	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
@@ -25,8 +24,12 @@ type kadCheck struct {
 	isSent  bool
 }
 
-func (e *Engine) onKadRequest(r kad.Request) {
-	switch r := r.(type) {
+func (e *Engine) onKadMessage(m any) {
+	switch r := m.(type) {
+	case kad.SourcesFound:
+		e.onKadSources(r)
+	case kad.Datagram:
+		e.onDatagram(r.Addr, r.Data)
 	case kad.FirewallCheck:
 		e.startFirewallCheck(r)
 	case kad.UDPCheck:
@@ -54,7 +57,7 @@ func (e *Engine) startFirewallCheck(r kad.FirewallCheck) {
 	if len(e.conns) >= maxConnections {
 		return
 	}
-	c := e.openPeerConn(r.Addr, r.UserHash, peer.CanObfuscate(r.CryptOptions, r.UserHash))
+	c := e.openPeerConn(r.Addr, r.UserHash, wire.CanObfuscate(r.CryptOptions, r.UserHash))
 	e.kadChecks[c.id] = kadCheck{kadPort: r.KadPort}
 }
 

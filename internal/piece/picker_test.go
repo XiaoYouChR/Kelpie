@@ -8,9 +8,14 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
 )
 
-func buildPicker(t *testing.T, size int64, resume piece.ResumeData, seed uint64) *piece.Picker[string] {
+func buildPicker(t *testing.T, size int64, seed uint64) *piece.Picker[string] {
 	t.Helper()
-	picker, err := piece.BuildPicker[string](size, resume, rand.New(rand.NewPCG(seed, 0)))
+	return restorePicker(t, size, nil, nil, seed)
+}
+
+func restorePicker(t *testing.T, size int64, verified piece.Set, written []piece.Block, seed uint64) *piece.Picker[string] {
+	t.Helper()
+	picker, err := piece.BuildPicker[string](size, verified, written, rand.New(rand.NewPCG(seed, 0)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +31,7 @@ func partsOf(blocks []piece.Block) []int {
 }
 
 func TestRequestPrefersRarestPart(t *testing.T) {
-	picker := buildPicker(t, 3*piece.PartSize, piece.ResumeData{}, 1)
+	picker := buildPicker(t, 3*piece.PartSize, 1)
 	picker.OnPeerParts("a", piece.Set{true, true, true})
 	picker.OnPeerParts("b", piece.Set{false, true, true})
 	picker.OnPeerParts("c", piece.Set{false, false, true})
@@ -40,7 +45,7 @@ func TestRequestPrefersRarestPart(t *testing.T) {
 }
 
 func TestRequestPrefersPartInProgress(t *testing.T) {
-	picker := buildPicker(t, 2*piece.PartSize, piece.ResumeData{}, 1)
+	picker := buildPicker(t, 2*piece.PartSize, 1)
 	picker.OnPeerParts("a", piece.Set{true, true})
 	picker.OnPeerParts("b", piece.Set{true, false})
 	picker.Request("b", 1)
@@ -56,7 +61,7 @@ func TestRequestBreaksTiesWithInjectedRandom(t *testing.T) {
 	for seed := range uint64(20) {
 		picks := make([][]piece.Block, 2)
 		for i := range picks {
-			picker := buildPicker(t, 4*piece.PartSize, piece.ResumeData{}, seed)
+			picker := buildPicker(t, 4*piece.PartSize, seed)
 			picker.OnPeerParts("a", piece.BuildFullSet(4))
 			picks[i] = picker.Request("a", 1)
 		}
@@ -71,7 +76,7 @@ func TestRequestBreaksTiesWithInjectedRandom(t *testing.T) {
 }
 
 func TestRequestDuplicatesOnlyInEndgame(t *testing.T) {
-	picker := buildPicker(t, 2*piece.PartSize, piece.ResumeData{}, 1)
+	picker := buildPicker(t, 2*piece.PartSize, 1)
 	picker.OnPeerParts("a", piece.Set{true, false})
 	picker.OnPeerParts("b", piece.Set{false, true})
 
@@ -85,7 +90,7 @@ func TestRequestDuplicatesOnlyInEndgame(t *testing.T) {
 
 func TestEndgameAllowsTwoRequestersPerBlock(t *testing.T) {
 	size := piece.PartSize
-	picker := buildPicker(t, size, piece.ResumeData{}, 1)
+	picker := buildPicker(t, size, 1)
 	for _, peer := range []string{"a", "b", "c"} {
 		picker.OnPeerParts(peer, piece.Set{true})
 	}
@@ -111,7 +116,7 @@ func TestEndgameAllowsTwoRequestersPerBlock(t *testing.T) {
 }
 
 func TestReceivedBlockIsWrittenOnce(t *testing.T) {
-	picker := buildPicker(t, piece.PartSize, piece.ResumeData{}, 1)
+	picker := buildPicker(t, piece.PartSize, 1)
 	picker.OnPeerParts("a", piece.Set{true})
 	picker.OnPeerParts("b", piece.Set{true})
 	picker.Request("a", 53)
@@ -129,7 +134,7 @@ func TestReceivedBlockIsWrittenOnce(t *testing.T) {
 }
 
 func TestGonePeerReleasesItsBlocks(t *testing.T) {
-	picker := buildPicker(t, piece.PartSize, piece.ResumeData{}, 1)
+	picker := buildPicker(t, piece.PartSize, 1)
 	picker.OnPeerParts("a", piece.Set{true})
 	picker.OnPeerParts("b", piece.Set{true})
 	fromA := picker.Request("a", 53)
@@ -146,7 +151,7 @@ func TestGonePeerReleasesItsBlocks(t *testing.T) {
 }
 
 func TestOnPeerPartsReplacesAvailability(t *testing.T) {
-	picker := buildPicker(t, 2*piece.PartSize, piece.ResumeData{}, 1)
+	picker := buildPicker(t, 2*piece.PartSize, 1)
 	picker.OnPeerParts("a", piece.Set{true, true})
 	picker.OnPeerParts("b", piece.Set{true, false})
 	picker.OnPeerParts("b", piece.Set{false, true})
@@ -163,7 +168,7 @@ func TestOnPeerPartsReplacesAvailability(t *testing.T) {
 
 func TestFailedPartReportsSendersAndStartsOver(t *testing.T) {
 	size := 2*piece.BlockSize + 10
-	picker := buildPicker(t, size, piece.ResumeData{}, 1)
+	picker := buildPicker(t, size, 1)
 	picker.OnPeerParts("a", piece.Set{true})
 	picker.OnPeerParts("b", piece.Set{true})
 	fromA := picker.Request("a", 2)
@@ -198,8 +203,8 @@ func TestFailedPartReportsSendersAndStartsOver(t *testing.T) {
 	}
 
 	picker.OnPartVerified(0)
-	if !picker.IsComplete() || picker.WrittenSize() != size {
-		t.Fatalf("IsComplete = %v, WrittenSize = %d after verification", picker.IsComplete(), picker.WrittenSize())
+	if !picker.VerifiedParts().IsFull() || picker.WrittenSize() != size {
+		t.Fatalf("IsComplete = %v, WrittenSize = %d after verification", picker.VerifiedParts().IsFull(), picker.WrittenSize())
 	}
 	if got := picker.Request("b", 10); len(got) != 0 {
 		t.Fatalf("b got %v from a complete file", got)
@@ -207,14 +212,14 @@ func TestFailedPartReportsSendersAndStartsOver(t *testing.T) {
 }
 
 func TestEmptyFileIsComplete(t *testing.T) {
-	if !buildPicker(t, 0, piece.ResumeData{}, 1).IsComplete() {
+	if !buildPicker(t, 0, 1).VerifiedParts().IsFull() {
 		t.Fatal("an empty file has nothing to download")
 	}
 }
 
 func TestResumeDataRestoresProgress(t *testing.T) {
 	size := 2*piece.PartSize + 5
-	picker := buildPicker(t, size, piece.ResumeData{}, 1)
+	picker := buildPicker(t, size, 1)
 	picker.OnPeerParts("a", piece.BuildFullSet(3))
 	for _, b := range picker.Request("a", 200) {
 		picker.OnBlockReceived("a", b)
@@ -224,10 +229,10 @@ func TestResumeDataRestoresProgress(t *testing.T) {
 	}
 	picker.OnPartVerified(2)
 
-	resume := picker.ToResumeData()
-	restored := buildPicker(t, size, resume, 2)
-	if got := restored.ToResumeData(); !slices.Equal(got.VerifiedParts, resume.VerifiedParts) || !slices.Equal(got.WrittenBlocks, resume.WrittenBlocks) {
-		t.Fatalf("restored resume data %v, want %v", got, resume)
+	verified, written := picker.VerifiedParts(), picker.WrittenBlocks()
+	restored := restorePicker(t, size, verified, written, 2)
+	if !slices.Equal(restored.VerifiedParts(), verified) || !slices.Equal(restored.WrittenBlocks(), written) {
+		t.Fatalf("restored %v %v, want %v %v", restored.VerifiedParts(), restored.WrittenBlocks(), verified, written)
 	}
 	if got, want := restored.WrittenSize(), piece.PartSize+piece.BlockSize+5; got != want {
 		t.Fatalf("restored WrittenSize = %d, want %d", got, want)
@@ -241,22 +246,25 @@ func TestResumeDataRestoresProgress(t *testing.T) {
 
 	restored.OnPeerParts("a", piece.BuildFullSet(3))
 	got := restored.Request("a", 200)
-	if len(got) != 52 || slices.Contains(partsOf(got), 1) || slices.Contains(got, picker.BlockAt(0)) {
+	if len(got) != 52 || slices.Contains(partsOf(got), 1) || slices.Contains(got, piece.BlockOf(size, 0, 0)) {
 		t.Fatalf("restored picker requested %d blocks %v, want the 52 unwritten blocks of part 0", len(got), partsOf(got))
 	}
 }
 
 func TestResumeDataOutsideFileIsRejected(t *testing.T) {
 	random := rand.New(rand.NewPCG(1, 0))
-	invalid := []piece.ResumeData{
-		{VerifiedParts: []int{1}},
-		{WrittenBlocks: []piece.Block{{Begin: 10, End: 20}}},
-		{WrittenBlocks: []piece.Block{{Begin: 0, End: 0}}},
-		{WrittenBlocks: []piece.Block{{Begin: 0, End: piece.BlockSize + 1}}},
-		{WrittenBlocks: []piece.Block{{Begin: piece.PartSize, End: piece.PartSize + piece.BlockSize}}},
+	invalid := []struct {
+		verified piece.Set
+		written  []piece.Block
+	}{
+		{verified: piece.Set{false, true}},
+		{written: []piece.Block{{Begin: 10, End: 20}}},
+		{written: []piece.Block{{Begin: 0, End: 0}}},
+		{written: []piece.Block{{Begin: 0, End: piece.BlockSize + 1}}},
+		{written: []piece.Block{{Begin: piece.PartSize, End: piece.PartSize + piece.BlockSize}}},
 	}
 	for _, resume := range invalid {
-		if _, err := piece.BuildPicker[string](piece.BlockSize*2, resume, random); err == nil {
+		if _, err := piece.BuildPicker[string](piece.BlockSize*2, resume.verified, resume.written, random); err == nil {
 			t.Errorf("BuildPicker accepted %v", resume)
 		}
 	}
@@ -265,7 +273,7 @@ func TestResumeDataOutsideFileIsRejected(t *testing.T) {
 // A slot that ends inside a block leaves its received bytes; only the missing
 // tail is asked for again, from the same peer or another one.
 func TestPartlyReceivedBlockKeepsItsBytes(t *testing.T) {
-	picker := buildPicker(t, piece.BlockSize, piece.ResumeData{}, 1)
+	picker := buildPicker(t, piece.BlockSize, 1)
 	picker.OnPeerParts("a", piece.Set{true})
 	picker.OnPeerParts("b", piece.Set{true})
 	block := picker.Request("a", 1)[0]
@@ -286,7 +294,7 @@ func TestPartlyReceivedBlockKeepsItsBytes(t *testing.T) {
 	if got := picker.WrittenSize(); got != 1000 {
 		t.Fatalf("written size = %d, want the 1000 bytes of the head", got)
 	}
-	if got := picker.ToResumeData().WrittenBlocks; !slices.Equal(got, []piece.Block{head}) {
+	if got := picker.WrittenBlocks(); !slices.Equal(got, []piece.Block{head}) {
 		t.Fatalf("resume data = %v, want the written head %v", got, head)
 	}
 
@@ -309,7 +317,7 @@ func TestPartlyReceivedBlockKeepsItsBytes(t *testing.T) {
 
 func TestBlockFailedIsRequestedAlone(t *testing.T) {
 	size := 3 * piece.BlockSize
-	picker := buildPicker(t, size, piece.ResumeData{}, 1)
+	picker := buildPicker(t, size, 1)
 	picker.OnPeerParts("a", piece.BuildFullSet(1))
 	picker.OnPeerParts("b", piece.BuildFullSet(1))
 	blocks := picker.Request("a", 2)
@@ -334,7 +342,7 @@ func TestBlockFailedIsRequestedAlone(t *testing.T) {
 // restart, and only its tail is asked for again.
 func TestResumeDataKeepsWrittenHeadOfBlock(t *testing.T) {
 	size := 3 * piece.BlockSize
-	picker := buildPicker(t, size, piece.ResumeData{}, 1)
+	picker := buildPicker(t, size, 1)
 	picker.OnPeerParts("a", piece.Set{true})
 	blocks := picker.Request("a", 3)
 	head := piece.Block{Begin: blocks[0].Begin, End: blocks[0].Begin + 1000}
@@ -343,11 +351,11 @@ func TestResumeDataKeepsWrittenHeadOfBlock(t *testing.T) {
 	pending := piece.Block{Begin: blocks[1].Begin, End: blocks[1].Begin + 500}
 	picker.OnBlockReceived("a", pending)
 
-	resume := picker.ToResumeData()
-	if !slices.Equal(resume.WrittenBlocks, []piece.Block{head}) {
-		t.Fatalf("WrittenBlocks = %v, want only the written head %v", resume.WrittenBlocks, head)
+	written := picker.WrittenBlocks()
+	if !slices.Equal(written, []piece.Block{head}) {
+		t.Fatalf("WrittenBlocks = %v, want only the written head %v", written, head)
 	}
-	restored := buildPicker(t, size, resume, 2)
+	restored := restorePicker(t, size, nil, written, 2)
 	if got := restored.WrittenSize(); got != 1000 {
 		t.Fatalf("restored WrittenSize = %d, want 1000", got)
 	}
@@ -356,7 +364,7 @@ func TestResumeDataKeepsWrittenHeadOfBlock(t *testing.T) {
 	if !slices.Contains(got, piece.Block{Begin: head.End, End: blocks[0].End}) || !slices.Contains(got, blocks[1]) {
 		t.Fatalf("restored picker requested %v, want the tail of the first block and the whole second", got)
 	}
-	if again := restored.ToResumeData(); !slices.Equal(again.WrittenBlocks, resume.WrittenBlocks) {
-		t.Fatalf("resume data after restart = %v, want %v", again.WrittenBlocks, resume.WrittenBlocks)
+	if again := restored.WrittenBlocks(); !slices.Equal(again, written) {
+		t.Fatalf("WrittenBlocks after restart = %v, want %v", again, written)
 	}
 }

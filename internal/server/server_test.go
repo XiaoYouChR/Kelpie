@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
-	packet "github.com/XiaoYouChR/Kelpie/internal/wire/server"
+	serverwire "github.com/XiaoYouChR/Kelpie/internal/wire/server"
 )
 
 var (
@@ -47,7 +47,7 @@ func loggedIn(t *testing.T, entries []Entry, clientID, flags uint32, wanted []Wa
 		t.Fatalf("connect = %v, want %v first", dialed(out), entries[0].Endpoint)
 	}
 	s.OnConnected(entries[0].Endpoint, start)
-	out = s.OnPacket(entries[0].Endpoint, packet.IDChange{ClientID: clientID, Flags: flags}, start)
+	out = s.OnPacket(entries[0].Endpoint, serverwire.IDChange{ClientID: clientID, Flags: flags}, start)
 	if !s.IsServerConnected() {
 		t.Fatal("not connected after IDChange")
 	}
@@ -122,17 +122,17 @@ func TestFirstLoginWins(t *testing.T) {
 	if out := s.OnTick(start, nil); !reflect.DeepEqual(dialed(out), []netip.AddrPort{a, b}) {
 		t.Fatalf("connect = %v", dialed(out))
 	}
-	if out := s.OnConnected(b, start); out.To != b || len(sent[packet.Login](out)) != 1 {
+	if out := s.OnConnected(b, start); out.To != b || len(sent[serverwire.Login](out)) != 1 {
 		t.Fatalf("login to b = %+v", out)
 	}
-	if out := s.OnConnected(a, start); out.To != a || len(sent[packet.Login](out)) != 1 {
+	if out := s.OnConnected(a, start); out.To != a || len(sent[serverwire.Login](out)) != 1 {
 		t.Fatalf("login to a = %+v", out)
 	}
-	out := s.OnPacket(a, packet.ServerMessage{Text: "from a"}, start)
+	out := s.OnPacket(a, serverwire.ServerMessage{Text: "from a"}, start)
 	if !reflect.DeepEqual(out.Events, []Event{MessageReceived{Text: "from a"}}) {
 		t.Fatalf("message while logging in = %+v", out.Events)
 	}
-	out = s.OnPacket(b, packet.IDChange{ClientID: highID}, start)
+	out = s.OnPacket(b, serverwire.IDChange{ClientID: highID}, start)
 	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a}) || out.To != b {
 		t.Fatalf("login output = %+v", out)
 	}
@@ -142,7 +142,7 @@ func TestFirstLoginWins(t *testing.T) {
 	if out := s.OnDisconnected(a, start); len(dialed(out)) > 0 || s.servers[0].Failures != 0 {
 		t.Fatalf("closed loser reported: %+v failures=%d", out, s.servers[0].Failures)
 	}
-	if out := s.OnPacket(a, packet.IDChange{ClientID: 1234}, start); len(out.Events) > 0 || s.ClientID() != highID {
+	if out := s.OnPacket(a, serverwire.IDChange{ClientID: 1234}, start); len(out.Events) > 0 || s.ClientID() != highID {
 		t.Fatalf("packet from the closed loser used: %+v", out)
 	}
 	if out := s.OnTick(start.Add(time.Hour), nil); len(dialed(out)) > 0 || len(out.Close) > 0 {
@@ -197,11 +197,11 @@ func TestLogin(t *testing.T) {
 	s := BuildServer(config, []Entry{{Endpoint: first}})
 	s.OnTick(start, nil)
 	out := s.OnConnected(first, start)
-	want := packet.Login{
+	want := serverwire.Login{
 		UserHash: userHash, Port: 4662, Name: "Kelpie", Version: 0x3C,
-		Flags: packet.CapZlib | packet.CapNewTags | packet.CapUnicode | packet.CapLargeFiles |
-			packet.CapSupportCrypt | packet.CapRequestCrypt,
-		EmuleVersion: compatibleClient<<24 | 1<<17 | 2<<10 | 3<<7,
+		Flags: serverwire.CapZlib | serverwire.CapNewTags | serverwire.CapUnicode | serverwire.CapLargeFiles |
+			serverwire.CapSupportCrypt | serverwire.CapRequestCrypt,
+		EmuleVersion: 0x4B<<24 | 1<<17 | 2<<10 | 3<<7,
 	}
 	if len(out.Send) != 1 || !reflect.DeepEqual(out.Send[0], want) {
 		t.Fatalf("login = %+v, want %+v", out.Send, want)
@@ -240,13 +240,12 @@ func TestReconnectMovesToAnotherServer(t *testing.T) {
 
 func TestServerMessagesAndStatus(t *testing.T) {
 	s, _ := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, 0, nil)
-	out := s.OnPacket(first, packet.ServerMessage{Text: "welcome"}, start)
+	out := s.OnPacket(first, serverwire.ServerMessage{Text: "welcome"}, start)
 	if !reflect.DeepEqual(out.Events, []Event{MessageReceived{Text: "welcome"}}) {
 		t.Fatalf("events = %+v", out.Events)
 	}
-	s.OnPacket(first, packet.ServerStatus{Users: 7, Files: 8}, start)
-	s.OnPacket(first, packet.ServerIdent{Name: "renamed"}, start)
-	if c := s.current; c.Users != 7 || c.Files != 8 || c.Name != "renamed" {
+	s.OnPacket(first, serverwire.ServerStatus{Users: 7, Files: 8}, start)
+	if c := s.current; c.Users != 7 || c.Files != 8 {
 		t.Fatalf("entry = %+v", c.Entry)
 	}
 }
@@ -261,7 +260,7 @@ func TestSourceRequestPacing(t *testing.T) {
 	askedAt := map[wire.Hash]time.Time{}
 	var frames []time.Time
 	check := func(now time.Time, out Output) {
-		requests := sent[packet.GetSources](out)
+		requests := sent[serverwire.GetSources](out)
 		if len(requests) == 0 {
 			return
 		}
@@ -304,11 +303,11 @@ func TestSourceRequestPacing(t *testing.T) {
 func TestLargeFileSourcesNeedServerSupport(t *testing.T) {
 	large := []Wanted{{File: fileHash(1), Size: 5 << 30}}
 	_, out := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, 0, large)
-	if len(sent[packet.GetSources](out)) != 0 {
+	if len(sent[serverwire.GetSources](out)) != 0 {
 		t.Fatal("large file asked on a server without large file support")
 	}
-	_, out = loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, packet.FlagLargeFiles, large)
-	if got := sent[packet.GetSources](out); len(got) != 1 || got[0].Size != 5<<30 {
+	_, out = loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, serverwire.FlagLargeFiles, large)
+	if got := sent[serverwire.GetSources](out); len(got) != 1 || got[0].Size != 5<<30 {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -318,12 +317,12 @@ func TestLargeFileSourcesNeedServerSupport(t *testing.T) {
 // obfuscated connections need.
 func TestObfuscationServerGetsObfuRequest(t *testing.T) {
 	wanted := downloads(1)
-	_, out := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, packet.FlagTCPObfuscation, wanted)
-	if got := sent[packet.GetSourcesObfu](out); len(got) != 1 || got[0].Hash != wanted[0].File || len(sent[packet.GetSources](out)) != 0 {
+	_, out := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, serverwire.FlagTCPObfuscation, wanted)
+	if got := sent[serverwire.GetSourcesObfu](out); len(got) != 1 || got[0].Hash != wanted[0].File || len(sent[serverwire.GetSources](out)) != 0 {
 		t.Fatalf("sent %+v", out.Send)
 	}
 	_, out = loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, 0, wanted)
-	if len(sent[packet.GetSources](out)) != 1 || len(sent[packet.GetSourcesObfu](out)) != 0 {
+	if len(sent[serverwire.GetSources](out)) != 1 || len(sent[serverwire.GetSourcesObfu](out)) != 0 {
 		t.Fatalf("sent %+v", out.Send)
 	}
 }
@@ -331,7 +330,7 @@ func TestObfuscationServerGetsObfuRequest(t *testing.T) {
 func TestFoundSources(t *testing.T) {
 	server := ep("1.0.0.1:4661")
 	v6 := netip.MustParseAddr("2001:db8::1")
-	found := packet.FoundSources{Hash: fileHash(0), Sources: []packet.Source{
+	found := serverwire.FoundSources{Hash: fileHash(0), Sources: []serverwire.Source{
 		{ClientID: wire.ToClientID(netip.MustParseAddr("5.6.7.8")), Port: 4662},
 		{ClientID: 77, Port: 4662},
 		{ClientID: wire.IPv6Sentinel, Port: 4663, IPv6: v6},
@@ -349,7 +348,7 @@ func TestFoundSources(t *testing.T) {
 		t.Fatalf("events = %+v\nwant %+v", out.Events, want)
 	}
 
-	obfu := packet.FoundSourcesObfu{Hash: fileHash(0), Sources: []packet.Source{{ClientID: 77, Port: 4662, CryptOptions: 0x80, UserHash: userHash}}}
+	obfu := serverwire.FoundSourcesObfu{Hash: fileHash(0), Sources: []serverwire.Source{{ClientID: 77, Port: 4662, CryptOptions: 0x80, UserHash: userHash}}}
 	if out := s.OnPacket(first, obfu, start); len(out.Events) != 1 || out.Events[0].(SourcesFound).Sources[0].UserHash != userHash ||
 		out.Events[0].(SourcesFound).Sources[0].CanObfuscate {
 		t.Fatalf("obfuscated variant: %+v", out.Events)
@@ -358,7 +357,7 @@ func TestFoundSources(t *testing.T) {
 	if out := s.OnPacket(first, obfu, start); !out.Events[0].(SourcesFound).Sources[0].CanObfuscate {
 		t.Fatalf("supports bit lost: %+v", out.Events)
 	}
-	if out := s.OnPacket(first, packet.FoundSources{Hash: fileHash(5), Sources: found.Sources}, start); len(out.Events) != 0 {
+	if out := s.OnPacket(first, serverwire.FoundSources{Hash: fileHash(5), Sources: found.Sources}, start); len(out.Events) != 0 {
 		t.Fatal("sources for a file nobody wants")
 	}
 
@@ -377,7 +376,7 @@ func TestCallbacks(t *testing.T) {
 	s, _ := loggedIn(t, []Entry{{Endpoint: server}}, highID, 0, nil)
 
 	out, ok := s.RequestCallback(lowSource, start)
-	if !ok || !reflect.DeepEqual(out.Send, []wire.Packet{packet.CallbackRequest{ClientID: 77}}) {
+	if !ok || !reflect.DeepEqual(out.Send, []wire.Packet{serverwire.CallbackRequest{ClientID: 77}}) {
 		t.Fatalf("callback = %+v %v", out, ok)
 	}
 	elsewhere := lowSource
@@ -389,24 +388,24 @@ func TestCallbacks(t *testing.T) {
 		t.Fatal("callback for a HighID source")
 	}
 
-	out = s.OnPacket(first, packet.CallbackRequested{Addr: ep("5.6.7.8:4662")}, start)
+	out = s.OnPacket(first, serverwire.CallbackRequested{Addr: ep("5.6.7.8:4662")}, start)
 	if !reflect.DeepEqual(out.ConnectPeers, []Callback{{Endpoint: ep("5.6.7.8:4662")}}) {
 		t.Fatalf("connect peers = %+v", out.ConnectPeers)
 	}
 	user := wire.Hash{1, 2, 3}
-	out = s.OnPacket(first, packet.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x83, UserHash: user}, start)
+	out = s.OnPacket(first, serverwire.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x83, UserHash: user}, start)
 	if !reflect.DeepEqual(out.ConnectPeers, []Callback{{Endpoint: ep("5.6.7.8:4662"), UserHash: user, CanObfuscate: true}}) {
 		t.Fatalf("obfuscated callback = %+v", out.ConnectPeers)
 	}
-	out = s.OnPacket(first, packet.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x80, UserHash: user}, start)
+	out = s.OnPacket(first, serverwire.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x80, UserHash: user}, start)
 	if len(out.ConnectPeers) != 1 || out.ConnectPeers[0].CanObfuscate {
 		t.Fatalf("callback without crypt support = %+v", out.ConnectPeers)
 	}
-	out = s.OnPacket(first, packet.CallbackRequestedIPv6{Addr: ep("[2001:db8::1]:4662")}, start)
+	out = s.OnPacket(first, serverwire.CallbackRequestedIPv6{Addr: ep("[2001:db8::1]:4662")}, start)
 	if len(out.ConnectPeers) != 1 {
 		t.Fatalf("IPv6 callback = %v", out.ConnectPeers)
 	}
-	if out := s.OnPacket(first, packet.CallbackFailed{}, start); !reflect.DeepEqual(out.Events, []Event{CallbackFailed{}}) {
+	if out := s.OnPacket(first, serverwire.CallbackFailed{}, start); !reflect.DeepEqual(out.Events, []Event{CallbackFailed{}}) {
 		t.Fatalf("events = %+v", out.Events)
 	}
 
@@ -424,7 +423,7 @@ func TestOfferFilesMarkers(t *testing.T) {
 		{File: fileHash(4), Size: 5 << 30, Name: "large.iso", IsComplete: true, IsShared: true},
 	}
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}}
-	idPort := func(o packet.OfferFiles) [][2]uint32 {
+	idPort := func(o serverwire.OfferFiles) [][2]uint32 {
 		var got [][2]uint32
 		for _, f := range o.Files {
 			got = append(got, [2]uint32{f.ClientID, uint32(f.Port)})
@@ -432,31 +431,31 @@ func TestOfferFilesMarkers(t *testing.T) {
 		return got
 	}
 
-	_, out := loggedIn(t, entries, highID, packet.FlagCompression|packet.FlagLargeFiles, shared)
-	offers := sent[packet.OfferFiles](out)
+	_, out := loggedIn(t, entries, highID, serverwire.FlagCompression|serverwire.FlagLargeFiles, shared)
+	offers := sent[serverwire.OfferFiles](out)
 	if len(offers) != 1 || len(offers[0].Files) != 3 {
 		t.Fatalf("offers = %+v", offers)
 	}
-	want := [][2]uint32{{packet.CompleteID, uint32(packet.CompletePort)}, {packet.IncompleteID, uint32(packet.IncompletePort)}, {packet.CompleteID, uint32(packet.CompletePort)}}
+	want := [][2]uint32{{serverwire.CompleteID, uint32(serverwire.CompletePort)}, {serverwire.IncompleteID, uint32(serverwire.IncompletePort)}, {serverwire.CompleteID, uint32(serverwire.CompletePort)}}
 	if got := idPort(offers[0]); !reflect.DeepEqual(got, want) {
 		t.Fatalf("markers = %x", got)
 	}
 	wantTags := []wire.Tag{
-		{Type: wire.TagString, ID: packet.FileName, String: "large.iso"},
-		{Type: wire.TagUint32, ID: packet.FileSize, Uint: (5 << 30) & 0xFFFFFFFF},
-		{Type: wire.TagUint32, ID: packet.FileSizeHi, Uint: 1},
+		{Type: wire.TagString, ID: serverwire.FileName, String: "large.iso"},
+		{Type: wire.TagUint32, ID: serverwire.FileSize, Uint: (5 << 30) & 0xFFFFFFFF},
+		{Type: wire.TagUint32, ID: serverwire.FileSizeHi, Uint: 1},
 	}
 	if !reflect.DeepEqual(offers[0].Files[2].Tags, wantTags) {
 		t.Fatalf("tags = %+v", offers[0].Files[2].Tags)
 	}
 
 	_, out = loggedIn(t, entries, highID, 0, shared)
-	offers = sent[packet.OfferFiles](out)
+	offers = sent[serverwire.OfferFiles](out)
 	if got := idPort(offers[0]); !reflect.DeepEqual(got, [][2]uint32{{highID, 4662}, {highID, 4662}}) {
 		t.Fatalf("HighID without compression = %v", got)
 	}
 	_, out = loggedIn(t, entries, 1234, 0, shared)
-	offers = sent[packet.OfferFiles](out)
+	offers = sent[serverwire.OfferFiles](out)
 	if got := idPort(offers[0]); !reflect.DeepEqual(got, [][2]uint32{{0, 0}, {0, 0}}) {
 		t.Fatalf("LowID without compression = %v", got)
 	}
@@ -467,11 +466,11 @@ func TestOfferFilesCadence(t *testing.T) {
 	for i := range 450 {
 		shared = append(shared, Wanted{File: fileHash(i), Size: 100, Name: "f", IsComplete: true, IsShared: true})
 	}
-	s, out := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, packet.FlagCompression, shared)
-	counts := []int{len(sent[packet.OfferFiles](out)[0].Files)}
+	s, out := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, serverwire.FlagCompression, shared)
+	counts := []int{len(sent[serverwire.OfferFiles](out)[0].Files)}
 	last := start
 	for now := start.Add(time.Second); now.Before(start.Add(10 * time.Minute)); now = now.Add(time.Second) {
-		offers := sent[packet.OfferFiles](s.OnTick(now, shared))
+		offers := sent[serverwire.OfferFiles](s.OnTick(now, shared))
 		if len(offers) == 0 {
 			continue
 		}
@@ -487,8 +486,8 @@ func TestOfferFilesCadence(t *testing.T) {
 
 	shared[0].IsComplete = false
 	now := last.Add(offerTime)
-	offers := sent[packet.OfferFiles](s.OnTick(now, shared))
-	if len(offers) != 1 || len(offers[0].Files) != 1 || offers[0].Files[0].ClientID != packet.IncompleteID {
+	offers := sent[serverwire.OfferFiles](s.OnTick(now, shared))
+	if len(offers) != 1 || len(offers[0].Files) != 1 || offers[0].Files[0].ClientID != serverwire.IncompleteID {
 		t.Fatalf("changed file not offered again: %+v", offers)
 	}
 }
@@ -499,7 +498,7 @@ func TestOfferFilesRespectsSoftLimit(t *testing.T) {
 		shared = append(shared, Wanted{File: fileHash(i), Size: 100, IsComplete: true, IsShared: true})
 	}
 	_, out := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661"), SoftFiles: 20}}, highID, 0, shared)
-	if n := len(sent[packet.OfferFiles](out)[0].Files); n != 20 {
+	if n := len(sent[serverwire.OfferFiles](out)[0].Files); n != 20 {
 		t.Fatalf("offered %d files, soft limit 20", n)
 	}
 }
@@ -510,7 +509,7 @@ func TestKeepAlive(t *testing.T) {
 		t.Fatalf("early keep-alive: %+v", out.Send)
 	}
 	out := s.OnTick(start.Add(keepAliveTime), nil)
-	if !reflect.DeepEqual(out.Send, []wire.Packet{packet.OfferFiles{}}) {
+	if !reflect.DeepEqual(out.Send, []wire.Packet{serverwire.OfferFiles{}}) {
 		t.Fatalf("keep-alive = %+v", out.Send)
 	}
 	if out := s.OnTick(start.Add(keepAliveTime+time.Minute), nil); len(out.Send) != 0 {
@@ -524,8 +523,8 @@ func TestKeepAlive(t *testing.T) {
 func TestObfuscatedPassFirst(t *testing.T) {
 	a, b, c := ep("1.0.0.1:4661"), ep("1.0.0.2:4661"), ep("1.0.0.3:4661")
 	s := BuildServer(config, []Entry{
-		{Endpoint: a, Users: 30, TCPObfuscationPort: 4665, UDPFlags: packet.UDPFlagTCPObfuscation},
-		{Endpoint: b, Users: 20, UDPFlags: packet.UDPFlagUDPObfuscation},
+		{Endpoint: a, Users: 30, TCPObfuscationPort: 4665, UDPFlags: serverwire.UDPFlagTCPObfuscation},
+		{Endpoint: b, Users: 20, UDPFlags: serverwire.UDPFlagUDPObfuscation},
 		{Endpoint: c, Users: 10},
 	})
 	out := s.OnTick(start, nil)
@@ -557,7 +556,7 @@ func TestObfuscatedPassFirst(t *testing.T) {
 // connection to it is obfuscated.
 func TestObfuscationPortFromLogin(t *testing.T) {
 	s, _ := loggedIn(t, []Entry{{Endpoint: first}}, highID, 0, nil)
-	s.OnPacket(first, packet.IDChange{ClientID: highID, Flags: packet.FlagTCPObfuscation, ObfuscationPort: 4665}, start)
+	s.OnPacket(first, serverwire.IDChange{ClientID: highID, Flags: serverwire.FlagTCPObfuscation, ObfuscationPort: 4665}, start)
 	s.OnDisconnected(first, start)
 	out := s.OnTick(start.Add(passRetryTime+time.Second), nil)
 	if want := []Dial{{Server: first, ObfuscationPort: 4665}}; !reflect.DeepEqual(out.Connect, want) {
@@ -583,7 +582,7 @@ func TestHostNameServer(t *testing.T) {
 		t.Fatalf("connect after lookup = %+v", out.Connect)
 	}
 	s.OnConnected(resolved, start)
-	s.OnPacket(resolved, packet.IDChange{ClientID: highID}, start)
+	s.OnPacket(resolved, serverwire.IDChange{ClientID: highID}, start)
 	later := start.Add(dnsSolveTime + time.Minute)
 	if out := s.OnTick(later, nil); len(out.Resolve) > 0 {
 		t.Fatalf("looked up the connected server: %v", out.Resolve)

@@ -32,22 +32,8 @@ type Source struct {
 	UserHash wire.Hash
 	// CryptOptions is the source's obfuscation setting, laid out as in
 	// Source Exchange v4, the servers' answers, Kad and the Hello:
-	// cryptSupported, cryptRequested, cryptRequired.
+	// wire.CryptSupported, wire.CryptRequested, wire.CryptRequired.
 	CryptOptions byte
-}
-
-const (
-	cryptSupported byte = 0x01
-	cryptRequested byte = 0x02
-	cryptRequired  byte = 0x04
-)
-
-// CanObfuscate tells whether a connection to a client with these crypt
-// options may be obfuscated: it supports obfuscation and we know the user
-// hash that keys it. Kelpie requests obfuscation, so a supporting client is
-// always obfuscated, as aMule does (CUpDownClient::Connect).
-func CanObfuscate(cryptOptions byte, user wire.Hash) bool {
-	return cryptOptions&cryptSupported != 0 && user != wire.Hash{}
 }
 
 type sourceState struct {

@@ -216,8 +216,8 @@ func TestBitfieldGolden(t *testing.T) {
 	}
 	r := Reader{Rest: raw}
 	back := r.Bitfield()
-	if r.Err() != nil || !reflect.DeepEqual(back.Bools(), f.Bools()) || back.Count() != 3 {
-		t.Fatalf("back = %v", back.Bools())
+	if r.Err() != nil || !reflect.DeepEqual(back.bools(), f.bools()) || back.Count() != 3 {
+		t.Fatalf("back = %v", back.bools())
 	}
 }
 
@@ -225,20 +225,18 @@ func TestBitfieldDropsTrailingBits(t *testing.T) {
 	r := Reader{Rest: []byte{0x03, 0x00, 0xFF}}
 	f := r.Bitfield()
 	if f.Len() != 3 || f.Count() != 3 || f.Has(3) {
-		t.Fatalf("bitfield = %v", f.Bools())
+		t.Fatalf("bitfield = %v", f.bools())
 	}
 	if raw := BuildBitfield(nil, f); !bytes.Equal(raw, []byte{0x03, 0x00, 0x07}) {
 		t.Fatalf("re-encoded = %x", raw)
 	}
 }
 
-func TestBitfieldSetClear(t *testing.T) {
+func TestBitfieldSet(t *testing.T) {
 	f := ToBitfield(make([]bool, 12))
 	f.Set(11)
-	f.Set(0)
-	f.Clear(0)
 	if !f.Has(11) || f.Has(0) || f.Has(12) || f.Has(-1) || f.Count() != 1 {
-		t.Fatalf("bitfield = %v", f.Bools())
+		t.Fatalf("bitfield = %v", f.bools())
 	}
 }
 
@@ -260,8 +258,8 @@ func (r *failingReader) Read(b []byte) (int, error) {
 func TestOversizedFrameIsRejectedUnread(t *testing.T) {
 	head := []byte{ProtocolEMule, 0, 0, 0, 0, 0x60}
 	binary.LittleEndian.PutUint32(head[1:5], MaxFrameSize+1)
-	if _, err := ParseFrameFrom(&failingReader{t: t, head: head}); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("err = %v, want ErrTooLarge", err)
+	if _, err := ParseFrameFrom(&failingReader{t: t, head: head}); !errors.Is(err, errTooLarge) {
+		t.Fatalf("err = %v, want errTooLarge", err)
 	}
 	binary.LittleEndian.PutUint32(head[1:5], MaxFrameSize)
 	raw := append(head, make([]byte, MaxFrameSize-1)...)
@@ -278,14 +276,14 @@ func TestTruncatedFrameFails(t *testing.T) {
 }
 
 func TestInflationBomb(t *testing.T) {
-	bomb := make([]byte, MaxInflatedSize+1)
-	if _, err := ParseFrameFrom(bytes.NewReader(BuildPackedFrame(nil, 0x60, bomb))); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("frame err = %v, want ErrTooLarge", err)
+	bomb := make([]byte, maxInflatedSize+1)
+	if _, err := ParseFrameFrom(bytes.NewReader(BuildPackedFrame(nil, 0x60, bomb))); !errors.Is(err, errTooLarge) {
+		t.Fatalf("frame err = %v, want errTooLarge", err)
 	}
-	if _, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb)); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("datagram err = %v, want ErrTooLarge", err)
+	if _, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb)); !errors.Is(err, errTooLarge) {
+		t.Fatalf("datagram err = %v, want errTooLarge", err)
 	}
-	if f, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb[:MaxInflatedSize])); err != nil || len(f.Body) != MaxInflatedSize {
+	if f, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb[:maxInflatedSize])); err != nil || len(f.Body) != maxInflatedSize {
 		t.Fatalf("largest datagram: %d bytes, err %v", len(f.Body), err)
 	}
 }
@@ -305,5 +303,40 @@ func TestTagListCap(t *testing.T) {
 	r = &Reader{Rest: build(maxTags + 1)}
 	if tags := r.Tags(); tags != nil || r.Err() == nil {
 		t.Fatalf("%d tags: got %d, want an error", maxTags+1, len(tags))
+	}
+}
+
+func TestToEmuleVersion(t *testing.T) {
+	for version, want := range map[string]uint32{
+		"v1.2.3":    0x4B<<24 | 1<<17 | 2<<10 | 3<<7,
+		"1.2.3":     0x4B<<24 | 1<<17 | 2<<10 | 3<<7,
+		"1.2.3-dev": 0x4B<<24 | 1<<17 | 2<<10 | 3<<7,
+		"v0.10":     0x4B<<24 | 10<<10,
+		"dev":       0x4B << 24,
+		"1.2.9":     0x4B<<24 | 1<<17 | 2<<10 | 1<<7,
+	} {
+		if got := ToEmuleVersion(version); got != want {
+			t.Errorf("ToEmuleVersion(%q) = %#x, want %#x", version, got, want)
+		}
+	}
+}
+
+func TestAddressFilters(t *testing.T) {
+	for addr, want := range map[string]bool{
+		"198.51.100.7": true, "2001:db8::1": true, "::ffff:198.51.100.7": true,
+		"10.0.0.1": false, "192.168.1.1": false, "127.0.0.1": false, "169.254.1.1": false,
+		"0.1.2.3": false, "224.0.0.1": false, "240.0.0.1": false, "255.255.255.255": false, "fe80::1": false, "fd00::1": false,
+	} {
+		if got := IsPublic(netip.MustParseAddr(addr)); got != want {
+			t.Errorf("IsPublic(%s) = %v, want %v", addr, got, want)
+		}
+	}
+	for endpoint, want := range map[string]bool{
+		"198.51.100.7:4661": true, "192.168.1.1:4661": true, "127.0.0.1:4661": true,
+		"198.51.100.7:0": false, "0.0.0.0:4661": false, "224.0.0.1:4661": false, "255.255.255.255:4661": false, "[2001:db8::1]:4661": false,
+	} {
+		if got := IsDialable(netip.MustParseAddrPort(endpoint)); got != want {
+			t.Errorf("IsDialable(%s) = %v, want %v", endpoint, got, want)
+		}
 	}
 }

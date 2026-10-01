@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
-	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
@@ -71,7 +70,7 @@ func (e *Engine) startBuddyLink() {
 			if len(e.conns) >= maxConnections {
 				return
 			}
-			c = e.openPeerConn(f.Addr, f.UserHash, peer.CanObfuscate(f.CryptOptions, f.UserHash))
+			c = e.openPeerConn(f.Addr, f.UserHash, wire.CanObfuscate(f.CryptOptions, f.UserHash))
 		}
 		e.buddy.conn, e.buddy.isServing = c, false
 		e.kad.SetBuddy(kad.Buddy{IsConnecting: true})
@@ -260,5 +259,5 @@ func (e *Engine) onDirectCallbackReq(from netip.AddrPort, p client.DirectCallbac
 	if e.connByEndpoint(endpoint) != nil || len(e.conns) >= maxConnections {
 		return
 	}
-	e.openPeerConn(endpoint, p.UserHash, peer.CanObfuscate(p.ConnectOptions, p.UserHash))
+	e.openPeerConn(endpoint, p.UserHash, wire.CanObfuscate(p.ConnectOptions, p.UserHash))
 }

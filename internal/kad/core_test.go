@@ -29,7 +29,7 @@ type harness struct {
 	answering map[netip.AddrPort]Node
 	sent      []datagram
 	found     []SourcesFound
-	requests  []Request
+	requests  []request
 }
 
 func buildHarness(t *testing.T) *harness {
@@ -230,7 +230,7 @@ func buildOpenEntry(id wire.Hash, ip string, port uint16) kadwire.Entry {
 // wire bytes.
 func buddyHashText(id wire.Hash) string {
 	var raw wire.Hash
-	copy(raw[:], buildID(nil, id))
+	copy(raw[:], kadwire.BuildID(nil, id))
 	return raw.String()
 }
 
@@ -326,7 +326,7 @@ func TestRequestCallbackReachesBuddy(t *testing.T) {
 	h := buildHarness(t)
 	buddyID := mustHash("0011223344556677889900AABBCCDDEE")
 	buddy := netip.MustParseAddrPort("9.8.7.6:4672")
-	out := h.c.requestCallback(Callback{Buddy: buddy, BuddyID: buddyID, Hash: fileHash})
+	out := h.c.onMessage(Callback{Buddy: buddy, BuddyID: buddyID, Hash: fileHash})
 	if len(out.datagrams) != 1 || out.datagrams[0].to != buddy {
 		t.Fatalf("callback datagrams %+v", out.datagrams)
 	}
@@ -334,7 +334,7 @@ func TestRequestCallbackReachesBuddy(t *testing.T) {
 	want := []byte{wire.ProtocolKad, 0x52}
 	buddyWire := mustHash(buddyHashText(buddyID))
 	want = append(want, buddyWire[:]...)
-	want = buildID(want, fileHash)
+	want = kadwire.BuildID(want, fileHash)
 	want = binary.LittleEndian.AppendUint16(want, 4662)
 	if !bytes.Equal(got, want) {
 		t.Fatalf("callback\n got %x\nwant %x", got, want)
