@@ -22,12 +22,9 @@ type goed2kState struct {
 		CreateTime int64    `json:"create_time"`
 		TargetPath string   `json:"target_path"`
 		ResumeData *struct {
-			Hashes           []hashText `json:"hashes"`
-			Pieces           []bool     `json:"pieces"`
-			DownloadedBlocks []struct {
-				PieceIndex int
-				PieceBlock int
-			} `json:"downloaded_blocks"`
+			Hashes           []hashText    `json:"hashes"`
+			Pieces           []bool        `json:"pieces"`
+			DownloadedBlocks []goed2kBlock `json:"downloaded_blocks"`
 		} `json:"resume_data"`
 	} `json:"transfers"`
 	Credits []struct {
@@ -44,6 +41,12 @@ type goed2kState struct {
 			Version byte     `json:"version"`
 		} `json:"nodes"`
 	} `json:"dht"`
+}
+
+// goed2kBlock is a 190 KiB block of goed2k (goed2kBlockSize).
+type goed2kBlock struct {
+	PieceIndex int
+	PieceBlock int
 }
 
 func parseGoed2k(raw []byte) (State, error) {
@@ -81,12 +84,9 @@ func parseGoed2k(raw []byte) (State, error) {
 				transfer.PartHashes = append(transfer.PartHashes, wire.Hash(part))
 			}
 			transfer.VerifiedParts = piece.Set(resume.Pieces)
-			written := map[int]map[int]bool{}
+			written := map[goed2kBlock]bool{}
 			for _, block := range resume.DownloadedBlocks {
-				if written[block.PieceIndex] == nil {
-					written[block.PieceIndex] = map[int]bool{}
-				}
-				written[block.PieceIndex][block.PieceBlock] = true
+				written[block] = true
 			}
 			transfer.WrittenBlocks = toWrittenBlocks(entry.Size, written)
 		}
@@ -99,18 +99,15 @@ func parseGoed2k(raw []byte) (State, error) {
 // block counts as written only when goed2k blocks cover every byte of it.
 const goed2kBlockSize = 190 * 1024
 
-func toWrittenBlocks(size int64, written map[int]map[int]bool) []piece.Block {
+func toWrittenBlocks(size int64, written map[goed2kBlock]bool) []piece.Block {
 	var blocks []piece.Block
-	for part := 0; part < piece.PartCount(size); part++ {
-		if len(written[part]) == 0 {
-			continue
-		}
+	for part := range piece.PartCount(size) {
 		partBegin := piece.PartRange(size, part).Begin
 		for index := range piece.BlockCount(size, part) {
 			block := piece.BlockOf(size, part, index)
 			isCovered := true
 			for old := (block.Begin - partBegin) / goed2kBlockSize; old <= (block.End-1-partBegin)/goed2kBlockSize; old++ {
-				isCovered = isCovered && written[part][int(old)]
+				isCovered = isCovered && written[goed2kBlock{part, int(old)}]
 			}
 			if isCovered {
 				blocks = append(blocks, block)
