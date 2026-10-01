@@ -403,10 +403,9 @@ type SecureIdentState struct {
 	Challenge uint32
 }
 
-const (
-	SecureIdentNeedsSignature       byte = 1
-	SecureIdentNeedsKeyAndSignature byte = 2
-)
+// SecureIdentNeedsKeyAndSignature is the only state Kelpie sends; a
+// State of 1 asks for the signature alone.
+const SecureIdentNeedsKeyAndSignature byte = 2
 
 func (SecureIdentState) Protocol() byte { return wire.ProtocolEMule }
 func (SecureIdentState) Opcode() byte   { return opSecureIdentState }
@@ -424,17 +423,12 @@ func (p PublicKey) Build(b []byte) []byte {
 }
 
 // Signature is OP_SIGNATURE. IPKind is present from Secure Ident v2 on and
-// names which address the signature binds; 0 means absent.
+// names which address the signature binds (identity.IPKind); 0 means
+// absent.
 type Signature struct {
 	Signature []byte
 	IPKind    byte
 }
-
-const (
-	IPKindRemoteClient byte = 10
-	IPKindLocalClient  byte = 20
-	IPKindNone         byte = 30
-)
 
 func (Signature) Protocol() byte { return wire.ProtocolEMule }
 func (Signature) Opcode() byte   { return opSignature }

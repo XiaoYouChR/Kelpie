@@ -78,7 +78,7 @@ func samplePackets() []wire.Packet {
 		hello,
 		answer,
 		Hello{UserHash: userHash, ClientID: 7},
-		EmuleInfo{Version: 0x40, ProtocolVersion: 1, Tags: []wire.Tag{{Type: wire.TagUint32, ID: InfoSourceExchange, Uint: 3}}},
+		EmuleInfo{Version: 0x40, ProtocolVersion: 1, Tags: []wire.Tag{{Type: wire.TagUint32, ID: InfoUDPVersion, Uint: 4}}},
 		EmuleInfoAnswer{Version: 0x40, ProtocolVersion: 1},
 		FileRequest{Hash: fileHash},
 		FileRequest{Hash: fileHash, HasParts: true, Parts: parts(true, false, true)},
@@ -114,7 +114,7 @@ func samplePackets() []wire.Packet {
 		SecureIdentState{State: SecureIdentNeedsKeyAndSignature, Challenge: 0xDEADBEEF},
 		PublicKey{Key: []byte{1, 2, 3}},
 		Signature{Signature: []byte{4, 5}},
-		Signature{Signature: []byte{4, 5}, IPKind: IPKindRemoteClient},
+		Signature{Signature: []byte{4, 5}, IPKind: 10},
 		MultiPacket{Hash: fileHash, Requests: []wire.Packet{
 			FileRequest{Hash: fileHash, HasParts: true, Parts: parts(true), HasCompleteSources: true, CompleteSources: 3},
 			SetRequestFileID{Hash: fileHash},
@@ -235,14 +235,14 @@ func TestMiscOptionsBits(t *testing.T) {
 	if v := m1.ToUint32(); v != 0x34133217 {
 		t.Fatalf("misc1 = %#x", v)
 	}
-	if ParseMiscOptions1(0x34133217) != m1 {
+	if parseMiscOptions1(0x34133217) != m1 {
 		t.Fatal("misc1 parse")
 	}
 	m2 := MiscOptions2{KadVersion: 9, HasLargeFiles: true, HasExtMultiPacket: true, HasSourceExchange2: true, HasCaptcha: true}
 	if v := m2.ToUint32(); v != 0x0C39 {
 		t.Fatalf("misc2 = %#x", v)
 	}
-	if ParseMiscOptions2(0x0C39) != m2 {
+	if parseMiscOptions2(0x0C39) != m2 {
 		t.Fatal("misc2 parse")
 	}
 }

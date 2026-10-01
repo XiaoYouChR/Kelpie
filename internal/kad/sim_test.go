@@ -214,7 +214,7 @@ func TestSimulatedNetwork(t *testing.T) {
 
 	searcher.c.setWanted(Wanted{Find: []Search{{Hash: fileHash, Size: 123456}}}, s.now)
 	s.run(time.Minute)
-	want := Source{Type: SourceOpen, UserHash: publisher.c.userHash, Addr: netip.AddrPortFrom(publisher.addr.Addr(), 4662), UDPPort: 4672, CryptOptions: connectOptions}
+	want := Source{Type: sourceOpen, UserHash: publisher.c.userHash, Addr: netip.AddrPortFrom(publisher.addr.Addr(), 4662), UDPPort: 4672, CryptOptions: connectOptions}
 	var got []Source
 	for _, f := range searcher.found {
 		if f.Hash == fileHash {
@@ -316,7 +316,7 @@ func TestSimulatedBuddy(t *testing.T) {
 			}
 		}
 	}
-	if len(got) != 1 || got[0].Type != SourceFirewalled || got[0].Buddy != buddy.addr || got[0].BuddyID != firewalled.c.buddyTarget() {
+	if len(got) != 1 || got[0].Type != sourceFirewalled || got[0].Buddy != buddy.addr || got[0].BuddyID != firewalled.c.buddyTarget() {
 		t.Fatalf("searcher found %+v, want the firewalled node behind its buddy", got)
 	}
 	s.record(searcher, searcher.c.onMessage(Callback{Buddy: got[0].Buddy, BuddyID: got[0].BuddyID, Hash: fileHash}))

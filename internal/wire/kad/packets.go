@@ -64,6 +64,13 @@ const (
 	TagSourceType     byte = 0xFF
 )
 
+// IsDatagram reports whether a UDP datagram is a plain Kad one by its
+// protocol byte. Kad shares its UDP port with eD2k, whose datagrams, and
+// obfuscated ones of either, start with other bytes.
+func IsDatagram(data []byte) bool {
+	return len(data) > 0 && (data[0] == wire.ProtocolKad || data[0] == wire.ProtocolKadPacked)
+}
+
 // Parse decodes a Kad packet body; wire.ParseDatagram has already inflated
 // packed (0xE5) packets to 0xE4. Opcodes not listed here, including the
 // keyword and notes packets Kelpie does not use, come back as wire.Unknown.
@@ -211,15 +218,6 @@ func parseContacts(r *wire.Reader, count int) []Contact {
 type Entry struct {
 	ID   wire.Hash
 	Tags []wire.Tag
-}
-
-func (e Entry) TagByID(id byte) (wire.Tag, bool) {
-	for _, t := range e.Tags {
-		if t.Name == "" && t.ID == id {
-			return t, true
-		}
-	}
-	return wire.Tag{}, false
 }
 
 func buildEntry(b []byte, e Entry) []byte { return buildTags(BuildID(b, e.ID), e.Tags) }

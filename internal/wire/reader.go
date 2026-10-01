@@ -4,7 +4,6 @@ package wire
 import (
 	"encoding/binary"
 	"errors"
-	"math"
 	"net/netip"
 )
 
@@ -70,10 +69,6 @@ func (r *Reader) Uint64() uint64 {
 		return 0
 	}
 	return binary.LittleEndian.Uint64(b)
-}
-
-func (r *Reader) Float32() float32 {
-	return math.Float32frombits(r.Uint32())
 }
 
 func (r *Reader) Hash() Hash {

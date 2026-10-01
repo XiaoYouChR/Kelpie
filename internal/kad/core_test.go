@@ -299,8 +299,8 @@ func TestSourceSearchReportsSources(t *testing.T) {
 		buildOpenEntry(open, "1.2.3.4", 4662),
 	}})
 	want := []Source{
-		{Type: SourceOpen, UserHash: open, Addr: netip.MustParseAddrPort("1.2.3.4:4662"), UDPPort: 4672, CryptOptions: 3},
-		{Type: SourceFirewalled, UserHash: firewalled, Addr: netip.MustParseAddrPort("5.6.7.8:4662"), Buddy: buddy, BuddyID: buddyID},
+		{Type: sourceOpen, UserHash: open, Addr: netip.MustParseAddrPort("1.2.3.4:4662"), UDPPort: 4672, CryptOptions: 3},
+		{Type: sourceFirewalled, UserHash: firewalled, Addr: netip.MustParseAddrPort("5.6.7.8:4662"), Buddy: buddy, BuddyID: buddyID},
 	}
 	if len(h.found) != 1 || h.found[0].Hash != fileHash || fmt.Sprint(h.found[0].Sources) != fmt.Sprint(want) {
 		t.Fatalf("found %+v\nwant %+v", h.found, want)
@@ -417,11 +417,11 @@ func TestFirewallCheckGatesPublishing(t *testing.T) {
 	}
 	wantTags := map[byte]uint64{kadwire.TagSourceType: 1, kadwire.TagSourcePort: 4662, kadwire.TagFileSize: 5000}
 	for id, v := range wantTags {
-		if tag, ok := p.Source.TagByID(id); !ok || tag.Uint != v {
+		if tag, ok := tagByID(p.Source.Tags, id); !ok || tag.Uint != v {
 			t.Fatalf("publish tag %#x = %+v, want %d", id, tag, v)
 		}
 	}
-	if _, ok := p.Source.TagByID(kadwire.TagSourceUPort); ok {
+	if _, ok := tagByID(p.Source.Tags, kadwire.TagSourceUPort); ok {
 		t.Fatal("published our UDP port before a UDP test chose it over the NAT's")
 	}
 	l := h.c.lookupByTarget(sourcePublish, fileHash)
@@ -459,7 +459,7 @@ func TestIndexStoresAndServesSources(t *testing.T) {
 		t.Fatalf("search answer %+v", res)
 	}
 	s, ok := toSource(res[0].packet.Results[0], false)
-	want := Source{Type: SourceOpen, UserHash: userHash, Addr: netip.MustParseAddrPort("10.7.0.1:4662"), UDPPort: 4672}
+	want := Source{Type: sourceOpen, UserHash: userHash, Addr: netip.MustParseAddrPort("10.7.0.1:4662"), UDPPort: 4672}
 	if !ok || s != want {
 		t.Fatalf("served source %+v, want %+v", s, want)
 	}

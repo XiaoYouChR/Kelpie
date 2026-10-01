@@ -69,7 +69,7 @@ func TestFirewalledNodeFindsBuddy(t *testing.T) {
 	}
 	src, ok := toSource(kadwire.Entry{ID: userHash, Tags: append(pubs[0].packet.Source.Tags,
 		wire.Tag{Type: wire.TagUint32, ID: kadwire.TagSourceIP, Uint: uint64(kadwire.ToUint32(netip.MustParseAddr("10.5.5.5")))})}, false)
-	if !ok || src.Type != SourceFirewalled || src.Buddy != buddy || src.BuddyID != h.c.buddyTarget() {
+	if !ok || src.Type != sourceFirewalled || src.Buddy != buddy || src.BuddyID != h.c.buddyTarget() {
 		t.Fatalf("published source reads back as %+v, %v", src, ok)
 	}
 

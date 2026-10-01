@@ -94,8 +94,8 @@ func BuildPicker[P comparable](size int64, verified Set, written []Block, random
 		p.parts[part].isVerified = true
 	}
 	for _, block := range written {
-		if block.Begin < 0 || block.Begin >= size || blockAt(p.size, block.Begin).Begin != block.Begin ||
-			block.End <= block.Begin || block.End > blockAt(p.size, block.Begin).End {
+		whole := blockAt(size, block.Begin)
+		if block.Begin < 0 || block.Begin >= size || whole.Begin != block.Begin || block.End <= block.Begin || block.End > whole.End {
 			return nil, fmt.Errorf("resume data: [%d, %d) is not the start of a block of this file", block.Begin, block.End)
 		}
 		if !p.parts[block.Part()].isVerified {

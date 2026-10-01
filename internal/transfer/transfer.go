@@ -48,9 +48,8 @@ type Progress struct {
 	ActivePeers  int
 }
 
-// State is the Transfer's Durable State. It has the fields of store.Transfer,
-// so the engine converts one to the other. WrittenBlocks are those of parts
-// not yet verified, each a whole block or the leading bytes of one.
+// State is the Transfer's Durable State, field for field store.Transfer
+// (which describes them), so the engine converts one to the other.
 type State struct {
 	Size          int64
 	File          string
@@ -63,8 +62,8 @@ type State struct {
 
 type Options struct {
 	File link.File
-	// Path is the file the Transfer writes; State is dropped when it belongs
-	// to another path.
+	// Path is the file the Transfer writes. The engine passes only State
+	// saved for this path.
 	Path   string
 	State  *State
 	Mode   Mode
@@ -109,11 +108,6 @@ type Transfer struct {
 	// tick is the engine's state as of the last OnTick.
 	tick Tick
 
-	lastServerAsk   time.Time
-	lastServer      netip.AddrPort
-	lastGlobalAsk   time.Time
-	nextKadAsk      time.Time
-	kadSearches     int
 	lastExchangeAsk time.Time
 	lastPurge       time.Time
 }
@@ -135,7 +129,7 @@ func Build(options Options, now time.Time) *Transfer {
 		bannedEndpoints:   map[netip.AddrPort]time.Time{},
 		aich:              buildAICHState(options.File.AICHHash, options.Random),
 	}
-	if state := options.State; state != nil && state.File == options.Path && state.Size == options.File.Size {
+	if state := options.State; state != nil && state.Size == options.File.Size {
 		picker, err := piece.BuildPicker[uint64](state.Size, state.VerifiedParts, state.WrittenBlocks, options.Random)
 		if err == nil {
 			t.picker = picker
