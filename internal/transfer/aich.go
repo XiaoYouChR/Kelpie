@@ -124,11 +124,11 @@ func toVotePrefix(addr netip.Addr) netip.Prefix {
 	return prefix
 }
 
-// repairPart asks a source for the recovery data of a part that failed its
+// requestRecovery asks a source for the recovery data of a part that failed its
 // MD4 check (aMule RequestAICHRecovery, PartFile.cpp:3813-3891): one that
 // reported the trusted root and has no request pending, HighID first, at
 // random. Without one the part is thrown away whole.
-func (t *Transfer) repairPart(part int, now time.Time) []Action {
+func (t *Transfer) requestRecovery(part int, now time.Time) []Action {
 	begin := int64(part) * piece.PartSize
 	end := min(begin+piece.PartSize, t.file.Size)
 	if !t.aich.isTrusted || t.aich.isBroken || end-begin <= piece.BlockSize {
@@ -202,7 +202,7 @@ func (t *Transfer) OnRecoveryFailed(peer uint64, now time.Time) []Action {
 		if asked == peer {
 			delete(t.aich.asked, part)
 			if t.isDownloading() {
-				return t.repairPart(part, now)
+				return t.requestRecovery(part, now)
 			}
 		}
 	}
@@ -245,9 +245,9 @@ func (t *Transfer) OnBlocksHashed(part int, hashes []wire.AICHHash, now time.Tim
 	return actions
 }
 
-// forgetRecoveryPeer drops a peer that is gone and asks another source for
+// onRecoveryPeerGone drops a peer that is gone and asks another source for
 // the part it was asked about.
-func (t *Transfer) forgetRecoveryPeer(peer uint64, now time.Time) []Action {
+func (t *Transfer) onRecoveryPeerGone(peer uint64, now time.Time) []Action {
 	if !t.isAsked(peer) {
 		delete(t.aich.roots, peer)
 		return nil

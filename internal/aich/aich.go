@@ -68,14 +68,14 @@ type Tree struct {
 // BuildTree takes the Hasher's leaves of a whole file of size bytes.
 func BuildTree(size int64, leaves []wire.AICHHash) *Tree {
 	t := &Tree{size: size, leaves: leaves}
-	t.root = t.hashOf(buildRoot(size))
+	t.root = t.buildHash(buildRoot(size))
 	return t
 }
 
 func (t *Tree) Root() wire.AICHHash { return t.root }
 
-func (t *Tree) hashOf(n node) wire.AICHHash {
-	return hashOf(n, func(leaf node) wire.AICHHash {
+func (t *Tree) buildHash(n node) wire.AICHHash {
+	return buildNodeHash(n, func(leaf node) wire.AICHHash {
 		return t.leaves[int(leaf.begin/piece.PartSize)*blocksPerPart+int(leaf.begin%piece.PartSize/piece.BlockSize)]
 	})
 }
@@ -87,10 +87,10 @@ func (t *Tree) BuildRecovery(part int) []client.AICHEntry {
 	path, target := buildPath(t.size, part)
 	var entries []client.AICHEntry
 	for _, sibling := range path {
-		entries = append(entries, client.AICHEntry{Ident: sibling.ident, Hash: t.hashOf(sibling)})
+		entries = append(entries, client.AICHEntry{Ident: sibling.ident, Hash: t.buildHash(sibling)})
 	}
 	for _, leaf := range target.leaves() {
-		entries = append(entries, client.AICHEntry{Ident: leaf.ident, Hash: t.hashOf(leaf)})
+		entries = append(entries, client.AICHEntry{Ident: leaf.ident, Hash: t.buildHash(leaf)})
 	}
 	return entries
 }
@@ -114,13 +114,13 @@ func MatchRecovery(root wire.AICHHash, size int64, part int, entries []client.AI
 			return nil, false
 		}
 	}
-	got := hashOf(target, func(leaf node) wire.AICHHash { return byIdent[leaf.ident] })
+	got := buildNodeHash(target, func(leaf node) wire.AICHHash { return byIdent[leaf.ident] })
 	for i := len(path) - 1; i >= 0; i-- {
 		sibling := path[i]
 		if sibling.isLeft {
-			got = combine(byIdent[sibling.ident], got)
+			got = buildPairHash(byIdent[sibling.ident], got)
 		} else {
-			got = combine(got, byIdent[sibling.ident])
+			got = buildPairHash(got, byIdent[sibling.ident])
 		}
 	}
 	if got != root {
@@ -195,14 +195,14 @@ func buildPath(size int64, part int) ([]node, node) {
 	return siblings, n
 }
 
-func hashOf(n node, leaf func(node) wire.AICHHash) wire.AICHHash {
+func buildNodeHash(n node, leaf func(node) wire.AICHHash) wire.AICHHash {
 	if n.isLeaf() {
 		return leaf(n)
 	}
 	left, right := n.children()
-	return combine(hashOf(left, leaf), hashOf(right, leaf))
+	return buildPairHash(buildNodeHash(left, leaf), buildNodeHash(right, leaf))
 }
 
-func combine(left, right wire.AICHHash) wire.AICHHash {
+func buildPairHash(left, right wire.AICHHash) wire.AICHHash {
 	return wire.AICHHash(sha1.Sum(append(left[:], right[:]...)))
 }

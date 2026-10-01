@@ -326,7 +326,7 @@ func (t *Transfer) OnPartHashed(part int, hash wire.Hash, now time.Time) []Actio
 		}
 		return nil
 	}
-	return t.repairPart(part, now)
+	return t.requestRecovery(part, now)
 }
 
 // OnHashSet accepts the part hashes a peer sent if they add up to the file
