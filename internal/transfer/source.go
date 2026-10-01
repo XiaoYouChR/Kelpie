@@ -519,7 +519,7 @@ func (t *Transfer) removePeer(peer uint64, now time.Time) []Action {
 	if peer == t.hashSetPeer {
 		t.hashSetPeer = 0
 	}
-	return t.onRecoveryPeerGone(peer, now)
+	return t.OnRecoveryFailed(peer, now)
 }
 
 // OnTick runs the timers: source reasks and connections within the budget,

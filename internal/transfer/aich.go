@@ -197,7 +197,7 @@ func (t *Transfer) OnRecovery(peer uint64, part int, root wire.AICHHash, entries
 }
 
 // OnRecoveryFailed: the peer could not give the recovery data it was asked
-// for. Its root is forgotten and another source is asked
+// for, or is gone. Its root is forgotten and another source is asked
 // (ClientAICHRequestFailed, SHAHashSet.cpp:1014-1028).
 func (t *Transfer) OnRecoveryFailed(peer uint64, now time.Time) []Action {
 	delete(t.aich.roots, peer)
@@ -245,14 +245,4 @@ func (t *Transfer) OnBlocksHashed(part int, hashes []wire.AICHHash, now time.Tim
 		actions = append(actions, t.removeCorrupt(peer, now)...)
 	}
 	return actions
-}
-
-// onRecoveryPeerGone drops a peer that is gone and asks another source for
-// the part it was asked about.
-func (t *Transfer) onRecoveryPeerGone(peer uint64, now time.Time) []Action {
-	if !t.isAsked(peer) {
-		delete(t.aich.roots, peer)
-		return nil
-	}
-	return t.OnRecoveryFailed(peer, now)
 }
