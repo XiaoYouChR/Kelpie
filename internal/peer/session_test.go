@@ -623,6 +623,26 @@ func TestPartialShareStatus(t *testing.T) {
 	}
 }
 
+// A block of a part we do not have is refused, not passed to the engine to
+// read.
+func TestBlockOfMissingPartRefused(t *testing.T) {
+	l := buildLink(t)
+	size := 3 * piece.PartSize
+	file, _ := addShare(l.b, 1, size, false)
+	share := l.b.shares[file]
+	share.Parts = piece.Set{true, false, true}
+	l.b.shares[file] = share
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false, false}))
+	l.run(l.b, l.b.s.StartUpload())
+	missing := piece.Block{Begin: piece.PartSize, End: piece.PartSize + piece.BlockSize}
+	straddling := piece.Block{Begin: piece.PartSize - piece.BlockSize/2, End: piece.PartSize + piece.BlockSize/2}
+	held := piece.Block{Begin: 0, End: piece.BlockSize}
+	l.run(l.a, l.a.s.Request(file, []piece.Block{missing, straddling, held}))
+	if got := eventsOf[BlocksRequested](l.b); len(got) != 1 || !slices.Equal(got[0].Blocks, []piece.Block{held}) {
+		t.Fatalf("requested %+v, want only the block we have", got)
+	}
+}
+
 func TestOutOfPartsRevokesSlot(t *testing.T) {
 	l := buildLink(t)
 	file, _ := addShare(l.b, 1, piece.BlockSize, false)

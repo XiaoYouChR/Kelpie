@@ -698,9 +698,6 @@ func (e *Engine) onBlocksRequested(c *conn, ev peer.BlocksRequested) {
 		return
 	}
 	for _, block := range ev.Blocks {
-		if r.share.Parts.Count() == 0 || !r.share.Parts[block.Part()] || !r.share.Parts[piece.Block{Begin: block.End - 1}.Part()] {
-			continue
-		}
 		c.uploadBlocks = append(c.uploadBlocks, diskJob{kind: jobRead, run: r.id, file: r.handle, block: block, conn: c.id, hash: ev.File})
 	}
 	e.sendUploadReads(c)

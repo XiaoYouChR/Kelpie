@@ -92,7 +92,8 @@ type UploadRequested struct {
 	Parts piece.Set
 }
 
-// BlocksRequested asks the engine to read Blocks and SendBlock each one.
+// BlocksRequested asks the engine to read Blocks, all within parts of File we
+// have, and SendBlock each one.
 type BlocksRequested struct {
 	File   wire.Hash
 	Blocks []piece.Block
