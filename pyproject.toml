@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kelpie"
+version = "0.1.0"
+description = "eD2k engine with a typed asyncio interface"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+
+[tool.setuptools.packages.find]
+include = ["kelpie*"]
