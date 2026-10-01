@@ -4,6 +4,7 @@ import (
 	"net/netip"
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
+	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
@@ -24,8 +25,12 @@ type kadCheck struct {
 	isSent  bool
 }
 
-func (e *Engine) onKadMessage(m any) {
+func (e *Engine) onKadMessage(m kad.Event) {
 	switch r := m.(type) {
+	case kad.Status:
+		e.kadStatus = r
+	case kad.State:
+		e.state.Kad = store.Kad(r)
 	case kad.SourcesFound:
 		e.onKadSources(r)
 	case kad.Datagram:
@@ -66,7 +71,7 @@ func (e *Engine) sendFirewallAck(c *conn, kadPort uint16) {
 		e.sendPacket(c, client.KadFirewallAck{}, wire.Hash{}, 0)
 		return
 	}
-	e.kad.RequestFirewallAck(netip.AddrPortFrom(c.remote.Addr(), kadPort))
+	e.kad.Post(kad.FirewallAck{To: netip.AddrPortFrom(c.remote.Addr(), kadPort)})
 }
 
 // startUDPCheck is ClientList::DoRequestFirewallCheckUDP: a client we
@@ -74,12 +79,12 @@ func (e *Engine) sendFirewallAck(c *conn, kadPort uint16) {
 func (e *Engine) startUDPCheck(r kad.UDPCheck) {
 	for _, c := range e.conns {
 		if !c.isServer && c.remote.Addr() == r.Addr.Addr() {
-			e.kad.SendUDPCheckEnded(kad.UDPCheckEnded{IP: r.Addr.Addr(), IsCancelled: true})
+			e.kad.Post(kad.UDPCheckEnded{IP: r.Addr.Addr(), IsCancelled: true})
 			return
 		}
 	}
 	if len(e.conns) >= maxConnections {
-		e.kad.SendUDPCheckEnded(kad.UDPCheckEnded{IP: r.Addr.Addr(), IsCancelled: true})
+		e.kad.Post(kad.UDPCheckEnded{IP: r.Addr.Addr(), IsCancelled: true})
 		return
 	}
 	c := e.openPeerConn(r.Addr, wire.Hash{}, false)
@@ -101,7 +106,7 @@ func (e *Engine) onKadHandshake(c *conn) {
 	caps := c.session.Capabilities()
 	if caps.KadVersion < versionUDPCheck || caps.KadPort == 0 {
 		delete(e.kadChecks, c.id)
-		e.kad.SendUDPCheckEnded(kad.UDPCheckEnded{IP: c.remote.Addr(), IsCancelled: true})
+		e.kad.Post(kad.UDPCheckEnded{IP: c.remote.Addr(), IsCancelled: true})
 		return
 	}
 	check.isSent = true
@@ -118,7 +123,7 @@ func (e *Engine) onKadConnClosed(c *conn) {
 	}
 	delete(e.kadChecks, c.id)
 	if check.udp != nil {
-		e.kad.SendUDPCheckEnded(kad.UDPCheckEnded{IP: c.remote.Addr(), IsCancelled: !check.isSent})
+		e.kad.Post(kad.UDPCheckEnded{IP: c.remote.Addr(), IsCancelled: !check.isSent})
 	}
 }
 
@@ -128,11 +133,11 @@ func (e *Engine) onKadPacket(c *conn, p wire.Packet) {
 	switch p := p.(type) {
 	case client.KadFirewallAck:
 		if e.kad != nil {
-			e.kad.SendFirewallAck(c.remote.Addr())
+			e.kad.Post(kad.FirewallAckReceived{From: c.remote.Addr()})
 		}
 	case client.FirewallCheckUDPReq:
 		if e.kad != nil {
-			e.kad.RequestFirewallUDP(kad.FirewallUDP{
+			e.kad.Post(kad.FirewallUDP{
 				IP: c.remote.Addr(), InternPort: p.InternPort, ExternPort: p.ExternPort, Key: p.Key,
 				IsKnown: len(c.files) > 0 || c.session.IsUploading(),
 			})

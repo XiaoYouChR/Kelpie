@@ -10,7 +10,7 @@ import (
 	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
 )
 
-func requestsOf[T request](out output) []T {
+func requestsOf[T Event](out output) []T {
 	var got []T
 	for _, r := range out.requests {
 		if r, ok := r.(T); ok {
@@ -40,7 +40,7 @@ func TestFirewallChecksAreAnswered(t *testing.T) {
 	}
 
 	h.clearSent()
-	h.record(h.c.onMessage(firewallAck{asker}))
+	h.record(h.c.onMessage(FirewallAck{asker}))
 	if len(h.sent) != 1 || h.sent[0].to != asker || h.sent[0].packet.Opcode() != opFirewalledAck {
 		t.Fatalf("sent %+v, want KADEMLIA_FIREWALLED_ACK_RES to the asker", h.sent)
 	}

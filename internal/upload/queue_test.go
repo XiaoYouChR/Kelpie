@@ -18,12 +18,12 @@ var (
 
 type world struct {
 	ratios     map[wire.Hash]float64
-	banned     map[wire.Hash]bool
+	shared     map[wire.Hash]bool
 	identified map[wire.Hash]netip.Addr
 }
 
 func buildWorld() (*world, *Queue) {
-	w := &world{ratios: map[wire.Hash]float64{}, banned: map[wire.Hash]bool{}, identified: map[wire.Hash]netip.Addr{}}
+	w := &world{ratios: map[wire.Hash]float64{}, shared: map[wire.Hash]bool{file: true, other: true}, identified: map[wire.Hash]netip.Addr{}}
 	q := BuildQueue(
 		func(user wire.Hash, _ netip.Addr) float64 {
 			if r, ok := w.ratios[user]; ok {
@@ -42,10 +42,8 @@ func buildWorld() (*world, *Queue) {
 				return identity.TrustImpostor
 			}
 		},
-		func(user wire.Hash, _ netip.Addr) bool { return w.banned[user] },
+		func(file wire.Hash) bool { return w.shared[file] },
 	)
-	q.AddFile(file)
-	q.AddFile(other)
 	return w, q
 }
 
@@ -91,11 +89,9 @@ func TestRequestFromSlotHolderSwitchesFile(t *testing.T) {
 	matchActions(t, q.OnRequest(1, buildPeer(1), other, toTime(2)), Grant{1})
 }
 
-func TestUnsharedFileAndBannedPeerAreIgnored(t *testing.T) {
-	w, q := buildWorld()
+func TestUnsharedFileIsIgnored(t *testing.T) {
+	_, q := buildWorld()
 	matchActions(t, q.OnRequest(1, buildPeer(1), wire.Hash{0xEE}, toTime(0)))
-	w.banned[buildPeer(2).User] = true
-	matchActions(t, q.OnRequest(2, buildPeer(2), file, toTime(0)))
 }
 
 func TestCreditsOutrankWaitingTime(t *testing.T) {
@@ -143,21 +139,6 @@ func TestDisconnectedHighIDWaiterIsCalled(t *testing.T) {
 	matchActions(t, q.OnTick(toTime(20)), Connect{p})
 	matchActions(t, q.OnConnected(30, p, toTime(25)), Grant{30})
 	q.OnSent(30, 100)
-}
-
-func TestBanningPeerBeingCalledRevokesNothing(t *testing.T) {
-	w, q := buildWorld()
-	startSlots(t, q)
-	p := buildPeer(3)
-	matchActions(t, q.OnRequest(3, p, file, toTime(10)), SendRank{3, 1})
-	q.OnConnectionGone(3)
-	q.OnConnectionGone(1)
-	matchActions(t, q.OnTick(toTime(20)), Connect{p})
-	w.banned[p.User] = true
-	matchActions(t, q.OnTick(toTime(21)))
-	if q.HasPeer(p.User, p.IP) {
-		t.Fatal("banned peer still holds its slot")
-	}
 }
 
 func TestCallThatNeverConnectsFreesSlot(t *testing.T) {
@@ -283,24 +264,12 @@ func TestQueueFull(t *testing.T) {
 	matchActions(t, q.OnRequest(9002, best, file, toTime(1)))
 }
 
-func TestBannedPeersLoseTheirPlace(t *testing.T) {
-	w, q := buildWorld()
-	startSlots(t, q)
-	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(10)), SendRank{3, 1})
-	matchActions(t, q.OnRequest(4, buildPeer(4), file, toTime(20)), SendRank{4, 2})
-	w.banned[buildPeer(3).User] = true
-	w.banned[buildPeer(1).User] = true
-	matchActions(t, q.OnTick(toTime(30)), Revoke{1}, Grant{4})
-	if got := q.OnReask(buildPeer(3).IP, 4672, file, toTime(31)); got != nil {
-		t.Fatalf("banned waiter still queued: %#v", got)
-	}
-}
-
 func TestRemoveFile(t *testing.T) {
-	_, q := buildWorld()
+	w, q := buildWorld()
 	startSlots(t, q)
 	matchActions(t, q.OnRequest(2, buildPeer(2), other, toTime(2)), Grant{2})
 	matchActions(t, q.OnRequest(3, buildPeer(3), other, toTime(10)), SendRank{3, 1})
+	delete(w.shared, other)
 	matchActions(t, q.RemoveFile(other), Revoke{2})
 	if got := q.OnReask(buildPeer(3).IP, 4672, other, toTime(11)); got != (FileNotFound{}) {
 		t.Fatalf("reask for removed file = %#v", got)
@@ -423,7 +392,7 @@ func TestOldClientScoresHalf(t *testing.T) {
 }
 
 func TestHasPeerWhileWaitingOrHoldingASlot(t *testing.T) {
-	_, q := buildWorld()
+	w, q := buildWorld()
 	startSlots(t, q)
 	q.OnRequest(3, buildPeer(3), file, toTime(2))
 	for _, n := range []int{1, 3} {
@@ -432,6 +401,7 @@ func TestHasPeerWhileWaitingOrHoldingASlot(t *testing.T) {
 		}
 	}
 	q.OnConnectionGone(1)
+	delete(w.shared, file)
 	q.RemoveFile(file)
 	for _, n := range []int{1, 3, 4} {
 		if p := buildPeer(n); q.HasPeer(p.User, p.IP) {

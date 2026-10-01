@@ -111,7 +111,9 @@ type Engine struct {
 	server    *server.Server
 	kad       *kad.Kad
 	kadCancel context.CancelFunc
-	kadDone   chan struct{}
+	// kadDone carries Kad's last state once Run ends; it closes empty if
+	// Run failed.
+	kadDone   chan kad.State
 	kadStatus kad.Status
 	kadID     wire.Hash
 	buddy     buddy
@@ -227,7 +229,10 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)
 		e.ports.Transport = udpLogTransport{Transport: ports.Transport, log: e.packetLog, clock: ports.Clock}
 	}
-	e.queue = upload.BuildQueue(e.ledger.Ratio, e.ledger.TrustByUser, func(wire.Hash, netip.Addr) bool { return false })
+	e.queue = upload.BuildQueue(e.ledger.Ratio, e.ledger.TrustByUser, func(file wire.Hash) bool {
+		r := e.runByHash[file]
+		return r != nil && r.transfer != nil
+	})
 	e.queue.SetRate(config.RateLimits.Upload)
 	if err := e.start(mapPorts); err != nil {
 		cancel()
@@ -392,12 +397,15 @@ func (e *Engine) startKad(nodes []kad.Node) {
 	e.kadID = e.kad.ID()
 	ctx, cancel := context.WithCancel(e.ctx)
 	e.kadCancel = cancel
-	e.kadDone = make(chan struct{})
+	e.kadDone = make(chan kad.State, 1)
 	go func() {
 		defer close(e.kadDone)
-		if err := e.kad.Run(ctx); err != nil {
+		state, err := e.kad.Run(ctx)
+		if err != nil {
 			log.Printf("engine: kad: %v", err)
+			return
 		}
+		e.kadDone <- state
 	}()
 }
 
@@ -514,11 +522,9 @@ func (e *Engine) run() {
 	defer close(e.hubDone)
 	ticker := e.ports.Clock.CreateTicker(tickInterval)
 	defer ticker.Stop()
-	var kadMessages <-chan any
-	var kadStatuses <-chan kad.Status
-	var kadStates <-chan store.Kad
+	var kadEvents <-chan kad.Event
 	if e.kad != nil {
-		kadMessages, kadStatuses, kadStates = e.kad.Messages(), e.kad.Statuses(), e.kad.States()
+		kadEvents = e.kad.Events()
 	}
 	for {
 		select {
@@ -530,12 +536,8 @@ func (e *Engine) run() {
 			e.onMessage(m)
 		case <-ticker.C():
 			e.onTick()
-		case m := <-kadMessages:
+		case m := <-kadEvents:
 			e.onKadMessage(m)
-		case s := <-kadStatuses:
-			e.kadStatus = s
-		case s := <-kadStates:
-			e.state.Kad = s
 		}
 		e.refreshRuns()
 		e.refreshNetwork()
@@ -588,11 +590,10 @@ func (e *Engine) onTick() {
 	e.refreshKnownSources()
 	e.refreshAsked()
 	e.refreshA4AF()
-	e.server.SetPublicIP(e.publicIP)
-	e.runServer(e.server.OnTick(now, e.buildServerWanted()))
+	e.runServer(e.server.OnTick(now, e.buildServerWanted(), e.publicIP))
 	e.runBuddy(now)
 	if e.kad != nil {
-		e.kad.SetWanted(e.buildKadWanted())
+		e.kad.Post(e.buildKadWanted())
 	}
 	for _, r := range e.runList {
 		e.refreshProgress(r, false)
@@ -608,8 +609,8 @@ func (e *Engine) onTick() {
 // zero.
 func (e *Engine) refreshNetwork() {
 	network := Network{
-		IsServerConnected: e.server.IsConnected(),
-		IsHighID:          e.server.IsHighID(),
+		IsServerConnected: e.server.ClientID() != 0,
+		IsHighID:          !wire.IsLowID(e.server.ClientID()),
 		IsKadFirewalled:   e.kadStatus.IsFirewalled,
 		KadNodes:          e.kadStatus.Nodes,
 	}
@@ -625,7 +626,7 @@ func (e *Engine) refreshNetwork() {
 // isFirewalled is whether peers cannot connect to us: neither the server nor
 // Kad says we are reachable.
 func (e *Engine) isFirewalled() bool {
-	return !e.server.IsHighID() && (e.kad == nil || e.kadStatus.IsFirewalled)
+	return wire.IsLowID(e.server.ClientID()) && (e.kad == nil || e.kadStatus.IsFirewalled)
 }
 
 func (e *Engine) runNAT(mapPorts openNAT) {
@@ -644,7 +645,7 @@ func (e *Engine) onNATOpened(m natOpened) {
 	}
 	e.unmapNAT = m.unmap
 	e.mappedIP = m.ip
-	if isPublicIPv4(m.ip) && !e.publicIP.IsValid() && !e.server.IsHighID() {
+	if isPublicIPv4(m.ip) && !e.publicIP.IsValid() && wire.IsLowID(e.server.ClientID()) {
 		e.publicIP = m.ip
 	}
 }
@@ -690,11 +691,8 @@ func (e *Engine) stop() error {
 	e.closeSockets()
 	if e.kad != nil {
 		e.kadCancel()
-		<-e.kadDone
-		select {
-		case s := <-e.kad.States():
-			e.state.Kad = s
-		default:
+		if s, ok := <-e.kadDone; ok {
+			e.state.Kad = store.Kad(s)
 		}
 	}
 	close(e.saves)

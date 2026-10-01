@@ -2,7 +2,6 @@ package engine
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -424,11 +423,7 @@ func (e *Engine) closeConn(c *conn, reason string) {
 		if c.remote == e.serverAddr {
 			e.serverAddr = netip.AddrPort{}
 		}
-		if c.net == nil {
-			e.runServer(e.server.OnConnectFailed(c.remote, now))
-		} else {
-			e.runServer(e.server.OnDisconnected(c.remote, now))
-		}
+		e.runServer(e.server.OnDisconnected(c.remote, now))
 		return
 	}
 	e.queue.OnConnectionGone(c.id)
@@ -523,9 +518,7 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		e.ledger.OnHello(ev.UserHash, now)
 		e.onHandshake(c, ev)
 	case peer.Identified:
-		e.onIdentified(c, ev)
-	case peer.IdentityFailed:
-		e.ledger.OnIdentityFailed(ev.UserHash)
+		e.ledger.OnIdentified(ev.UserHash, c.remote.Addr(), ev.PublicKey)
 	case peer.StatusReceived:
 		if r := e.downloadByHash(ev.File); r != nil {
 			r.transfer.OnPeerParts(c.id, ev.Parts)
@@ -601,7 +594,7 @@ func (e *Engine) requestTree(file wire.Hash) {
 func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	c.isHandshaken = true
 	caps := c.session.Capabilities()
-	if ev.YourIP.Is4() && !e.server.IsHighID() {
+	if ev.YourIP.Is4() && wire.IsLowID(e.server.ClientID()) {
 		e.publicIP = ev.YourIP
 	}
 	if caps.Port != 0 {
@@ -721,18 +714,6 @@ func (e *Engine) onSlotGranted(c *conn, file wire.Hash) {
 	if r := e.downloadByHash(file); r != nil {
 		e.runTransferActions(r, r.transfer.OnSlotGranted(c.id, e.now()))
 	}
-}
-
-func (e *Engine) onIdentified(c *conn, ev peer.Identified) {
-	stored := e.ledger.PublicKeyByUser(ev.UserHash)
-	if stored != nil && !bytes.Equal(stored, ev.PublicKey) {
-		e.ledger.OnIdentityFailed(ev.UserHash)
-		return
-	}
-	if stored == nil {
-		e.ledger.OnKeyReceived(ev.UserHash, ev.PublicKey)
-	}
-	e.ledger.OnIdentified(ev.UserHash, c.remote.Addr())
 }
 
 func (e *Engine) onBlocksRequested(c *conn, ev peer.BlocksRequested) {

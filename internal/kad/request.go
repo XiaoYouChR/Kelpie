@@ -6,14 +6,10 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
-// request is something Kad needs a TCP connection for, which only the
-// engine has. Kad sends them on Messages.
-type request interface{ isRequest() }
-
 // FirewallCheck asks the engine to connect to a node that wants to know
 // whether its TCP port is open, and to tell it once the handshake is done:
-// over TCP for Kad version 7 and up, or by asking Kad to RequestFirewallAck
-// to KadPort.
+// over TCP for Kad version 7 and up, or by posting a FirewallAck to
+// KadPort.
 type FirewallCheck struct {
 	// Addr is the node's IP and TCP port.
 	Addr         netip.AddrPort
@@ -24,8 +20,8 @@ type FirewallCheck struct {
 
 // UDPCheck asks the engine to connect to a client and, after the handshake,
 // send it OP_FWCHECKUDPREQ with our Kad ports and Key, so that it sends UDP
-// test packets to them. The engine reports a connection that closes with
-// SendUDPCheckEnded; the answer itself reaches Kad over UDP.
+// test packets to them. The engine posts UDPCheckEnded when the connection
+// closes; the answer itself reaches Kad over UDP.
 type UDPCheck struct {
 	Addr       netip.AddrPort
 	InternPort uint16
@@ -33,8 +29,8 @@ type UDPCheck struct {
 	Key        uint32
 }
 
-func (FirewallCheck) isRequest() {}
-func (UDPCheck) isRequest()      {}
+func (FirewallCheck) isEvent() {}
+func (UDPCheck) isEvent()      {}
 
 // FirewallUDP is a client's request, over TCP, to send it UDP test packets
 // to its Kad ports InternPort and ExternPort.
@@ -56,10 +52,15 @@ type UDPCheckEnded struct {
 	IsCancelled bool
 }
 
-// firewallAckReceived is an OP_KAD_FWTCPCHECK_ACK the engine received
-// over TCP.
-type firewallAckReceived struct{ from netip.Addr }
+// FirewallAckReceived is an OP_KAD_FWTCPCHECK_ACK the engine received
+// over TCP from From.
+type FirewallAckReceived struct{ From netip.Addr }
 
-// firewallAck asks Kad to send KADEMLIA_FIREWALLED_ACK_RES to a node
-// older than Kad version 7 whose TCP port we reached.
-type firewallAck struct{ to netip.AddrPort }
+// FirewallAck asks Kad to send KADEMLIA_FIREWALLED_ACK_RES to the Kad
+// endpoint To of a node older than Kad version 7 whose TCP port we reached.
+type FirewallAck struct{ To netip.AddrPort }
+
+func (FirewallUDP) isMessage()         {}
+func (UDPCheckEnded) isMessage()       {}
+func (FirewallAckReceived) isMessage() {}
+func (FirewallAck) isMessage()         {}

@@ -73,7 +73,7 @@ func (e *Engine) startBuddyLink() {
 			c = e.openPeerConn(f.Addr, f.UserHash, wire.CanObfuscate(f.CryptOptions, f.UserHash))
 		}
 		e.buddy.conn, e.buddy.isServing = c, false
-		e.kad.SetBuddy(kad.Buddy{IsConnecting: true})
+		e.kad.Post(kad.Buddy{IsConnecting: true})
 		if c.isHandshaken {
 			e.onBuddyHandshake(c)
 		}
@@ -99,7 +99,7 @@ func (e *Engine) onBuddyHandshake(c *conn) {
 	}
 	b.lastPing = e.now()
 	c.session.SetIdleTimeout(buddyIdleTimeout)
-	e.kad.SetBuddy(kad.Buddy{IsConnected: true, Addr: e.buddyAddr()})
+	e.kad.Post(kad.Buddy{IsConnected: true, Addr: e.buddyAddr()})
 }
 
 func (e *Engine) onBuddyConnClosed(c *conn) {
@@ -107,7 +107,7 @@ func (e *Engine) onBuddyConnClosed(c *conn) {
 		return
 	}
 	e.buddy.conn, e.buddy.isServing = nil, false
-	e.kad.SetBuddy(kad.Buddy{})
+	e.kad.Post(kad.Buddy{})
 	e.startBuddyLink()
 }
 
@@ -117,7 +117,7 @@ func (e *Engine) removeBuddyLink() {
 	c := e.buddy.conn
 	e.buddy.conn, e.buddy.isServing = nil, false
 	c.session.SetIdleTimeout(connectTimeout)
-	e.kad.SetBuddy(kad.Buddy{})
+	e.kad.Post(kad.Buddy{})
 }
 
 // buddyAddr is our buddy's IP and UDP port while it serves us: what the

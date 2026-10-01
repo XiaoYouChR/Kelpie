@@ -235,20 +235,21 @@ func (s *Session) sendIdentState(out *Output) {
 }
 
 func (s *Session) onIdentState(p client.SecureIdentState, out *Output) {
-	reply := identity.BuildReply(identity.State(p.State), s.features.secureIdent, wire.IsLowID(s.cfg.ClientID), s.ident.peerKey != nil)
+	reply := identity.BuildReply(identity.State(p.State), s.features.secureIdent, wire.IsLowID(s.cfg.ClientID))
 	if reply.ShouldSendKey {
 		out.send(client.PublicKey{Key: s.cfg.Self.PublicKey()})
 	}
 	switch {
-	case reply.ShouldSendSignature:
+	case !reply.ShouldSign:
+	case s.ident.peerKey != nil:
 		s.sendSignature(p.Challenge, reply.IPKind, out)
-	case reply.IsSignaturePending:
+	default:
 		s.ident.pending = &pendingSignature{p.Challenge, reply.IPKind}
 	}
 }
 
 func (s *Session) sendSignature(value uint32, kind identity.IPKind, out *Output) {
-	challenge := identity.BuildChallenge(value, kind, wire.ToAddr(s.cfg.ClientID), s.remote.Addr())
+	challenge := identity.Challenge{Value: value, IPKind: kind, SignerIP: wire.ToAddr(s.cfg.ClientID), VerifierIP: s.remote.Addr()}
 	signature := s.cfg.Self.BuildSignature(s.ident.peerKey, challenge)
 	out.send(client.Signature{Signature: signature, IPKind: byte(kind)})
 }
@@ -268,7 +269,7 @@ func (s *Session) onSignature(p client.Signature, out *Output) {
 	if s.ident.challenge == 0 {
 		return
 	}
-	challenge := identity.BuildChallenge(s.ident.challenge, identity.IPKind(p.IPKind), s.remote.Addr(), s.toPublicIP())
+	challenge := identity.Challenge{Value: s.ident.challenge, IPKind: identity.IPKind(p.IPKind), SignerIP: s.remote.Addr(), VerifierIP: s.toPublicIP()}
 	s.ident.challenge = 0
 	if s.ident.peerKey == nil || !identity.MatchSignature(s.ident.peerKey, p.Signature, s.cfg.Self.PublicKey(), challenge) {
 		out.add(IdentityFailed{UserHash: s.userHash})

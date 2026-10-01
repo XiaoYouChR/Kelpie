@@ -57,9 +57,10 @@ type CallbackRequested struct {
 	Addr netip.AddrPort
 }
 
-func (BuddyFound) isRequest()        {}
-func (BuddyRequested) isRequest()    {}
-func (CallbackRequested) isRequest() {}
+func (Buddy) isMessage()           {}
+func (BuddyFound) isEvent()        {}
+func (BuddyRequested) isEvent()    {}
+func (CallbackRequested) isEvent() {}
 
 type buddySearch struct {
 	isDue bool

@@ -38,32 +38,75 @@ func downloads(n int) []Wanted {
 	return w
 }
 
+// noIP is our public IP while unknown.
+var noIP netip.Addr
+
 // loggedIn returns a server connected to the first entry with clientID.
-func loggedIn(t *testing.T, entries []Entry, clientID, flags uint32, wanted []Wanted) (*Server, Output) {
+func loggedIn(t *testing.T, entries []Entry, clientID, flags uint32, wanted []Wanted) (*Server, kinds) {
 	t.Helper()
 	s := BuildServer(config, entries)
-	out := s.OnTick(start, wanted)
+	out := byKind(s.OnTick(start, wanted, noIP))
 	if dialed(out)[0] != entries[0].Endpoint {
 		t.Fatalf("connect = %v, want %v first", dialed(out), entries[0].Endpoint)
 	}
 	s.OnConnected(entries[0].Endpoint)
-	out = s.OnPacket(entries[0].Endpoint, serverwire.IDChange{ClientID: clientID, Flags: flags}, start)
-	if !s.IsConnected() {
+	out = byKind(s.OnPacket(entries[0].Endpoint, serverwire.IDChange{ClientID: clientID, Flags: flags}, start))
+	if s.ClientID() == 0 {
 		t.Fatal("not connected after IDChange")
 	}
 	return s, out
 }
 
+// kinds is an Output grouped by action type, each group in order. To is
+// where every Send goes; the test fails on sends to two servers.
+type kinds struct {
+	Close    []netip.AddrPort
+	Dial     []Dial
+	To       netip.AddrPort
+	Send     []wire.Packet
+	Datagram []Datagram
+	Callback []Callback
+	Resolve  []string
+	Events   []Action
+}
+
+func byKind(out []Action) kinds {
+	var k kinds
+	for _, a := range out {
+		switch a := a.(type) {
+		case Close:
+			k.Close = append(k.Close, a.Server)
+		case Dial:
+			k.Dial = append(k.Dial, a)
+		case Send:
+			if k.To.IsValid() && k.To != a.To {
+				panic(fmt.Sprintf("sends to %v and %v", k.To, a.To))
+			}
+			k.To = a.To
+			k.Send = append(k.Send, a.Packet)
+		case Datagram:
+			k.Datagram = append(k.Datagram, a)
+		case Callback:
+			k.Callback = append(k.Callback, a)
+		case Resolve:
+			k.Resolve = append(k.Resolve, a.Host)
+		default:
+			k.Events = append(k.Events, a)
+		}
+	}
+	return k
+}
+
 // dialed is the servers out connects to, obfuscated or not.
-func dialed(out Output) []netip.AddrPort {
+func dialed(out kinds) []netip.AddrPort {
 	var servers []netip.AddrPort
-	for _, d := range out.Connect {
+	for _, d := range out.Dial {
 		servers = append(servers, d.Server)
 	}
 	return servers
 }
 
-func sent[T wire.Packet](out Output) []T {
+func sent[T wire.Packet](out kinds) []T {
 	var got []T
 	for _, p := range out.Send {
 		if v, ok := p.(T); ok {
@@ -85,17 +128,17 @@ func TestChoiceAndRotation(t *testing.T) {
 	s := BuildServer(config, entries)
 	now := start
 	var order, pending []netip.AddrPort
-	out := s.OnTick(now, nil)
+	out := byKind(s.OnTick(now, nil, noIP))
 	for len(dialed(out)) > 0 || len(pending) > 0 {
 		order = append(order, dialed(out)...)
 		pending = append(pending, dialed(out)...)
 		if len(pending) > maxAttempts {
 			t.Fatalf("%d attempts in flight", len(pending))
 		}
-		if again := s.OnTick(now, nil); len(dialed(again)) > 0 {
+		if again := byKind(s.OnTick(now, nil, noIP)); len(dialed(again)) > 0 {
 			t.Fatalf("tick connects %v while %v are pending", dialed(again), pending)
 		}
-		out = s.OnConnectFailed(pending[0], now)
+		out = byKind(s.OnDisconnected(pending[0], now))
 		pending = pending[1:]
 	}
 	want := []netip.AddrPort{ep("1.0.0.2:4661"), ep("1.0.0.1:4661"), ep("1.0.0.3:4661"), ep("1.0.0.4:4661")}
@@ -103,12 +146,12 @@ func TestChoiceAndRotation(t *testing.T) {
 		t.Fatalf("pass order = %v, want %v", order, want)
 	}
 	for ; now.Before(start.Add(passRetryTime)); now = now.Add(time.Second) {
-		if out := s.OnTick(now, nil); len(dialed(out)) > 0 {
+		if out := byKind(s.OnTick(now, nil, noIP)); len(dialed(out)) > 0 {
 			t.Fatalf("retried at %v, before CS_RETRYCONNECTTIME", now.Sub(start))
 		}
 	}
 	// Every server failed once, so the order is the same again.
-	if out := s.OnTick(now.Add(time.Second), nil); !reflect.DeepEqual(dialed(out), want[:2]) {
+	if out := byKind(s.OnTick(now.Add(time.Second), nil, noIP)); !reflect.DeepEqual(dialed(out), want[:2]) {
 		t.Fatalf("new pass connects %v", dialed(out))
 	}
 }
@@ -119,33 +162,33 @@ func TestChoiceAndRotation(t *testing.T) {
 func TestFirstLoginWins(t *testing.T) {
 	a, b := ep("1.0.0.1:4661"), ep("1.0.0.2:4661")
 	s := BuildServer(config, []Entry{{Endpoint: a, Users: 10}, {Endpoint: b}})
-	if out := s.OnTick(start, nil); !reflect.DeepEqual(dialed(out), []netip.AddrPort{a, b}) {
+	if out := byKind(s.OnTick(start, nil, noIP)); !reflect.DeepEqual(dialed(out), []netip.AddrPort{a, b}) {
 		t.Fatalf("connect = %v", dialed(out))
 	}
-	if out := s.OnConnected(b); out.To != b || len(sent[serverwire.Login](out)) != 1 {
+	if out := byKind(s.OnConnected(b)); out.To != b || len(sent[serverwire.Login](out)) != 1 {
 		t.Fatalf("login to b = %+v", out)
 	}
-	if out := s.OnConnected(a); out.To != a || len(sent[serverwire.Login](out)) != 1 {
+	if out := byKind(s.OnConnected(a)); out.To != a || len(sent[serverwire.Login](out)) != 1 {
 		t.Fatalf("login to a = %+v", out)
 	}
-	out := s.OnPacket(a, serverwire.ServerMessage{Text: "from a"}, start)
-	if !reflect.DeepEqual(out.Events, []Event{MessageReceived{Text: "from a"}}) {
+	out := byKind(s.OnPacket(a, serverwire.ServerMessage{Text: "from a"}, start))
+	if !reflect.DeepEqual(out.Events, []Action{MessageReceived{Text: "from a"}}) {
 		t.Fatalf("message while logging in = %+v", out.Events)
 	}
-	out = s.OnPacket(b, serverwire.IDChange{ClientID: highID}, start)
-	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a}) || out.To != b {
+	out = byKind(s.OnPacket(b, serverwire.IDChange{ClientID: highID}, start))
+	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a}) || !reflect.DeepEqual(out.Events, []Action{IDChanged{Server: b, ClientID: highID}}) {
 		t.Fatalf("login output = %+v", out)
 	}
-	if !s.IsConnected() || s.current.Endpoint != b {
+	if s.ClientID() == 0 || s.current.Endpoint != b {
 		t.Fatal("not logged in to b")
 	}
-	if out := s.OnDisconnected(a, start); len(dialed(out)) > 0 || s.servers[0].Failures != 0 {
+	if out := byKind(s.OnDisconnected(a, start)); len(dialed(out)) > 0 || s.servers[0].Failures != 0 {
 		t.Fatalf("closed loser reported: %+v failures=%d", out, s.servers[0].Failures)
 	}
-	if out := s.OnPacket(a, serverwire.IDChange{ClientID: 1234}, start); len(out.Events) > 0 || s.ClientID() != highID {
+	if out := byKind(s.OnPacket(a, serverwire.IDChange{ClientID: 1234}, start)); len(out.Events) > 0 || s.ClientID() != highID {
 		t.Fatalf("packet from the closed loser used: %+v", out)
 	}
-	if out := s.OnTick(start.Add(time.Hour), nil); len(dialed(out)) > 0 || len(out.Close) > 0 {
+	if out := byKind(s.OnTick(start.Add(time.Hour), nil, noIP)); len(dialed(out)) > 0 || len(out.Close) > 0 {
 		t.Fatalf("attempt left after login: %+v", out)
 	}
 }
@@ -153,9 +196,9 @@ func TestFirstLoginWins(t *testing.T) {
 func TestFailedAttemptCountsAgainstItsServer(t *testing.T) {
 	a, b := ep("1.0.0.1:4661"), ep("1.0.0.2:4661")
 	s := BuildServer(config, []Entry{{Endpoint: a, Users: 10}, {Endpoint: b}})
-	s.OnTick(start, nil)
-	s.OnConnected(a)
-	if out := s.OnDisconnected(a, start); len(dialed(out)) > 0 {
+	byKind(s.OnTick(start, nil, noIP))
+	byKind(s.OnConnected(a))
+	if out := byKind(s.OnDisconnected(a, start)); len(dialed(out)) > 0 {
 		t.Fatalf("reconnected while b is pending: %v", dialed(out))
 	}
 	if s.servers[0].Failures != 1 || s.servers[1].Failures != 0 {
@@ -168,9 +211,9 @@ func TestServerIsGivenUpAfterMaxFailures(t *testing.T) {
 	now := start
 	attempts := 0
 	for range 1000 {
-		if out := s.OnTick(now, nil); len(dialed(out)) > 0 {
+		if out := byKind(s.OnTick(now, nil, noIP)); len(dialed(out)) > 0 {
 			attempts++
-			s.OnConnectFailed(first, now)
+			byKind(s.OnDisconnected(first, now))
 		}
 		now = now.Add(5 * time.Second)
 	}
@@ -182,12 +225,12 @@ func TestServerIsGivenUpAfterMaxFailures(t *testing.T) {
 func TestLoginTimesOut(t *testing.T) {
 	a, b, c := ep("1.0.0.1:4661"), ep("1.0.0.2:4661"), ep("1.0.0.3:4661")
 	s := BuildServer(config, []Entry{{Endpoint: a, Users: 2}, {Endpoint: b, Users: 1}, {Endpoint: c}})
-	s.OnTick(start, nil)
-	s.OnConnected(a)
-	if out := s.OnTick(start.Add(connectTimeout), nil); len(out.Close) > 0 || len(dialed(out)) > 0 {
+	byKind(s.OnTick(start, nil, noIP))
+	byKind(s.OnConnected(a))
+	if out := byKind(s.OnTick(start.Add(connectTimeout), nil, noIP)); len(out.Close) > 0 || len(dialed(out)) > 0 {
 		t.Fatalf("gave up too early: %+v", out)
 	}
-	out := s.OnTick(start.Add(connectTimeout+time.Second), nil)
+	out := byKind(s.OnTick(start.Add(connectTimeout+time.Second), nil, noIP))
 	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a, b}) || !reflect.DeepEqual(dialed(out), []netip.AddrPort{c}) {
 		t.Fatalf("timeout output = %+v", out)
 	}
@@ -195,8 +238,8 @@ func TestLoginTimesOut(t *testing.T) {
 
 func TestLogin(t *testing.T) {
 	s := BuildServer(config, []Entry{{Endpoint: first}})
-	s.OnTick(start, nil)
-	out := s.OnConnected(first)
+	byKind(s.OnTick(start, nil, noIP))
+	out := byKind(s.OnConnected(first))
 	want := serverwire.Login{
 		UserHash: userHash, Port: 4662, Name: "Kelpie", Version: 0x3C,
 		Flags: serverwire.CapZlib | serverwire.CapNewTags | serverwire.CapUnicode | serverwire.CapLargeFiles |
@@ -206,7 +249,7 @@ func TestLogin(t *testing.T) {
 	if len(out.Send) != 1 || !reflect.DeepEqual(out.Send[0], want) {
 		t.Fatalf("login = %+v, want %+v", out.Send, want)
 	}
-	if s.IsConnected() {
+	if s.ClientID() != 0 {
 		t.Fatal("connected before IDChange")
 	}
 }
@@ -214,18 +257,18 @@ func TestLogin(t *testing.T) {
 func TestIDChangeGivesLowIDOrHighID(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}}
 	s, out := loggedIn(t, entries, 1234, 0, nil)
-	if s.IsHighID() || s.ClientID() != 1234 {
-		t.Fatalf("LowID: isHighID=%v id=%d", s.IsHighID(), s.ClientID())
+	if s.ClientID() != 1234 {
+		t.Fatalf("LowID: id=%d", s.ClientID())
 	}
-	if !reflect.DeepEqual(out.Events, []Event{IDChanged{Server: entries[0].Endpoint, ClientID: 1234}}) {
+	if !reflect.DeepEqual(out.Events, []Action{IDChanged{Server: entries[0].Endpoint, ClientID: 1234}}) {
 		t.Fatalf("events = %+v", out.Events)
 	}
 	s, _ = loggedIn(t, entries, highID, 0, nil)
-	if !s.IsHighID() {
+	if s.ClientID() != highID {
 		t.Fatal("HighID not reported")
 	}
-	s.OnDisconnected(first, start)
-	if s.IsConnected() || s.IsHighID() || s.ClientID() != 0 {
+	byKind(s.OnDisconnected(first, start))
+	if s.ClientID() != 0 {
 		t.Fatal("still connected after disconnect")
 	}
 }
@@ -233,18 +276,18 @@ func TestIDChangeGivesLowIDOrHighID(t *testing.T) {
 func TestReconnectMovesToAnotherServer(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661"), Users: 10}, {Endpoint: ep("1.0.0.2:4661")}}
 	s, _ := loggedIn(t, entries, highID, 0, nil)
-	if out := s.OnDisconnected(first, start.Add(time.Hour)); !reflect.DeepEqual(dialed(out), []netip.AddrPort{ep("1.0.0.2:4661")}) {
+	if out := byKind(s.OnDisconnected(first, start.Add(time.Hour))); !reflect.DeepEqual(dialed(out), []netip.AddrPort{ep("1.0.0.2:4661")}) {
 		t.Fatalf("reconnect = %v", dialed(out))
 	}
 }
 
 func TestServerMessagesAndStatus(t *testing.T) {
 	s, _ := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, 0, nil)
-	out := s.OnPacket(first, serverwire.ServerMessage{Text: "welcome"}, start)
-	if !reflect.DeepEqual(out.Events, []Event{MessageReceived{Text: "welcome"}}) {
+	out := byKind(s.OnPacket(first, serverwire.ServerMessage{Text: "welcome"}, start))
+	if !reflect.DeepEqual(out.Events, []Action{MessageReceived{Text: "welcome"}}) {
 		t.Fatalf("events = %+v", out.Events)
 	}
-	s.OnPacket(first, serverwire.ServerStatus{Users: 7, Files: 8}, start)
+	byKind(s.OnPacket(first, serverwire.ServerStatus{Users: 7, Files: 8}, start))
 	if c := s.current; c.Users != 7 || c.Files != 8 {
 		t.Fatalf("entry = %+v", c.Entry)
 	}
@@ -259,7 +302,7 @@ func TestSourceRequestPacing(t *testing.T) {
 
 	askedAt := map[wire.Hash]time.Time{}
 	var frames []time.Time
-	check := func(now time.Time, out Output) {
+	check := func(now time.Time, out kinds) {
 		requests := sent[serverwire.GetSources](out)
 		if len(requests) == 0 {
 			return
@@ -288,7 +331,7 @@ func TestSourceRequestPacing(t *testing.T) {
 	now := start
 	for range 24 * 3600 {
 		now = now.Add(time.Second)
-		check(now, s.OnTick(now, wanted))
+		check(now, byKind(s.OnTick(now, wanted, noIP)))
 	}
 	if len(askedAt) != 40 {
 		t.Fatalf("%d files asked, want 40", len(askedAt))
@@ -349,31 +392,31 @@ func TestFoundSources(t *testing.T) {
 		{ClientID: 0, Port: 4662},
 	}}
 	s, _ := loggedIn(t, []Entry{{Endpoint: server}}, highID, 0, downloads(1))
-	out := s.OnPacket(first, found, start)
+	out := byKind(s.OnPacket(first, found, start))
 	want := SourcesFound{File: fileHash(0), Sources: []Source{
 		{Endpoint: ep("5.6.7.8:4662"), ClientID: found.Sources[0].ClientID, Server: server},
 		{ClientID: 77, IsLowID: true, Server: server},
 		{Endpoint: netip.AddrPortFrom(v6, 4663), ClientID: wire.IPv6Sentinel, Server: server},
 	}}
-	if !reflect.DeepEqual(out.Events, []Event{want}) {
+	if !reflect.DeepEqual(out.Events, []Action{want}) {
 		t.Fatalf("events = %+v\nwant %+v", out.Events, want)
 	}
 
 	obfu := serverwire.FoundSourcesObfu{Hash: fileHash(0), Sources: []serverwire.Source{{ClientID: 77, Port: 4662, CryptOptions: 0x80, UserHash: userHash}}}
-	if out := s.OnPacket(first, obfu, start); len(out.Events) != 1 || out.Events[0].(SourcesFound).Sources[0].UserHash != userHash ||
+	if out := byKind(s.OnPacket(first, obfu, start)); len(out.Events) != 1 || out.Events[0].(SourcesFound).Sources[0].UserHash != userHash ||
 		out.Events[0].(SourcesFound).Sources[0].CanObfuscate {
 		t.Fatalf("obfuscated variant: %+v", out.Events)
 	}
 	obfu.Sources[0].CryptOptions = 0x81
-	if out := s.OnPacket(first, obfu, start); !out.Events[0].(SourcesFound).Sources[0].CanObfuscate {
+	if out := byKind(s.OnPacket(first, obfu, start)); !out.Events[0].(SourcesFound).Sources[0].CanObfuscate {
 		t.Fatalf("supports bit lost: %+v", out.Events)
 	}
-	if out := s.OnPacket(first, serverwire.FoundSources{Hash: fileHash(5), Sources: found.Sources}, start); len(out.Events) != 0 {
+	if out := byKind(s.OnPacket(first, serverwire.FoundSources{Hash: fileHash(5), Sources: found.Sources}, start)); len(out.Events) != 0 {
 		t.Fatal("sources for a file nobody wants")
 	}
 
 	s, _ = loggedIn(t, []Entry{{Endpoint: server}}, 1234, 0, downloads(1))
-	out = s.OnPacket(first, found, start)
+	out = byKind(s.OnPacket(first, found, start))
 	for _, src := range out.Events[0].(SourcesFound).Sources {
 		if src.IsLowID {
 			t.Fatal("LowID source kept while we are LowID")
@@ -383,45 +426,33 @@ func TestFoundSources(t *testing.T) {
 
 func TestCallbacks(t *testing.T) {
 	server := ep("1.0.0.1:4661")
-	lowSource := Source{ClientID: 77, IsLowID: true, Server: server}
 	s, _ := loggedIn(t, []Entry{{Endpoint: server}}, highID, 0, nil)
 
-	out, ok := s.RequestCallback(lowSource, start)
-	if !ok || !reflect.DeepEqual(out.Send, []wire.Packet{serverwire.CallbackRequest{ClientID: 77}}) {
-		t.Fatalf("callback = %+v %v", out, ok)
-	}
-	elsewhere := lowSource
-	elsewhere.Server = ep("1.0.0.2:4661")
-	if _, ok := s.RequestCallback(elsewhere, start); ok {
-		t.Fatal("callback through a server we are not on")
-	}
-	if _, ok := s.RequestCallback(Source{Endpoint: ep("5.6.7.8:4662"), ClientID: 1 << 30, Server: server}, start); ok {
-		t.Fatal("callback for a HighID source")
+	out := byKind(s.RequestCallback(77, start))
+	if out.To != server || !reflect.DeepEqual(out.Send, []wire.Packet{serverwire.CallbackRequest{ClientID: 77}}) {
+		t.Fatalf("callback = %+v", out)
 	}
 
-	out = s.OnPacket(first, serverwire.CallbackRequested{Addr: ep("5.6.7.8:4662")}, start)
-	if !reflect.DeepEqual(out.ConnectPeers, []Callback{{Endpoint: ep("5.6.7.8:4662")}}) {
-		t.Fatalf("connect peers = %+v", out.ConnectPeers)
+	out = byKind(s.OnPacket(first, serverwire.CallbackRequested{Addr: ep("5.6.7.8:4662")}, start))
+	if !reflect.DeepEqual(out.Callback, []Callback{{Endpoint: ep("5.6.7.8:4662")}}) {
+		t.Fatalf("connect peers = %+v", out.Callback)
 	}
 	user := wire.Hash{1, 2, 3}
-	out = s.OnPacket(first, serverwire.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x83, UserHash: user}, start)
-	if !reflect.DeepEqual(out.ConnectPeers, []Callback{{Endpoint: ep("5.6.7.8:4662"), UserHash: user, CanObfuscate: true}}) {
-		t.Fatalf("obfuscated callback = %+v", out.ConnectPeers)
+	out = byKind(s.OnPacket(first, serverwire.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x83, UserHash: user}, start))
+	if !reflect.DeepEqual(out.Callback, []Callback{{Endpoint: ep("5.6.7.8:4662"), UserHash: user, CanObfuscate: true}}) {
+		t.Fatalf("obfuscated callback = %+v", out.Callback)
 	}
-	out = s.OnPacket(first, serverwire.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x80, UserHash: user}, start)
-	if len(out.ConnectPeers) != 1 || out.ConnectPeers[0].CanObfuscate {
-		t.Fatalf("callback without crypt support = %+v", out.ConnectPeers)
+	out = byKind(s.OnPacket(first, serverwire.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x80, UserHash: user}, start))
+	if len(out.Callback) != 1 || out.Callback[0].CanObfuscate {
+		t.Fatalf("callback without crypt support = %+v", out.Callback)
 	}
-	out = s.OnPacket(first, serverwire.CallbackRequestedIPv6{Addr: ep("[2001:db8::1]:4662")}, start)
-	if len(out.ConnectPeers) != 1 {
-		t.Fatalf("IPv6 callback = %v", out.ConnectPeers)
-	}
-	if out := s.OnPacket(first, serverwire.CallbackFailed{}, start); !reflect.DeepEqual(out.Events, []Event{CallbackFailed{}}) {
-		t.Fatalf("events = %+v", out.Events)
+	out = byKind(s.OnPacket(first, serverwire.CallbackRequestedIPv6{Addr: ep("[2001:db8::1]:4662")}, start))
+	if len(out.Callback) != 1 {
+		t.Fatalf("IPv6 callback = %v", out.Callback)
 	}
 
 	low, _ := loggedIn(t, []Entry{{Endpoint: server}}, 1234, 0, nil)
-	if _, ok := low.RequestCallback(lowSource, start); ok {
+	if out := low.RequestCallback(77, start); len(out) > 0 {
 		t.Fatal("LowID to LowID callback")
 	}
 }
@@ -481,7 +512,7 @@ func TestOfferFilesCadence(t *testing.T) {
 	counts := []int{len(sent[serverwire.OfferFiles](out)[0].Files)}
 	last := start
 	for now := start.Add(time.Second); now.Before(start.Add(10 * time.Minute)); now = now.Add(time.Second) {
-		offers := sent[serverwire.OfferFiles](s.OnTick(now, shared))
+		offers := sent[serverwire.OfferFiles](byKind(s.OnTick(now, shared, noIP)))
 		if len(offers) == 0 {
 			continue
 		}
@@ -497,7 +528,7 @@ func TestOfferFilesCadence(t *testing.T) {
 
 	shared[0].IsComplete = false
 	now := last.Add(offerTime)
-	offers := sent[serverwire.OfferFiles](s.OnTick(now, shared))
+	offers := sent[serverwire.OfferFiles](byKind(s.OnTick(now, shared, noIP)))
 	if len(offers) != 1 || len(offers[0].Files) != 1 || offers[0].Files[0].ClientID != serverwire.IncompleteID {
 		t.Fatalf("changed file not offered again: %+v", offers)
 	}
@@ -516,14 +547,14 @@ func TestOfferFilesRespectsSoftLimit(t *testing.T) {
 
 func TestKeepAlive(t *testing.T) {
 	s, _ := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, 0, nil)
-	if out := s.OnTick(start.Add(keepAliveTime-time.Second), nil); len(out.Send) != 0 {
+	if out := byKind(s.OnTick(start.Add(keepAliveTime-time.Second), nil, noIP)); len(out.Send) != 0 {
 		t.Fatalf("early keep-alive: %+v", out.Send)
 	}
-	out := s.OnTick(start.Add(keepAliveTime), nil)
+	out := byKind(s.OnTick(start.Add(keepAliveTime), nil, noIP))
 	if !reflect.DeepEqual(out.Send, []wire.Packet{serverwire.OfferFiles{}}) {
 		t.Fatalf("keep-alive = %+v", out.Send)
 	}
-	if out := s.OnTick(start.Add(keepAliveTime+time.Minute), nil); len(out.Send) != 0 {
+	if out := byKind(s.OnTick(start.Add(keepAliveTime+time.Minute), nil, noIP)); len(out.Send) != 0 {
 		t.Fatal("keep-alive repeated at once")
 	}
 }
@@ -538,28 +569,40 @@ func TestObfuscatedPassFirst(t *testing.T) {
 		{Endpoint: b, Users: 20, UDPFlags: serverwire.UDPFlagUDPObfuscation},
 		{Endpoint: c, Users: 10},
 	})
-	out := s.OnTick(start, nil)
-	if want := []Dial{{Server: a, ObfuscationPort: 4665}, {Server: b}}; !reflect.DeepEqual(out.Connect, want) {
-		t.Fatalf("obfuscated pass = %+v, want %+v", out.Connect, want)
+	out := byKind(s.OnTick(start, nil, noIP))
+	if want := []Dial{{Server: a, ObfuscationPort: 4665}, {Server: b}}; !reflect.DeepEqual(out.Dial, want) {
+		t.Fatalf("obfuscated pass = %+v, want %+v", out.Dial, want)
 	}
-	if out := s.OnConnectFailed(a, start); len(out.Connect) > 0 {
-		t.Fatalf("plain pass began while b is pending: %+v", out.Connect)
+	if out := byKind(s.OnDisconnected(a, start)); len(out.Dial) > 0 {
+		t.Fatalf("plain pass began while b is pending: %+v", out.Dial)
 	}
 	// a and b failed once, so c comes first.
-	out = s.OnConnectFailed(b, start)
-	if want := []Dial{{Server: c}, {Server: a}}; !reflect.DeepEqual(out.Connect, want) {
-		t.Fatalf("plain pass = %+v, want %+v", out.Connect, want)
+	out = byKind(s.OnDisconnected(b, start))
+	if want := []Dial{{Server: c}, {Server: a}}; !reflect.DeepEqual(out.Dial, want) {
+		t.Fatalf("plain pass = %+v, want %+v", out.Dial, want)
 	}
-	if out := s.OnConnectFailed(c, start); !reflect.DeepEqual(out.Connect, []Dial{{Server: b}}) {
-		t.Fatalf("plain pass continues with %+v", out.Connect)
+	if out := byKind(s.OnDisconnected(c, start)); !reflect.DeepEqual(out.Dial, []Dial{{Server: b}}) {
+		t.Fatalf("plain pass continues with %+v", out.Dial)
 	}
-	s.OnConnectFailed(a, start)
-	if out := s.OnConnectFailed(b, start); len(out.Connect) > 0 {
-		t.Fatalf("connected again before CS_RETRYCONNECTTIME: %+v", out.Connect)
+	byKind(s.OnDisconnected(a, start))
+	if out := byKind(s.OnDisconnected(b, start)); len(out.Dial) > 0 {
+		t.Fatalf("connected again before CS_RETRYCONNECTTIME: %+v", out.Dial)
 	}
-	out = s.OnTick(start.Add(passRetryTime+time.Second), nil)
-	if want := []Dial{{Server: a, ObfuscationPort: 4665}, {Server: b}}; !reflect.DeepEqual(out.Connect, want) {
-		t.Fatalf("next pass = %+v, want obfuscated again", out.Connect)
+	out = byKind(s.OnTick(start.Add(passRetryTime+time.Second), nil, noIP))
+	if want := []Dial{{Server: a, ObfuscationPort: 4665}, {Server: b}}; !reflect.DeepEqual(out.Dial, want) {
+		t.Fatalf("next pass = %+v, want obfuscated again", out.Dial)
+	}
+}
+
+// An obfuscated attempt that times out is closed before the plain pass
+// dials the same server again, in the same tick.
+func TestTimedOutAttemptClosesBeforeRedial(t *testing.T) {
+	a := Entry{Endpoint: first, TCPObfuscationPort: 4665, UDPFlags: serverwire.UDPFlagTCPObfuscation}
+	s := BuildServer(config, []Entry{a})
+	byKind(s.OnTick(start, nil, noIP))
+	out := s.OnTick(start.Add(connectTimeout+time.Second), nil, noIP)
+	if want := []Action{Close{first}, Dial{Server: first}}; !reflect.DeepEqual(out, want) {
+		t.Fatalf("timeout = %+v, want %+v", out, want)
 	}
 }
 
@@ -567,11 +610,11 @@ func TestObfuscatedPassFirst(t *testing.T) {
 // connection to it is obfuscated.
 func TestObfuscationPortFromLogin(t *testing.T) {
 	s, _ := loggedIn(t, []Entry{{Endpoint: first}}, highID, 0, nil)
-	s.OnPacket(first, serverwire.IDChange{ClientID: highID, Flags: serverwire.FlagTCPObfuscation, ObfuscationPort: 4665}, start)
-	s.OnDisconnected(first, start)
-	out := s.OnTick(start.Add(passRetryTime+time.Second), nil)
-	if want := []Dial{{Server: first, ObfuscationPort: 4665}}; !reflect.DeepEqual(out.Connect, want) {
-		t.Fatalf("reconnect = %+v, want %+v", out.Connect, want)
+	byKind(s.OnPacket(first, serverwire.IDChange{ClientID: highID, Flags: serverwire.FlagTCPObfuscation, ObfuscationPort: 4665}, start))
+	byKind(s.OnDisconnected(first, start))
+	out := byKind(s.OnTick(start.Add(passRetryTime+time.Second), nil, noIP))
+	if want := []Dial{{Server: first, ObfuscationPort: 4665}}; !reflect.DeepEqual(out.Dial, want) {
+		t.Fatalf("reconnect = %+v, want %+v", out.Dial, want)
 	}
 }
 
@@ -580,38 +623,38 @@ func TestObfuscationPortFromLogin(t *testing.T) {
 func TestHostNameServer(t *testing.T) {
 	dyn := Entry{Endpoint: netip.AddrPortFrom(netip.Addr{}, 4661), Host: "dyn.example"}
 	s := BuildServer(config, []Entry{dyn, dyn})
-	out := s.OnTick(start, nil)
-	if !reflect.DeepEqual(out.Resolve, []string{"dyn.example"}) || len(out.Connect) > 0 {
+	out := byKind(s.OnTick(start, nil, noIP))
+	if !reflect.DeepEqual(out.Resolve, []string{"dyn.example"}) || len(out.Dial) > 0 {
 		t.Fatalf("first tick = %+v", out)
 	}
-	if out := s.OnTick(start.Add(time.Second), nil); len(out.Resolve) > 0 {
+	if out := byKind(s.OnTick(start.Add(time.Second), nil, noIP)); len(out.Resolve) > 0 {
 		t.Fatalf("looked up again while waiting: %v", out.Resolve)
 	}
 	resolved := ep("1.0.0.9:4661")
-	out = s.OnResolved("dyn.example", resolved.Addr(), start)
+	out = byKind(s.OnResolved("dyn.example", resolved.Addr(), start))
 	if !reflect.DeepEqual(dialed(out), []netip.AddrPort{resolved}) {
-		t.Fatalf("connect after lookup = %+v", out.Connect)
+		t.Fatalf("connect after lookup = %+v", out.Dial)
 	}
-	s.OnConnected(resolved)
-	s.OnPacket(resolved, serverwire.IDChange{ClientID: highID}, start)
+	byKind(s.OnConnected(resolved))
+	byKind(s.OnPacket(resolved, serverwire.IDChange{ClientID: highID}, start))
 	later := start.Add(dnsSolveTime + time.Minute)
-	if out := s.OnTick(later, nil); len(out.Resolve) > 0 {
+	if out := byKind(s.OnTick(later, nil, noIP)); len(out.Resolve) > 0 {
 		t.Fatalf("looked up the connected server: %v", out.Resolve)
 	}
-	s.OnDisconnected(resolved, later)
-	if out := s.OnTick(later, nil); !reflect.DeepEqual(out.Resolve, []string{"dyn.example"}) {
+	byKind(s.OnDisconnected(resolved, later))
+	if out := byKind(s.OnTick(later, nil, noIP)); !reflect.DeepEqual(out.Resolve, []string{"dyn.example"}) {
 		t.Fatalf("no new lookup once free: %+v", out)
 	}
-	s.OnResolved("dyn.example", netip.Addr{}, later)
+	byKind(s.OnResolved("dyn.example", netip.Addr{}, later))
 	if s.servers[0].Endpoint != resolved {
 		t.Fatalf("failed lookup dropped the address: %v", s.servers[0].Endpoint)
 	}
 	later = later.Add(dnsSolveTime + time.Minute)
-	if out := s.OnTick(later, nil); len(out.Connect) > 0 {
-		t.Fatalf("connected while looking up: %+v", out.Connect)
+	if out := byKind(s.OnTick(later, nil, noIP)); len(out.Dial) > 0 {
+		t.Fatalf("connected while looking up: %+v", out.Dial)
 	}
-	out = s.OnResolved("dyn.example", netip.MustParseAddr("1.0.0.10"), later)
+	out = byKind(s.OnResolved("dyn.example", netip.MustParseAddr("1.0.0.10"), later))
 	if !reflect.DeepEqual(dialed(out), []netip.AddrPort{ep("1.0.0.10:4661")}) {
-		t.Fatalf("connect after new address = %+v", out.Connect)
+		t.Fatalf("connect after new address = %+v", out.Dial)
 	}
 }

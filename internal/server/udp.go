@@ -39,8 +39,8 @@ type udpSearch struct {
 	pings      uint16
 }
 
-func (s *Server) OnUDPPacket(from netip.AddrPort, p wire.Packet, now time.Time) Output {
-	var out Output
+func (s *Server) onDatagram(from netip.AddrPort, p wire.Packet, now time.Time) []Action {
+	var out []Action
 	l := s.serverByUDP(from)
 	if l == nil {
 		return out
@@ -70,7 +70,7 @@ func (s *Server) OnUDPPacket(from netip.AddrPort, p wire.Packet, now time.Time) 
 // With our public IP known, a ping is first sent obfuscated; a server
 // that leaves it unanswered for 20 s gets a plain one at its next turn,
 // and only that one counts as a failure (ServerList.cpp:297-334).
-func (s *Server) runStats(now time.Time, out *Output) {
+func (s *Server) runStats(now time.Time, out *[]Action) {
 	u := &s.udp
 	if !u.lastStat.IsZero() && now.Sub(u.lastStat) <= udpStatTime {
 		return
@@ -95,14 +95,14 @@ func (s *Server) runStats(now time.Time, out *Output) {
 				padding[i] = byte(s.config.Random.Uint32())
 			}
 			to := netip.AddrPortFrom(l.Endpoint.Addr(), l.Endpoint.Port()+cryptPingPortOffset)
-			out.SendUDP = append(out.SendUDP, Datagram{To: to, Packet: serverwire.ObfuscatedPing{Challenge: l.challenge, Padding: padding}})
+			*out = append(*out, Datagram{To: to, Packet: serverwire.ObfuscatedPing{Challenge: l.challenge, Padding: padding}})
 			return
 		}
 		l.isCryptPinging = false
 		u.pings++
 		l.challenge = challengeBase + uint32(u.pings)
 		l.Failures++
-		out.SendUDP = append(out.SendUDP, s.buildDatagram(l, serverwire.GlobServStatReq{Challenge: l.challenge}))
+		*out = append(*out, s.buildDatagram(l, serverwire.GlobServStatReq{Challenge: l.challenge}))
 		return
 	}
 }
@@ -165,7 +165,7 @@ func (s *Server) UDPKeyByAddr(from netip.AddrPort) uint32 {
 // support shows up late is asked at once instead of a round later. Each
 // series asks at most MAX_REQUESTS_PER_SERVER files; past that the file
 // list rotates so the next server is asked about the others.
-func (s *Server) runSearch(now time.Time, out *Output) {
+func (s *Server) runSearch(now time.Time, out *[]Action) {
 	u := &s.udp
 	if !u.lastSent.IsZero() && now.Sub(u.lastSent) < udpSearchSpeed {
 		return
@@ -199,7 +199,7 @@ func (s *Server) runSearch(now time.Time, out *Output) {
 		request = serverwire.GlobGetSources{Files: batch}
 	}
 	if u.asked > before {
-		out.SendUDP = append(out.SendUDP, s.buildDatagram(u.server, request))
+		*out = append(*out, s.buildDatagram(u.server, request))
 		u.lastSent = now
 	}
 	if u.asked >= quota {

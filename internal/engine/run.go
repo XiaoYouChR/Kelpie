@@ -151,7 +151,6 @@ func (e *Engine) startTransfer(r *run, state *transfer.State) {
 		Random: e.ports.Rand,
 	}, e.now())
 	e.refreshShare(r)
-	e.queue.AddFile(r.file.Hash)
 	for _, src := range r.file.Sources {
 		e.addKnownSource(r.file.Hash, transfer.Source{Endpoint: src})
 	}
@@ -336,7 +335,7 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			case a.IsDirect:
 				e.requestDirectCallback(a.Buddy, a.UserHash, a.CanObfuscate)
 			default:
-				e.kad.RequestCallback(toKadCallback(a, r.file.Hash))
+				e.kad.Post(toKadCallback(a, r.file.Hash))
 			}
 		case transfer.RequestSources:
 			if c := e.conns[a.Peer]; c != nil && c.session != nil {

@@ -25,7 +25,7 @@ const (
 	fixtureSignature  = "0836bc211dabb2618a0acd42fe9c396a75b60662dca68aa317ff9a77c0808d882262c3a1067c9e6888e6e7dd713eee40"
 )
 
-var fixtureChallenge = Challenge{Value: 0x12345678, IPKind: ipKindSigner, IP: netip.MustParseAddr("192.0.2.7")}
+var fixtureChallenge = Challenge{Value: 0x12345678, IPKind: ipKindSigner, SignerIP: netip.MustParseAddr("192.0.2.7")}
 
 func mustHex(t *testing.T, text string) []byte {
 	t.Helper()
@@ -77,7 +77,7 @@ func TestMatchSignatureRejectsTampering(t *testing.T) {
 		},
 		"ip": func() bool {
 			c := fixtureChallenge
-			c.IP = netip.MustParseAddr("192.0.2.8")
+			c.SignerIP = netip.MustParseAddr("192.0.2.8")
 			return MatchSignature(key, signature, key, c)
 		},
 		"kind": func() bool {
@@ -133,7 +133,7 @@ func TestCreateSelfRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	challenge := BuildChallenge(7, ipKindVerifier, netip.Addr{}, netip.MustParseAddr("203.0.113.9"))
+	challenge := Challenge{Value: 7, IPKind: ipKindVerifier, VerifierIP: netip.MustParseAddr("203.0.113.9")}
 	signature := loaded.BuildSignature(bob.PublicKey(), challenge)
 	if len(signature) != 48 {
 		t.Fatalf("signature is %d bytes, want 48", len(signature))
@@ -154,21 +154,32 @@ func TestLoadSelfRejectsBrokenKey(t *testing.T) {
 	}
 }
 
-func TestBuildChallengePicksAddressByKind(t *testing.T) {
+// TestSignatureBindsAddressByKind: a signature covers only the address its
+// kind names.
+func TestSignatureBindsAddressByKind(t *testing.T) {
+	self := loadFixture(t)
 	signer := netip.MustParseAddr("192.0.2.1")
 	verifier := netip.MustParseAddr("192.0.2.2")
+	other := netip.MustParseAddr("192.0.2.3")
 	cases := []struct {
-		kind IPKind
-		want netip.Addr
+		kind                           IPKind
+		isSignerBound, isVerifierBound bool
 	}{
-		{ipKindNone, netip.Addr{}},
-		{ipKindSigner, signer},
-		{ipKindVerifier, verifier},
-		{ipKindZero, netip.Addr{}},
+		{ipKindNone, false, false},
+		{ipKindSigner, true, false},
+		{ipKindVerifier, false, true},
+		{ipKindZero, false, false},
 	}
 	for _, c := range cases {
-		if got := BuildChallenge(1, c.kind, signer, verifier).IP; got != c.want {
-			t.Errorf("kind %d: IP = %v, want %v", c.kind, got, c.want)
+		challenge := Challenge{Value: 1, IPKind: c.kind, SignerIP: signer, VerifierIP: verifier}
+		signature := self.BuildSignature(self.PublicKey(), challenge)
+		movedSigner, movedVerifier := challenge, challenge
+		movedSigner.SignerIP, movedVerifier.VerifierIP = other, other
+		if got := MatchSignature(self.PublicKey(), signature, self.PublicKey(), movedSigner); got == c.isSignerBound {
+			t.Errorf("kind %d: other signer address matches = %v", c.kind, got)
+		}
+		if got := MatchSignature(self.PublicKey(), signature, self.PublicKey(), movedVerifier); got == c.isVerifierBound {
+			t.Errorf("kind %d: other verifier address matches = %v", c.kind, got)
 		}
 	}
 }
@@ -179,19 +190,17 @@ func TestBuildReply(t *testing.T) {
 		state       State
 		peerSupport byte
 		isLowID     bool
-		hasPeerKey  bool
 		want        Reply
 	}{
-		{"none", stateNone, 3, false, true, Reply{}},
-		{"unknown state", 9, 3, false, true, Reply{}},
-		{"signature", stateSignatureNeeded, 3, false, true, Reply{ShouldSendSignature: true}},
-		{"key and signature", stateKeyAndSignatureNeeded, 3, false, true, Reply{ShouldSendKey: true, ShouldSendSignature: true}},
-		{"peer key missing", stateKeyAndSignatureNeeded, 3, false, false, Reply{ShouldSendKey: true, IsSignaturePending: true}},
-		{"v2 only highid", stateSignatureNeeded, 2, false, true, Reply{ShouldSendSignature: true, IPKind: ipKindSigner}},
-		{"v2 only lowid", stateSignatureNeeded, 2, true, true, Reply{ShouldSendSignature: true, IPKind: ipKindVerifier}},
+		{"none", stateNone, 3, false, Reply{}},
+		{"unknown state", 9, 3, false, Reply{}},
+		{"signature", stateSignatureNeeded, 3, false, Reply{ShouldSign: true}},
+		{"key and signature", stateKeyAndSignatureNeeded, 3, false, Reply{ShouldSendKey: true, ShouldSign: true}},
+		{"v2 only highid", stateSignatureNeeded, 2, false, Reply{ShouldSign: true, IPKind: ipKindSigner}},
+		{"v2 only lowid", stateSignatureNeeded, 2, true, Reply{ShouldSign: true, IPKind: ipKindVerifier}},
 	}
 	for _, c := range cases {
-		if got := BuildReply(c.state, c.peerSupport, c.isLowID, c.hasPeerKey); got != c.want {
+		if got := BuildReply(c.state, c.peerSupport, c.isLowID); got != c.want {
 			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
 		}
 	}
