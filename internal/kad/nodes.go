@@ -49,7 +49,7 @@ func ParseNodes(data []byte) ([]Node, error) {
 	}
 	nodes := make([]Node, 0, count)
 	for range count {
-		id := parseID(r)
+		id := kadwire.ParseID(r)
 		addr := netip.AddrPortFrom(kadwire.ToAddr(r.Uint32()), r.Uint16())
 		node := Node{ID: id, Addr: addr, TCPPort: r.Uint16()}
 		// Version 0 files store a contact type where later ones store the
@@ -84,22 +84,4 @@ func matchGoodAddr(addr netip.AddrPort) bool {
 	ip := addr.Addr()
 	return ip.Is4() && addr.Port() != 0 && !ip.IsUnspecified() && !ip.IsLoopback() &&
 		!ip.IsMulticast() && ip != netip.AddrFrom4([4]byte{255, 255, 255, 255})
-}
-
-// Kad writes a 128-bit value as four little-endian uint32 words, so each
-// group of four bytes is reversed against the hash's byte form.
-func parseID(r *wire.Reader) wire.Hash {
-	var id wire.Hash
-	raw := r.Bytes(16)
-	for i := range raw {
-		id[i/4*4+3-i%4] = raw[i]
-	}
-	return id
-}
-
-func buildID(b []byte, id wire.Hash) []byte {
-	for i := range id {
-		b = append(b, id[i/4*4+3-i%4])
-	}
-	return b
 }

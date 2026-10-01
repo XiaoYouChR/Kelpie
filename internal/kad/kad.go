@@ -327,7 +327,7 @@ func (c *core) buildDatagram(d datagram) []byte {
 	}
 	var nodeID []byte
 	if d.nodeID != (wire.Hash{}) {
-		nodeID = buildID(nil, d.nodeID)
+		nodeID = kadwire.BuildID(nil, d.nodeID)
 	}
 	return obfuscation.BuildKadDatagram(obfuscation.KadDatagram{Packet: data, ReceiverKey: d.receiverKey, SenderKey: d.senderKey}, nodeID, c.rng.Uint32())
 }
@@ -341,7 +341,7 @@ func (c *core) parseDatagram(d Datagram) (p wire.Packet, k keys, isKad bool) {
 		return nil, keys{}, false
 	}
 	if data[0] != wire.ProtocolKad && data[0] != wire.ProtocolKadPacked {
-		kd, ok := obfuscation.ParseKadDatagram(data, buildID(nil, c.id), obfuscation.BuildKadVerifyKey(c.udpKey, d.Addr.Addr()))
+		kd, ok := obfuscation.ParseKadDatagram(data, kadwire.BuildID(nil, c.id), obfuscation.BuildKadVerifyKey(c.udpKey, d.Addr.Addr()))
 		if !ok || (kd.Packet[0] != wire.ProtocolKad && kd.Packet[0] != wire.ProtocolKadPacked) {
 			return nil, keys{}, false
 		}

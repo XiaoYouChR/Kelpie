@@ -230,7 +230,7 @@ func buildOpenEntry(id wire.Hash, ip string, port uint16) kadwire.Entry {
 // wire bytes.
 func buddyHashText(id wire.Hash) string {
 	var raw wire.Hash
-	copy(raw[:], buildID(nil, id))
+	copy(raw[:], kadwire.BuildID(nil, id))
 	return raw.String()
 }
 
@@ -334,7 +334,7 @@ func TestRequestCallbackReachesBuddy(t *testing.T) {
 	want := []byte{wire.ProtocolKad, 0x52}
 	buddyWire := mustHash(buddyHashText(buddyID))
 	want = append(want, buddyWire[:]...)
-	want = buildID(want, fileHash)
+	want = kadwire.BuildID(want, fileHash)
 	want = binary.LittleEndian.AppendUint16(want, 4662)
 	if !bytes.Equal(got, want) {
 		t.Fatalf("callback\n got %x\nwant %x", got, want)
