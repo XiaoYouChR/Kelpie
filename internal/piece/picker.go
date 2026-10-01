@@ -349,6 +349,21 @@ func (p *Picker[P]) OnPartFailed(part int) []P {
 	return senders
 }
 
+// Senders lists the peers that sent any block of a part not yet verified.
+func (p *Picker[P]) Senders() []P {
+	var senders []P
+	for _, part := range p.parts {
+		for _, block := range part.blocks {
+			for _, sender := range block.senders {
+				if !slices.Contains(senders, sender) {
+					senders = append(senders, sender)
+				}
+			}
+		}
+	}
+	return senders
+}
+
 // OnBlockFailed discards one whole block of a part that failed its hash
 // check, so only that block is requested again, and returns its senders.
 func (p *Picker[P]) OnBlockFailed(b Block) []P {
