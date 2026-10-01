@@ -46,7 +46,8 @@ Engine Process writes diagnostics to stderr, never to stdout.
 ```
 
 Exactly one of these answers `hello`. After `failed` the Engine Process exits
-with a non-zero status.
+with a non-zero status. Kelpie waits 30 s for the answer; then it kills the
+Engine Process and fails with `START_FAILED`.
 
 ```json
 {"type": "progress", "run": 1, "hash": "31D6CFE0D16AE931B73C59D7E0C089C0", "size": 2048,
