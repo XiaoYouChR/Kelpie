@@ -70,35 +70,29 @@ const (
 
 var errFileIdentifier = errors.New("client: file identifier without hash or with unknown mandatory options")
 
-func (MultiPacket) Protocol() byte           { return wire.ProtocolEMule }
-func (MultiPacket) Opcode() byte             { return opMultiPacket }
-func (MultiPacketExt) Protocol() byte        { return wire.ProtocolEMule }
-func (MultiPacketExt) Opcode() byte          { return opMultiPacketExt }
-func (MultiPacketAnswer) Protocol() byte     { return wire.ProtocolEMule }
-func (MultiPacketAnswer) Opcode() byte       { return opMultiPacketAnswer }
-func (MultiPacketExt2) Protocol() byte       { return wire.ProtocolEMule }
-func (MultiPacketExt2) Opcode() byte         { return opMultiPacketExt2 }
-func (MultiPacketAnswerExt2) Protocol() byte { return wire.ProtocolEMule }
-func (MultiPacketAnswerExt2) Opcode() byte   { return opMultiPacketAnswerExt2 }
-
 func (m MultiPacket) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opMultiPacket)
 	return buildRequests(append(b, m.Hash[:]...), m.Requests)
 }
 
 func (m MultiPacketExt) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opMultiPacketExt)
 	b = binary.LittleEndian.AppendUint64(append(b, m.Hash[:]...), m.Size)
 	return buildRequests(b, m.Requests)
 }
 
 func (m MultiPacketExt2) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opMultiPacketExt2)
 	return buildRequests(buildFileIdentifier(b, m.File), m.Requests)
 }
 
 func (m MultiPacketAnswer) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opMultiPacketAnswer)
 	return buildAnswers(append(b, m.Hash[:]...), m.Answers)
 }
 
 func (m MultiPacketAnswerExt2) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opMultiPacketAnswerExt2)
 	return buildAnswers(buildFileIdentifier(b, m.File), m.Answers)
 }
 
@@ -139,33 +133,40 @@ func parseFileIdentifier(r *wire.Reader) FileIdentifier {
 	return f
 }
 
+// buildAnswers writes each answer as its opcode and what follows the hash.
 func buildAnswers(b []byte, answers []wire.Packet) []byte {
 	for _, p := range answers {
-		b = append(b, p.Opcode())
 		switch p := p.(type) {
 		case FileNameAnswer:
-			b = wire.BuildString(b, p.Name)
+			b = wire.BuildString(append(b, opFileNameAnswer), p.Name)
 		case FileStatus:
-			b = wire.BuildBitfield(b, p.Parts)
+			b = wire.BuildBitfield(append(b, opFileStatus), p.Parts)
 		case AICHFileHashAnswer:
-			b = append(b, p.Root[:]...)
+			b = append(append(b, opAICHFileHashAnswer), p.Root[:]...)
 		case wire.Unknown:
-			b = append(b, p.Body...)
+			b = append(append(b, p.Op), p.Body...)
 		}
 	}
 	return b
 }
 
+// buildRequests writes each request as its opcode and what it carries
+// besides the hash.
 func buildRequests(b []byte, requests []wire.Packet) []byte {
 	for _, p := range requests {
-		b = append(b, p.Opcode())
 		switch p := p.(type) {
 		case FileRequest:
-			b = buildFileRequestExtension(b, p)
+			b = buildFileRequestExtension(append(b, opRequestFileName), p)
+		case SetRequestFileID:
+			b = append(b, opSetRequestFileID)
+		case RequestSources:
+			b = append(b, opRequestSources)
 		case RequestSources2:
-			b = binary.LittleEndian.AppendUint16(append(b, p.Version), p.Options)
+			b = binary.LittleEndian.AppendUint16(append(b, opRequestSources2, p.Version), p.Options)
+		case AICHFileHashRequest:
+			b = append(b, opAICHFileHashRequest)
 		case wire.Unknown:
-			b = append(b, p.Body...)
+			b = append(append(b, p.Op), p.Body...)
 		}
 	}
 	return b

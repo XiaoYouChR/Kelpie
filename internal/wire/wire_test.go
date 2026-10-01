@@ -21,7 +21,7 @@ func unhex(t *testing.T, s string) []byte {
 }
 
 func TestFrameGolden(t *testing.T) {
-	got := BuildFrame(nil, ProtocolEDonkey, 0x5C, []byte{0x70, 0x11, 0x01, 0x00})
+	got := buildFrame(nil, ProtocolEDonkey, 0x5C, []byte{0x70, 0x11, 0x01, 0x00})
 	want := unhex(t, "e305000000"+"5c"+"70110100")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("frame = %x, want %x", got, want)
@@ -36,7 +36,7 @@ func TestFrameGolden(t *testing.T) {
 }
 
 func TestParseFrameWaitsForWholeFrame(t *testing.T) {
-	raw := BuildFrame(nil, ProtocolEMule, 0x60, make([]byte, 12))
+	raw := buildFrame(nil, ProtocolEMule, 0x60, make([]byte, 12))
 	for cut := range len(raw) {
 		if _, n, err := ParseFrame(raw[:cut]); n != 0 || err != nil {
 			t.Fatalf("cut %d: n=%d err=%v", cut, n, err)
@@ -59,7 +59,7 @@ func TestParseFrameRejects(t *testing.T) {
 
 func TestPackedFrameInflatesToEMule(t *testing.T) {
 	body := bytes.Repeat([]byte("kelpie"), 100)
-	raw := BuildPackedFrame(nil, 0x84, body)
+	raw := buildPackedFrame(nil, 0x84, body)
 	if raw[0] != ProtocolPacked {
 		t.Fatalf("protocol = %#x", raw[0])
 	}
@@ -74,7 +74,7 @@ func TestPackedFrameInflatesToEMule(t *testing.T) {
 
 func TestPackedKadDatagram(t *testing.T) {
 	body := []byte{1, 2, 3, 4}
-	raw := BuildPackedDatagram(nil, ProtocolKad, 0x3B, body)
+	raw := buildPackedDatagram(nil, ProtocolKad, 0x3B, body)
 	if raw[0] != ProtocolKadPacked {
 		t.Fatalf("protocol = %#x", raw[0])
 	}
@@ -88,7 +88,7 @@ func TestPackedKadDatagram(t *testing.T) {
 }
 
 func TestPackedFrameRejectsGarbage(t *testing.T) {
-	raw := BuildFrame(nil, ProtocolPacked, 0x84, []byte{1, 2, 3})
+	raw := buildFrame(nil, ProtocolPacked, 0x84, []byte{1, 2, 3})
 	if _, _, err := ParseFrame(raw); err == nil {
 		t.Fatal("want inflate error")
 	}
@@ -269,7 +269,7 @@ func TestOversizedFrameIsRejectedUnread(t *testing.T) {
 }
 
 func TestTruncatedFrameFails(t *testing.T) {
-	raw := BuildFrame(nil, ProtocolEMule, 0x60, make([]byte, 100))
+	raw := buildFrame(nil, ProtocolEMule, 0x60, make([]byte, 100))
 	if _, err := ParseFrameFrom(bytes.NewReader(raw[:50])); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("err = %v, want ErrUnexpectedEOF", err)
 	}
@@ -277,13 +277,13 @@ func TestTruncatedFrameFails(t *testing.T) {
 
 func TestInflationBomb(t *testing.T) {
 	bomb := make([]byte, maxInflatedSize+1)
-	if _, err := ParseFrameFrom(bytes.NewReader(BuildPackedFrame(nil, 0x60, bomb))); !errors.Is(err, errTooLarge) {
+	if _, err := ParseFrameFrom(bytes.NewReader(buildPackedFrame(nil, 0x60, bomb))); !errors.Is(err, errTooLarge) {
 		t.Fatalf("frame err = %v, want errTooLarge", err)
 	}
-	if _, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb)); !errors.Is(err, errTooLarge) {
+	if _, err := ParseDatagram(buildPackedDatagram(nil, ProtocolKad, 0x3B, bomb)); !errors.Is(err, errTooLarge) {
 		t.Fatalf("datagram err = %v, want errTooLarge", err)
 	}
-	if f, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb[:maxInflatedSize])); err != nil || len(f.Body) != maxInflatedSize {
+	if f, err := ParseDatagram(buildPackedDatagram(nil, ProtocolKad, 0x3B, bomb[:maxInflatedSize])); err != nil || len(f.Body) != maxInflatedSize {
 		t.Fatalf("largest datagram: %d bytes, err %v", len(f.Body), err)
 	}
 }

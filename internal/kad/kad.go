@@ -260,7 +260,7 @@ func (c *core) state() State {
 
 // buildDatagram is a datagram's wire form, obfuscated as d asks.
 func (c *core) buildDatagram(d datagram) []byte {
-	data := wire.BuildPacketDatagram(nil, d.packet)
+	data := d.packet.Build(nil)
 	if d.nodeID == (wire.Hash{}) && d.receiverKey == 0 {
 		return data
 	}

@@ -12,11 +12,8 @@ import (
 // complete-source count.
 type ReaskFilePing FileRequest
 
-func (ReaskFilePing) Protocol() byte { return wire.ProtocolEMule }
-func (ReaskFilePing) Opcode() byte   { return opReaskFilePing }
-
 func (p ReaskFilePing) Build(b []byte) []byte {
-	return FileRequest(p).Build(b)
+	return buildFileRequest(append(b, wire.ProtocolEMule, opReaskFilePing), FileRequest(p))
 }
 
 // parseReaskFilePing tells the versions apart by length: version 4 always
@@ -40,10 +37,8 @@ type ReaskAck struct {
 	Rank     uint16
 }
 
-func (ReaskAck) Protocol() byte { return wire.ProtocolEMule }
-func (ReaskAck) Opcode() byte   { return opReaskAck }
-
 func (a ReaskAck) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opReaskAck)
 	if a.HasParts {
 		b = wire.BuildBitfield(b, a.Parts)
 	}
@@ -62,13 +57,9 @@ func parseReaskAck(r *wire.Reader) ReaskAck {
 // FileNotFound is OP_FILENOTFOUND: the uploader no longer shares the file.
 type FileNotFound struct{}
 
-func (FileNotFound) Protocol() byte        { return wire.ProtocolEMule }
-func (FileNotFound) Opcode() byte          { return opFileNotFound }
-func (FileNotFound) Build(b []byte) []byte { return b }
+func (FileNotFound) Build(b []byte) []byte { return append(b, wire.ProtocolEMule, opFileNotFound) }
 
 // QueueFull is OP_QUEUEFULL: the uploader's queue has no room for us.
 type QueueFull struct{}
 
-func (QueueFull) Protocol() byte        { return wire.ProtocolEMule }
-func (QueueFull) Opcode() byte          { return opQueueFull }
-func (QueueFull) Build(b []byte) []byte { return b }
+func (QueueFull) Build(b []byte) []byte { return append(b, wire.ProtocolEMule, opQueueFull) }

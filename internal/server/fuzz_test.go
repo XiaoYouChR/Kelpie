@@ -37,15 +37,14 @@ func FuzzParseMet(f *testing.F) {
 func buildServerScript(packets ...wire.Packet) []byte {
 	var b []byte
 	for _, p := range packets {
+		d := p.Build(nil)
 		via := byte(0)
-		if p.Protocol() == wire.ProtocolEDonkey && p.Opcode() >= 0x90 {
+		if d[0] == wire.ProtocolEDonkey && d[1] >= 0x90 {
 			via = 1
 		}
-		body := p.Build(nil)
 		b = append(b, via)
-		b = binary.LittleEndian.AppendUint16(b, uint16(len(body)+2))
-		b = append(b, p.Protocol(), p.Opcode())
-		b = append(b, body...)
+		b = binary.LittleEndian.AppendUint16(b, uint16(len(d)))
+		b = append(b, d...)
 	}
 	return b
 }

@@ -1,6 +1,8 @@
 package kad
 
 import (
+	"bytes"
+	"compress/zlib"
 	"encoding/binary"
 	"net/netip"
 	"os"
@@ -30,14 +32,24 @@ func FuzzParseNodes(f *testing.F) {
 	})
 }
 
+// toPacked compresses a Kad datagram's body under 0xE5, as eMule sends
+// large answers.
+func toPacked(d []byte) []byte {
+	var body bytes.Buffer
+	zw := zlib.NewWriter(&body)
+	zw.Write(d[2:])
+	zw.Close()
+	return append([]byte{wire.ProtocolKadPacked, d[1]}, body.Bytes()...)
+}
+
 // buildDatagrams frames datagrams for FuzzDatagrams: one byte choosing the
 // sender among the core's contacts, a uint16 length, the datagram.
 func buildDatagrams(packets ...wire.Packet) []byte {
 	var b []byte
 	for i, p := range packets {
-		d := wire.BuildPacketDatagram(nil, p)
+		d := p.Build(nil)
 		if i%2 == 1 {
-			d = wire.BuildPackedDatagram(nil, p.Protocol(), p.Opcode(), p.Build(nil))
+			d = toPacked(d)
 		}
 		b = append(b, byte(i))
 		b = binary.LittleEndian.AppendUint16(b, uint16(len(d)))

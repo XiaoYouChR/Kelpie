@@ -24,9 +24,10 @@ type Source struct {
 // RequestSources is OP_REQUESTSOURCES (Source Exchange v1).
 type RequestSources struct{ Hash wire.Hash }
 
-func (RequestSources) Protocol() byte          { return wire.ProtocolEMule }
-func (RequestSources) Opcode() byte            { return opRequestSources }
-func (s RequestSources) Build(b []byte) []byte { return append(b, s.Hash[:]...) }
+func (s RequestSources) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opRequestSources)
+	return append(b, s.Hash[:]...)
+}
 
 // AnswerSources is OP_ANSWERSOURCES. Records carry the user hash from SX1
 // version 2 on; the body length tells which, so no version is needed.
@@ -36,10 +37,8 @@ type AnswerSources struct {
 	Sources     []Source
 }
 
-func (AnswerSources) Protocol() byte { return wire.ProtocolEMule }
-func (AnswerSources) Opcode() byte   { return opAnswerSources }
-
 func (a AnswerSources) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opAnswerSources)
 	b = append(b, a.Hash[:]...)
 	b = binary.LittleEndian.AppendUint16(b, uint16(len(a.Sources)))
 	for _, s := range a.Sources {
@@ -79,10 +78,8 @@ type RequestSources2 struct {
 	Hash    wire.Hash
 }
 
-func (RequestSources2) Protocol() byte { return wire.ProtocolEMule }
-func (RequestSources2) Opcode() byte   { return opRequestSources2 }
-
 func (s RequestSources2) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opRequestSources2)
 	b = binary.LittleEndian.AppendUint16(append(b, s.Version), s.Options)
 	return append(b, s.Hash[:]...)
 }
@@ -114,10 +111,8 @@ const (
 	tagSourceCryptOptions byte = 0xBE
 )
 
-func (AnswerSources2) Protocol() byte { return wire.ProtocolEMule }
-func (AnswerSources2) Opcode() byte   { return opAnswerSources2 }
-
 func (a AnswerSources2) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opAnswerSources2)
 	b = append(b, a.Version)
 	b = append(b, a.Hash[:]...)
 	b = binary.LittleEndian.AppendUint16(b, uint16(len(a.Sources)))

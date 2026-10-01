@@ -64,10 +64,8 @@ type Login struct {
 	Tags         []wire.Tag
 }
 
-func (Login) Protocol() byte { return wire.ProtocolEDonkey }
-func (Login) Opcode() byte   { return opLogin }
-
 func (l Login) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opLogin)
 	var tags []wire.Tag
 	if l.Name != "" {
 		tags = append(tags, wire.Tag{Type: wire.TagString, ID: tagName, String: l.Name})
@@ -130,10 +128,8 @@ type IDChange struct {
 	ObfuscationPort uint32
 }
 
-func (IDChange) Protocol() byte { return wire.ProtocolEDonkey }
-func (IDChange) Opcode() byte   { return opIDChange }
-
 func (c IDChange) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opIDChange)
 	b = binary.LittleEndian.AppendUint32(b, c.ClientID)
 	b = binary.LittleEndian.AppendUint32(b, c.Flags)
 	b = binary.LittleEndian.AppendUint32(b, c.Reserved)
@@ -164,9 +160,10 @@ func parseIDChange(r *wire.Reader) IDChange {
 // ServerMessage is OP_SERVERMESSAGE: free text, often several lines.
 type ServerMessage struct{ Text string }
 
-func (ServerMessage) Protocol() byte          { return wire.ProtocolEDonkey }
-func (ServerMessage) Opcode() byte            { return opServerMessage }
-func (m ServerMessage) Build(b []byte) []byte { return wire.BuildString(b, m.Text) }
+func (m ServerMessage) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opServerMessage)
+	return wire.BuildString(b, m.Text)
+}
 
 // ServerStatus is OP_SERVERSTATUS.
 type ServerStatus struct {
@@ -174,9 +171,8 @@ type ServerStatus struct {
 	Files uint32
 }
 
-func (ServerStatus) Protocol() byte { return wire.ProtocolEDonkey }
-func (ServerStatus) Opcode() byte   { return opServerStatus }
 func (s ServerStatus) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opServerStatus)
 	return binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(b, s.Users), s.Files)
 }
 
@@ -200,10 +196,8 @@ const (
 	IPv6StatusProbed    byte = 0x04
 )
 
-func (ServerIdent) Protocol() byte { return wire.ProtocolEDonkey }
-func (ServerIdent) Opcode() byte   { return opServerIdent }
-
 func (s ServerIdent) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opServerIdent)
 	var tags []wire.Tag
 	if s.Name != "" {
 		tags = append(tags, wire.Tag{Type: wire.TagString, ID: tagName, String: s.Name})
@@ -252,18 +246,14 @@ func parseServerIdent(r *wire.Reader) ServerIdent {
 // GetServerList is OP_GETSERVERLIST.
 type GetServerList struct{}
 
-func (GetServerList) Protocol() byte        { return wire.ProtocolEDonkey }
-func (GetServerList) Opcode() byte          { return opGetServerList }
-func (GetServerList) Build(b []byte) []byte { return b }
+func (GetServerList) Build(b []byte) []byte { return append(b, wire.ProtocolEDonkey, opGetServerList) }
 
 // ServerList is OP_SERVERLIST. IPv6 servers travel in a trailing block only
 // IPv6-aware servers send (ipv6-spec §4.6).
 type ServerList struct{ Servers []netip.AddrPort }
 
-func (ServerList) Protocol() byte { return wire.ProtocolEDonkey }
-func (ServerList) Opcode() byte   { return opServerList }
-
 func (l ServerList) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opServerList)
 	var v4, v6 []netip.AddrPort
 	for _, s := range l.Servers {
 		if s.Addr().Is4() {
@@ -307,19 +297,19 @@ type GetSources struct {
 	Size uint64
 }
 
-func (GetSources) Protocol() byte { return wire.ProtocolEDonkey }
-func (GetSources) Opcode() byte   { return opGetSources }
-
-func (g GetSources) Build(b []byte) []byte { return buildSizedHash(b, g.Hash, g.Size) }
+func (g GetSources) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opGetSources)
+	return buildSizedHash(b, g.Hash, g.Size)
+}
 
 // GetSourcesObfu is OP_GETSOURCES_OBFU: the server answers it with
 // OP_FOUNDSOURCES_OBFU, which carries what obfuscated connections need.
 type GetSourcesObfu GetSources
 
-func (GetSourcesObfu) Protocol() byte { return wire.ProtocolEDonkey }
-func (GetSourcesObfu) Opcode() byte   { return opGetSourcesObfu }
-
-func (g GetSourcesObfu) Build(b []byte) []byte { return buildSizedHash(b, g.Hash, g.Size) }
+func (g GetSourcesObfu) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opGetSourcesObfu)
+	return buildSizedHash(b, g.Hash, g.Size)
+}
 
 func buildSizedHash(b []byte, hash wire.Hash, size uint64) []byte {
 	b = append(b, hash[:]...)
@@ -359,13 +349,14 @@ type FoundSources struct {
 // FoundSourcesObfu is OP_FOUNDSOURCES_OBFU.
 type FoundSourcesObfu FoundSources
 
-func (FoundSources) Protocol() byte     { return wire.ProtocolEDonkey }
-func (FoundSources) Opcode() byte       { return opFoundSources }
-func (FoundSourcesObfu) Protocol() byte { return wire.ProtocolEDonkey }
-func (FoundSourcesObfu) Opcode() byte   { return opFoundSourcesObfu }
-
-func (f FoundSources) Build(b []byte) []byte     { return buildSources(b, f, false) }
-func (f FoundSourcesObfu) Build(b []byte) []byte { return buildSources(b, FoundSources(f), true) }
+func (f FoundSources) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opFoundSources)
+	return buildSources(b, f, false)
+}
+func (f FoundSourcesObfu) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opFoundSourcesObfu)
+	return buildSources(b, FoundSources(f), true)
+}
 
 func buildSources(b []byte, f FoundSources, isObfu bool) []byte {
 	b = append(b, f.Hash[:]...)
@@ -416,9 +407,8 @@ func parseSources(r *wire.Reader, isObfu bool) FoundSources {
 // peer ClientID connect to us.
 type CallbackRequest struct{ ClientID uint32 }
 
-func (CallbackRequest) Protocol() byte { return wire.ProtocolEDonkey }
-func (CallbackRequest) Opcode() byte   { return opCallbackRequest }
 func (c CallbackRequest) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opCallbackRequest)
 	return binary.LittleEndian.AppendUint32(b, c.ClientID)
 }
 
@@ -431,10 +421,8 @@ type CallbackRequested struct {
 	UserHash     wire.Hash
 }
 
-func (CallbackRequested) Protocol() byte { return wire.ProtocolEDonkey }
-func (CallbackRequested) Opcode() byte   { return opCallbackRequested }
-
 func (c CallbackRequested) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opCallbackRequested)
 	b = wire.BuildAddrPort(b, c.Addr)
 	if c.CryptOptions != 0 {
 		b = append(append(b, c.CryptOptions), c.UserHash[:]...)
@@ -454,18 +442,17 @@ func parseCallbackRequested(r *wire.Reader) CallbackRequested {
 // CallbackRequestedIPv6 is OP_CALLBACKREQUESTED_IPV6 (ipv6-spec §4.5).
 type CallbackRequestedIPv6 struct{ Addr netip.AddrPort }
 
-func (CallbackRequestedIPv6) Protocol() byte { return wire.ProtocolEDonkey }
-func (CallbackRequestedIPv6) Opcode() byte   { return opCallbackRequestedIPv6 }
 func (c CallbackRequestedIPv6) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opCallbackRequestedIPv6)
 	return binary.LittleEndian.AppendUint16(wire.BuildIPv6(b, c.Addr.Addr()), c.Addr.Port())
 }
 
 // CallbackFailed is OP_CALLBACK_FAIL: the server could not reach the peer.
 type CallbackFailed struct{}
 
-func (CallbackFailed) Protocol() byte        { return wire.ProtocolEDonkey }
-func (CallbackFailed) Opcode() byte          { return opCallbackFailed }
-func (CallbackFailed) Build(b []byte) []byte { return b }
+func (CallbackFailed) Build(b []byte) []byte {
+	return append(b, wire.ProtocolEDonkey, opCallbackFailed)
+}
 
 // OfferFiles is OP_OFFERFILES, publishing shared files to the server.
 type OfferFiles struct{ Files []OfferedFile }
@@ -496,10 +483,8 @@ const (
 	FileSizeHi byte = 0x3A
 )
 
-func (OfferFiles) Protocol() byte { return wire.ProtocolEDonkey }
-func (OfferFiles) Opcode() byte   { return opOfferFiles }
-
 func (o OfferFiles) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opOfferFiles)
 	b = binary.LittleEndian.AppendUint32(b, uint32(len(o.Files)))
 	for _, f := range o.Files {
 		b = append(b, f.Hash[:]...)

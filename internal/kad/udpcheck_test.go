@@ -41,7 +41,7 @@ func TestFirewallChecksAreAnswered(t *testing.T) {
 
 	h.clearSent()
 	h.record(h.c.onMessage(FirewallAck{asker}))
-	if len(h.sent) != 1 || h.sent[0].to != asker || h.sent[0].packet.Opcode() != opFirewalledAck {
+	if len(h.sent) != 1 || h.sent[0].to != asker || h.sent[0].packet.Build(nil)[1] != opFirewalledAck {
 		t.Fatalf("sent %+v, want KADEMLIA_FIREWALLED_ACK_RES to the asker", h.sent)
 	}
 }

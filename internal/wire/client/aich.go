@@ -10,9 +10,10 @@ import (
 // Inside a MultiPacket it is the bare opcode.
 type AICHFileHashRequest struct{ Hash wire.Hash }
 
-func (AICHFileHashRequest) Protocol() byte          { return wire.ProtocolEMule }
-func (AICHFileHashRequest) Opcode() byte            { return opAICHFileHashRequest }
-func (a AICHFileHashRequest) Build(b []byte) []byte { return append(b, a.Hash[:]...) }
+func (a AICHFileHashRequest) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opAICHFileHashRequest)
+	return append(b, a.Hash[:]...)
+}
 
 // AICHFileHashAnswer is OP_AICHFILEHASHANS. Inside a MultiPacketAnswer only
 // the root follows the opcode.
@@ -21,10 +22,8 @@ type AICHFileHashAnswer struct {
 	Root wire.AICHHash
 }
 
-func (AICHFileHashAnswer) Protocol() byte { return wire.ProtocolEMule }
-func (AICHFileHashAnswer) Opcode() byte   { return opAICHFileHashAnswer }
-
 func (a AICHFileHashAnswer) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opAICHFileHashAnswer)
 	return append(append(b, a.Hash[:]...), a.Root[:]...)
 }
 
@@ -36,10 +35,8 @@ type AICHRequest struct {
 	Root wire.AICHHash
 }
 
-func (AICHRequest) Protocol() byte { return wire.ProtocolEMule }
-func (AICHRequest) Opcode() byte   { return opAICHRequest }
-
 func (a AICHRequest) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opAICHRequest)
 	b = binary.LittleEndian.AppendUint16(append(b, a.Hash[:]...), a.Part)
 	return append(b, a.Root[:]...)
 }
@@ -64,10 +61,8 @@ type AICHAnswer struct {
 	HasLongIdents bool
 }
 
-func (AICHAnswer) Protocol() byte { return wire.ProtocolEMule }
-func (AICHAnswer) Opcode() byte   { return opAICHAnswer }
-
 func (a AICHAnswer) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opAICHAnswer)
 	b = append(b, a.Hash[:]...)
 	if !a.HasData {
 		return b

@@ -136,7 +136,7 @@ func (w *world) startTesterGuide(ip string, id wire.Hash, testers []netip.Addr) 
 				reply = res
 			}
 			if reply != nil {
-				conn.WriteTo(wire.BuildPacketDatagram(nil, reply), from)
+				conn.WriteTo(reply.Build(nil), from)
 			}
 		}
 	}()
@@ -275,7 +275,7 @@ func TestFirewalledSeederServesThroughBuddy(t *testing.T) {
 		}
 	}()
 	reask := client.ReaskCallbackUDP{BuddyID: invert(seederID), Ping: client.ReaskFilePing{Hash: wire.Hash{0xAB}}}
-	asker.WriteTo(wire.BuildPacketDatagram(nil, reask), netip.AddrPortFrom(buddy.ip, kadPort))
+	asker.WriteTo(reask.Build(nil), netip.AddrPortFrom(buddy.ip, kadPort))
 	var answer []byte
 	w.waitFor("the seeder to answer a reask passed on by its buddy", func() bool {
 		select {
@@ -285,7 +285,7 @@ func TestFirewalledSeederServesThroughBuddy(t *testing.T) {
 			return false
 		}
 	})
-	if !bytes.Equal(answer, wire.BuildPacketDatagram(nil, client.FileNotFound{})) {
+	if !bytes.Equal(answer, client.FileNotFound{}.Build(nil)) {
 		t.Fatalf("reask answer %x, want OP_FILENOTFOUND", answer)
 	}
 }

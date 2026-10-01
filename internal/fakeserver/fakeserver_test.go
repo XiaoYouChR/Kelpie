@@ -181,7 +181,7 @@ func TestGlobalSourcesOverUDP(t *testing.T) {
 	serverUDP := netip.AddrPortFrom(s.Addr().Addr(), s.Addr().Port()+4)
 	request := func(p wire.Packet) wire.Packet {
 		t.Helper()
-		if _, err := udp.WriteTo(wire.BuildPacketDatagram(nil, p), serverUDP); err != nil {
+		if _, err := udp.WriteTo(p.Build(nil), serverUDP); err != nil {
 			t.Fatal(err)
 		}
 		buf := make([]byte, 2048)
@@ -318,12 +318,12 @@ func TestObfuscatedUDP(t *testing.T) {
 	}
 
 	challenge := uint32(0x12345678)
-	ping := wire.BuildPacketDatagram(nil, serverwire.ObfuscatedPing{Challenge: challenge, Padding: []byte{1, 2, 3}})
+	ping := serverwire.ObfuscatedPing{Challenge: challenge, Padding: []byte{1, 2, 3}}.Build(nil)
 	stat := exchange(ping, challenge).(serverwire.GlobServStatRes)
 	if stat.Challenge != challenge || stat.UDPKey == 0 || stat.UDPObfuscationPort != port.Port() || stat.UDPFlags&serverwire.UDPFlagUDPObfuscation == 0 {
 		t.Fatalf("status = %+v", stat)
 	}
-	request := wire.BuildPacketDatagram(nil, serverwire.GlobServStatReq{Challenge: 7})
+	request := serverwire.GlobServStatReq{Challenge: 7}.Build(nil)
 	again := exchange(obfuscation.BuildServerDatagram(request, stat.UDPKey, 0x00C5ABCD), stat.UDPKey).(serverwire.GlobServStatRes)
 	if again.Challenge != 7 {
 		t.Fatalf("status over the key = %+v", again)

@@ -7,9 +7,9 @@ import (
 )
 
 func FuzzParseFrame(f *testing.F) {
-	f.Add(BuildFrame(nil, ProtocolEDonkey, 0x5C, []byte{0x70, 0x11, 0x01, 0x00}))
-	f.Add(BuildPackedFrame(nil, 0x84, bytes.Repeat([]byte("kelpie"), 100)))
-	f.Add(BuildFrame(nil, ProtocolEMule, 0x60, make([]byte, 12)))
+	f.Add(buildFrame(nil, ProtocolEDonkey, 0x5C, []byte{0x70, 0x11, 0x01, 0x00}))
+	f.Add(buildPackedFrame(nil, 0x84, bytes.Repeat([]byte("kelpie"), 100)))
+	f.Add(buildFrame(nil, ProtocolEMule, 0x60, make([]byte, 12)))
 	f.Add([]byte{0xE3, 0xFF, 0xFF, 0xFF, 0x7F, 1})
 	f.Fuzz(func(t *testing.T, b []byte) {
 		frame, n, err := ParseFrame(b)
@@ -21,9 +21,9 @@ func FuzzParseFrame(f *testing.F) {
 }
 
 func FuzzParseDatagram(f *testing.F) {
-	f.Add(BuildPackedDatagram(nil, ProtocolKad, 0x3B, []byte{1, 2, 3, 4}))
-	f.Add(BuildPackedDatagram(nil, ProtocolEMule, 0x90, make([]byte, 16)))
-	f.Add(buildDatagram(nil, ProtocolEDonkey, 0x96, []byte{1, 2, 3, 4}))
+	f.Add(buildPackedDatagram(nil, ProtocolKad, 0x3B, []byte{1, 2, 3, 4}))
+	f.Add(buildPackedDatagram(nil, ProtocolEMule, 0x90, make([]byte, 16)))
+	f.Add([]byte{ProtocolEDonkey, 0x96, 1, 2, 3, 4})
 	f.Fuzz(func(t *testing.T, b []byte) {
 		frame, err := ParseDatagram(b)
 		if err == nil && len(frame.Body) > max(MaxFrameSize, maxInflatedSize) {

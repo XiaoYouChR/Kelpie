@@ -93,7 +93,7 @@ func sampleUDPPackets() []wire.Packet {
 
 func TestUDPRoundTrip(t *testing.T) {
 	for _, p := range sampleUDPPackets() {
-		frame, err := wire.ParseDatagram(wire.BuildPacketDatagram(nil, p))
+		frame, err := wire.ParseDatagram(p.Build(nil))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,7 +116,7 @@ func TestFoundSourcesSentinelGolden(t *testing.T) {
 	want := unhex(t, "31d6cfe0d16ae931b73c59d7e0c089c0 02"+
 		"ffffffff 3612 81 23a8ceff57a7a32d562d649ed7893796 2a0104f8000000000000000000000001"+
 		"01020304 3612 00")
-	if got := f.Build(nil); !bytes.Equal(got, want) {
+	if got := f.Build(nil)[2:]; !bytes.Equal(got, want) {
 		t.Fatalf("sources =\n %x\nwant\n %x", got, want)
 	}
 }
@@ -129,18 +129,18 @@ func TestFoundSourcesTruncatedSentinelFails(t *testing.T) {
 }
 
 func TestGetSourcesGolden(t *testing.T) {
-	small := GetSources{Hash: fileHash, Size: 0x01020304}.Build(nil)
+	small := GetSources{Hash: fileHash, Size: 0x01020304}.Build(nil)[2:]
 	if !bytes.Equal(small[16:], unhex(t, "04030201")) {
 		t.Fatalf("small = %x", small[16:])
 	}
-	large := GetSources{Hash: fileHash, Size: 0x0102030405}.Build(nil)
+	large := GetSources{Hash: fileHash, Size: 0x0102030405}.Build(nil)[2:]
 	if !bytes.Equal(large[16:], unhex(t, "00000000 0504030201000000")) {
 		t.Fatalf("large = %x", large[16:])
 	}
 }
 
 func TestLoginGolden(t *testing.T) {
-	got := Login{UserHash: userHash, ClientID: 0, Port: 4662, Flags: CapIPv6, IPv6: v6}.Build(nil)
+	got := Login{UserHash: userHash, ClientID: 0, Port: 4662, Flags: CapIPv6, IPv6: v6}.Build(nil)[2:]
 	want := unhex(t, "23a8ceff57a7a32d562d649ed7893796 00000000 3612 02000000"+
 		"03010020 00100000"+
 		"010100ae 2a0104f8000000000000000000000001")
@@ -150,7 +150,7 @@ func TestLoginGolden(t *testing.T) {
 }
 
 func TestServerListWithoutIPv6BlockHasNoTrailingByte(t *testing.T) {
-	got := ServerList{Servers: []netip.AddrPort{netip.MustParseAddrPort("1.2.3.4:4661")}}.Build(nil)
+	got := ServerList{Servers: []netip.AddrPort{netip.MustParseAddrPort("1.2.3.4:4661")}}.Build(nil)[2:]
 	if !bytes.Equal(got, unhex(t, "01 01020304 3512")) {
 		t.Fatalf("list = %x", got)
 	}
@@ -168,13 +168,10 @@ func TestShortStatusDecodesOldServers(t *testing.T) {
 	}
 }
 
+// A packed server frame (0xD4) reaches Parse as 0xC5 once wire inflates it.
 func TestPackedServerFrameParses(t *testing.T) {
-	body := ServerStatus{Users: 1, Files: 2}.Build(nil)
-	frame, _, err := wire.ParseFrame(wire.BuildPackedFrame(nil, opServerStatus, body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := Parse(frame.Protocol, frame.Opcode, frame.Body)
+	body := ServerStatus{Users: 1, Files: 2}.Build(nil)[2:]
+	got, err := Parse(wire.ProtocolEMule, opServerStatus, body)
 	if err != nil || got != (ServerStatus{Users: 1, Files: 2}) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
@@ -192,7 +189,7 @@ func TestUnknownOpcodesSurvive(t *testing.T) {
 }
 
 func TestObfuscatedPingIsBare(t *testing.T) {
-	got := wire.BuildPacketDatagram(nil, ObfuscatedPing{Challenge: 0x04030201, Padding: []byte{9, 9}})
+	got := ObfuscatedPing{Challenge: 0x04030201, Padding: []byte{9, 9}}.Build(nil)
 	if want := []byte{1, 2, 3, 4, 9, 9}; !bytes.Equal(got, want) {
 		t.Fatalf("got %x, want %x", got, want)
 	}

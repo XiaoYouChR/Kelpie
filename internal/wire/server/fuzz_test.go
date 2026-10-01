@@ -8,7 +8,8 @@ import (
 
 func addSeeds(f *testing.F, packets []wire.Packet) {
 	for _, p := range packets {
-		f.Add(p.Protocol(), p.Opcode(), p.Build(nil))
+		d := p.Build(nil)
+		f.Add(d[0], d[1], d[2:])
 	}
 }
 

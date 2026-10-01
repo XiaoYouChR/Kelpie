@@ -27,10 +27,11 @@ type FileRequest struct {
 	CompleteSources    uint16
 }
 
-func (FileRequest) Protocol() byte { return wire.ProtocolEDonkey }
-func (FileRequest) Opcode() byte   { return opRequestFileName }
-
 func (f FileRequest) Build(b []byte) []byte {
+	return buildFileRequest(append(b, wire.ProtocolEDonkey, opRequestFileName), f)
+}
+
+func buildFileRequest(b []byte, f FileRequest) []byte {
 	return buildFileRequestExtension(append(b, f.Hash[:]...), f)
 }
 
@@ -61,19 +62,18 @@ type FileNameAnswer struct {
 	Name string
 }
 
-func (FileNameAnswer) Protocol() byte { return wire.ProtocolEDonkey }
-func (FileNameAnswer) Opcode() byte   { return opFileNameAnswer }
-
 func (f FileNameAnswer) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opFileNameAnswer)
 	return wire.BuildString(append(b, f.Hash[:]...), f.Name)
 }
 
 // SetRequestFileID is OP_SETREQFILEID: "tell me your part status".
 type SetRequestFileID struct{ Hash wire.Hash }
 
-func (SetRequestFileID) Protocol() byte          { return wire.ProtocolEDonkey }
-func (SetRequestFileID) Opcode() byte            { return opSetRequestFileID }
-func (s SetRequestFileID) Build(b []byte) []byte { return append(b, s.Hash[:]...) }
+func (s SetRequestFileID) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opSetRequestFileID)
+	return append(b, s.Hash[:]...)
+}
 
 // FileStatus is OP_FILESTATUS. Zero parts means the sender has the whole
 // file.
@@ -82,26 +82,26 @@ type FileStatus struct {
 	Parts wire.Bitfield
 }
 
-func (FileStatus) Protocol() byte { return wire.ProtocolEDonkey }
-func (FileStatus) Opcode() byte   { return opFileStatus }
-
 func (f FileStatus) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opFileStatus)
 	return wire.BuildBitfield(append(b, f.Hash[:]...), f.Parts)
 }
 
 // NoFile is OP_FILEREQANSNOFIL: the peer does not share the file.
 type NoFile struct{ Hash wire.Hash }
 
-func (NoFile) Protocol() byte          { return wire.ProtocolEDonkey }
-func (NoFile) Opcode() byte            { return opNoFile }
-func (n NoFile) Build(b []byte) []byte { return append(b, n.Hash[:]...) }
+func (n NoFile) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opNoFile)
+	return append(b, n.Hash[:]...)
+}
 
 // HashSetRequest is OP_HASHSETREQUEST.
 type HashSetRequest struct{ Hash wire.Hash }
 
-func (HashSetRequest) Protocol() byte          { return wire.ProtocolEDonkey }
-func (HashSetRequest) Opcode() byte            { return opHashSetRequest }
-func (h HashSetRequest) Build(b []byte) []byte { return append(b, h.Hash[:]...) }
+func (h HashSetRequest) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opHashSetRequest)
+	return append(b, h.Hash[:]...)
+}
 
 // HashSetAnswer is OP_HASHSETANSWER: the MD4 of every part.
 type HashSetAnswer struct {
@@ -109,13 +109,14 @@ type HashSetAnswer struct {
 	Parts []wire.Hash
 }
 
-func (HashSetAnswer) Protocol() byte { return wire.ProtocolEDonkey }
-func (HashSetAnswer) Opcode() byte   { return opHashSetAnswer }
-
 func (h HashSetAnswer) Build(b []byte) []byte {
-	b = append(b, h.Hash[:]...)
-	b = binary.LittleEndian.AppendUint16(b, uint16(len(h.Parts)))
-	for _, p := range h.Parts {
+	return buildHashSet(append(b, wire.ProtocolEDonkey, opHashSetAnswer), h.Hash, h.Parts)
+}
+
+func buildHashSet(b []byte, hash wire.Hash, parts []wire.Hash) []byte {
+	b = append(b, hash[:]...)
+	b = binary.LittleEndian.AppendUint16(b, uint16(len(parts)))
+	for _, p := range parts {
 		b = append(b, p[:]...)
 	}
 	return b
@@ -157,12 +158,8 @@ const (
 	hashSetAICH byte = 0x02
 )
 
-func (HashSetRequest2) Protocol() byte { return wire.ProtocolEMule }
-func (HashSetRequest2) Opcode() byte   { return opHashSetRequest2 }
-func (HashSetAnswer2) Protocol() byte  { return wire.ProtocolEMule }
-func (HashSetAnswer2) Opcode() byte    { return opHashSetAnswer2 }
-
 func (h HashSetRequest2) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opHashSetRequest2)
 	var options byte
 	if h.IsMD4Wanted {
 		options |= hashSetMD4
@@ -183,48 +180,47 @@ func parseHashSetRequest2(r *wire.Reader) HashSetRequest2 {
 // Build lays out eMule's WriteHashSetsToPacket (FileIdentifier.cpp:267-308):
 // the options byte says which sets follow.
 func (h HashSetAnswer2) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opHashSetAnswer2)
 	b = buildFileIdentifier(b, h.File)
 	if len(h.Parts) == 0 {
 		return append(b, 0)
 	}
-	return HashSetAnswer{Hash: h.File.Hash, Parts: h.Parts}.Build(append(b, hashSetMD4))
+	return buildHashSet(append(b, hashSetMD4), h.File.Hash, h.Parts)
 }
 
 // StartUploadRequest is OP_STARTUPLOADREQ. Old clients send it without a
 // hash, which decodes as the zero hash.
 type StartUploadRequest struct{ Hash wire.Hash }
 
-func (StartUploadRequest) Protocol() byte          { return wire.ProtocolEDonkey }
-func (StartUploadRequest) Opcode() byte            { return opStartUploadRequest }
-func (s StartUploadRequest) Build(b []byte) []byte { return append(b, s.Hash[:]...) }
+func (s StartUploadRequest) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opStartUploadRequest)
+	return append(b, s.Hash[:]...)
+}
 
 // AcceptUploadRequest is OP_ACCEPTUPLOADREQ: we got an upload slot.
 type AcceptUploadRequest struct{}
 
-func (AcceptUploadRequest) Protocol() byte        { return wire.ProtocolEDonkey }
-func (AcceptUploadRequest) Opcode() byte          { return opAcceptUploadRequest }
-func (AcceptUploadRequest) Build(b []byte) []byte { return b }
+func (AcceptUploadRequest) Build(b []byte) []byte {
+	return append(b, wire.ProtocolEDonkey, opAcceptUploadRequest)
+}
 
 // CancelTransfer is OP_CANCELTRANSFER.
 type CancelTransfer struct{}
 
-func (CancelTransfer) Protocol() byte        { return wire.ProtocolEDonkey }
-func (CancelTransfer) Opcode() byte          { return opCancelTransfer }
-func (CancelTransfer) Build(b []byte) []byte { return b }
+func (CancelTransfer) Build(b []byte) []byte {
+	return append(b, wire.ProtocolEDonkey, opCancelTransfer)
+}
 
 // OutOfParts is OP_OUTOFPARTREQS: the uploader ends our slot.
 type OutOfParts struct{}
 
-func (OutOfParts) Protocol() byte        { return wire.ProtocolEDonkey }
-func (OutOfParts) Opcode() byte          { return opOutOfParts }
-func (OutOfParts) Build(b []byte) []byte { return b }
+func (OutOfParts) Build(b []byte) []byte { return append(b, wire.ProtocolEDonkey, opOutOfParts) }
 
 // QueueRank is the eDonkey OP_QUEUERANK.
 type QueueRank struct{ Rank uint32 }
 
-func (QueueRank) Protocol() byte { return wire.ProtocolEDonkey }
-func (QueueRank) Opcode() byte   { return opQueueRank }
 func (q QueueRank) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opQueueRank)
 	return binary.LittleEndian.AppendUint32(b, q.Rank)
 }
 
@@ -232,9 +228,8 @@ func (q QueueRank) Build(b []byte) []byte {
 // zero bytes.
 type QueueRanking struct{ Rank uint16 }
 
-func (QueueRanking) Protocol() byte { return wire.ProtocolEMule }
-func (QueueRanking) Opcode() byte   { return opQueueRanking }
 func (q QueueRanking) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opQueueRanking)
 	b = binary.LittleEndian.AppendUint16(b, q.Rank)
 	return append(b, make([]byte, 10)...)
 }
@@ -247,10 +242,8 @@ type RequestParts struct {
 	Ends   [3]uint32
 }
 
-func (RequestParts) Protocol() byte { return wire.ProtocolEDonkey }
-func (RequestParts) Opcode() byte   { return opRequestParts }
-
 func (p RequestParts) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opRequestParts)
 	b = append(b, p.Hash[:]...)
 	for _, v := range p.Starts {
 		b = binary.LittleEndian.AppendUint32(b, v)
@@ -279,10 +272,8 @@ type RequestParts64 struct {
 	Ends   [3]uint64
 }
 
-func (RequestParts64) Protocol() byte { return wire.ProtocolEMule }
-func (RequestParts64) Opcode() byte   { return opRequestParts64 }
-
 func (p RequestParts64) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opRequestParts64)
 	b = append(b, p.Hash[:]...)
 	for _, v := range p.Starts {
 		b = binary.LittleEndian.AppendUint64(b, v)
@@ -312,10 +303,8 @@ type SendingPart struct {
 	Data  []byte
 }
 
-func (SendingPart) Protocol() byte { return wire.ProtocolEDonkey }
-func (SendingPart) Opcode() byte   { return opSendingPart }
-
 func (s SendingPart) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opSendingPart)
 	b = append(b, s.Hash[:]...)
 	b = binary.LittleEndian.AppendUint32(b, s.Start)
 	b = binary.LittleEndian.AppendUint32(b, s.End)
@@ -339,10 +328,8 @@ type SendingPart64 struct {
 	Data  []byte
 }
 
-func (SendingPart64) Protocol() byte { return wire.ProtocolEMule }
-func (SendingPart64) Opcode() byte   { return opSendingPart64 }
-
 func (s SendingPart64) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opSendingPart64)
 	b = append(b, s.Hash[:]...)
 	b = binary.LittleEndian.AppendUint64(b, s.Start)
 	b = binary.LittleEndian.AppendUint64(b, s.End)
@@ -368,10 +355,8 @@ type CompressedPart struct {
 	Data       []byte
 }
 
-func (CompressedPart) Protocol() byte { return wire.ProtocolEMule }
-func (CompressedPart) Opcode() byte   { return opCompressedPart }
-
 func (c CompressedPart) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opCompressedPart)
 	b = append(b, c.Hash[:]...)
 	b = binary.LittleEndian.AppendUint32(b, c.Start)
 	b = binary.LittleEndian.AppendUint32(b, c.PackedSize)
@@ -386,10 +371,8 @@ type CompressedPart64 struct {
 	Data       []byte
 }
 
-func (CompressedPart64) Protocol() byte { return wire.ProtocolEMule }
-func (CompressedPart64) Opcode() byte   { return opCompressedPart64 }
-
 func (c CompressedPart64) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opCompressedPart64)
 	b = append(b, c.Hash[:]...)
 	b = binary.LittleEndian.AppendUint64(b, c.Start)
 	b = binary.LittleEndian.AppendUint32(b, c.PackedSize)
@@ -407,18 +390,16 @@ type SecureIdentState struct {
 // State of 1 asks for the signature alone.
 const SecureIdentNeedsKeyAndSignature byte = 2
 
-func (SecureIdentState) Protocol() byte { return wire.ProtocolEMule }
-func (SecureIdentState) Opcode() byte   { return opSecureIdentState }
 func (s SecureIdentState) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opSecureIdentState)
 	return binary.LittleEndian.AppendUint32(append(b, s.State), s.Challenge)
 }
 
 // PublicKey is OP_PUBLICKEY.
 type PublicKey struct{ Key []byte }
 
-func (PublicKey) Protocol() byte { return wire.ProtocolEMule }
-func (PublicKey) Opcode() byte   { return opPublicKey }
 func (p PublicKey) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opPublicKey)
 	return append(append(b, byte(len(p.Key))), p.Key...)
 }
 
@@ -430,9 +411,8 @@ type Signature struct {
 	IPKind    byte
 }
 
-func (Signature) Protocol() byte { return wire.ProtocolEMule }
-func (Signature) Opcode() byte   { return opSignature }
 func (s Signature) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opSignature)
 	b = append(append(b, byte(len(s.Signature))), s.Signature...)
 	if s.IPKind != 0 {
 		b = append(b, s.IPKind)
@@ -452,6 +432,7 @@ func parseSignature(r *wire.Reader) Signature {
 // IPv6 changed. It travels under 0xE3, not 0xC5.
 type IPv6Changed struct{ Addr netip.Addr }
 
-func (IPv6Changed) Protocol() byte          { return wire.ProtocolEDonkey }
-func (IPv6Changed) Opcode() byte            { return opIPv6Changed }
-func (c IPv6Changed) Build(b []byte) []byte { return wire.BuildIPv6(b, c.Addr) }
+func (c IPv6Changed) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEDonkey, opIPv6Changed)
+	return wire.BuildIPv6(b, c.Addr)
+}

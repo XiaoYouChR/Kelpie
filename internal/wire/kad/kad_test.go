@@ -31,12 +31,12 @@ func localContact() Contact {
 
 func roundTrip(t *testing.T, p wire.Packet) wire.Packet {
 	t.Helper()
-	frame, err := wire.ParseDatagram(wire.BuildPacketDatagram(nil, p))
+	frame, err := wire.ParseDatagram(p.Build(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if frame.Opcode != p.Opcode() {
-		t.Fatalf("%T: opcode %#x, want %#x", p, frame.Opcode, p.Opcode())
+	if frame.Opcode != p.Build(nil)[1] {
+		t.Fatalf("%T: opcode %#x, want %#x", p, frame.Opcode, p.Build(nil)[1])
 	}
 	got, err := Parse(frame.Protocol, frame.Opcode, frame.Body)
 	if err != nil {
@@ -89,7 +89,7 @@ func TestRoundTrip(t *testing.T) {
 // TestHelloResAckGolden: aMule's ACK is our ID and a zero tag count
 // (KademliaUDPListener.cpp:612).
 func TestHelloResAckGolden(t *testing.T) {
-	got := HelloResAck{ID: idB}.Build(nil)
+	got := HelloResAck{ID: idB}.Build(nil)[2:]
 	want := "e0cfd63131e96ad1d7593cb7c089c0e0" + "00"
 	if hex.EncodeToString(got) != want {
 		t.Fatalf("ack = %x\nwant  %s", got, want)
@@ -141,7 +141,7 @@ func TestTagsUseClassicNames(t *testing.T) {
 
 // Ported from goed2k protocol/kad/packet_combiner_test.go.
 func TestCompressedPacketParses(t *testing.T) {
-	body := SearchRes{Source: idA, Target: idB}.Build(nil)
+	body := SearchRes{Source: idA, Target: idB}.Build(nil)[2:]
 	var compressed bytes.Buffer
 	zw := zlib.NewWriter(&compressed)
 	zw.Write(body)

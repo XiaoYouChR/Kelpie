@@ -180,7 +180,7 @@ func sampleUDPPackets() []wire.Packet {
 
 func TestUDPRoundTrip(t *testing.T) {
 	for _, p := range sampleUDPPackets() {
-		raw := wire.BuildPacketDatagram(nil, p)
+		raw := p.Build(nil)
 		frame, err := wire.ParseDatagram(raw)
 		if err != nil {
 			t.Fatal(err)
@@ -217,13 +217,13 @@ func TestHelloGolden(t *testing.T) {
 	hello := Hello{UserHash: userHash, ClientID: 0x04030201, Port: 4662, ModMisc: ModMiscExtendedSources | ModMiscIPv6}
 	want := unhex(t, "10"+"23a8ceff57a7a32d562d649ed7893796"+"01020304"+"3612"+
 		"01000000"+"030100aa05000000"+"000000000000")
-	if got := hello.Build(nil); !bytes.Equal(got, want) {
+	if got := hello.Build(nil)[2:]; !bytes.Equal(got, want) {
 		t.Fatalf("hello =\n %x\nwant\n %x", got, want)
 	}
 }
 
 func TestHelloIgnoresTrailingBytes(t *testing.T) {
-	body := append(HelloAnswer{UserHash: userHash}.Build(nil), 'K', 'D', 'L', 'M')
+	body := append(HelloAnswer{UserHash: userHash}.Build(nil)[2:], 'K', 'D', 'L', 'M')
 	got, err := Parse(wire.ProtocolEDonkey, opHelloAnswer, body)
 	if err != nil || got.(HelloAnswer).UserHash != userHash {
 		t.Fatalf("got %+v, %v", got, err)
@@ -258,7 +258,7 @@ func TestExtendedSourceGolden(t *testing.T) {
 	}}}
 	want := append(append([]byte{1}, fileHash[:]...), 1, 0)
 	want = append(want, record...)
-	if got := answer.Build(nil); !bytes.Equal(got, want) {
+	if got := answer.Build(nil)[2:]; !bytes.Equal(got, want) {
 		t.Fatalf("answer =\n %x\nwant\n %x", got, want)
 	}
 	got, err := Parse(wire.ProtocolEMule, opAnswerSources2, want)
@@ -298,7 +298,7 @@ func TestAnswerSources2RejectsWrongEntrySize(t *testing.T) {
 }
 
 func TestSendingPartRejectsLengthMismatch(t *testing.T) {
-	body := SendingPart{Hash: fileHash, Start: 0, End: 10, Data: []byte{1}}.Build(nil)
+	body := SendingPart{Hash: fileHash, Start: 0, End: 10, Data: []byte{1}}.Build(nil)[2:]
 	if _, err := Parse(wire.ProtocolEDonkey, opSendingPart, body); err == nil {
 		t.Fatal("want error")
 	}
@@ -325,19 +325,19 @@ func TestAICHAnswerGolden(t *testing.T) {
 	root := hex.EncodeToString(aichRoot[:])
 	short := AICHAnswer{Hash: fileHash, HasData: true, Part: 1, Root: aichRoot, Entries: []AICHEntry{{Ident: 6, Hash: aichRoot}}}
 	want := unhex(t, "31d6cfe0d16ae931b73c59d7e0c089c0"+"0100"+root+"0100"+"0600"+root+"0000")
-	if got := short.Build(nil); !bytes.Equal(got, want) {
+	if got := short.Build(nil)[2:]; !bytes.Equal(got, want) {
 		t.Fatalf("16-bit answer =\n %x\nwant\n %x", got, want)
 	}
 	long := short
 	long.HasLongIdents = true
 	want = unhex(t, "31d6cfe0d16ae931b73c59d7e0c089c0"+"0100"+root+"0000"+"0100"+"06000000"+root)
-	if got := long.Build(nil); !bytes.Equal(got, want) {
+	if got := long.Build(nil)[2:]; !bytes.Equal(got, want) {
 		t.Fatalf("32-bit answer =\n %x\nwant\n %x", got, want)
 	}
 }
 
 func TestAICHAnswerRejectsShortList(t *testing.T) {
-	body := AICHAnswer{Hash: fileHash, HasData: true, Root: aichRoot, Entries: []AICHEntry{{Ident: 2}}}.Build(nil)
+	body := AICHAnswer{Hash: fileHash, HasData: true, Root: aichRoot, Entries: []AICHEntry{{Ident: 2}}}.Build(nil)[2:]
 	body = body[:len(body)-4]
 	if _, err := Parse(wire.ProtocolEMule, opAICHAnswer, body); err == nil {
 		t.Fatal("want error for a truncated hash list")
@@ -351,7 +351,7 @@ func TestCallbackGolden(t *testing.T) {
 	for i := range id {
 		id[i] = byte(i)
 	}
-	got := Callback{BuddyID: id, File: id, Endpoint: netip.MustParseAddrPort("1.2.3.4:4662")}.Build(nil)
+	got := Callback{BuddyID: id, File: id, Endpoint: netip.MustParseAddrPort("1.2.3.4:4662")}.Build(nil)[2:]
 	want := []byte{3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12}
 	want = append(append(want, want...), 4, 3, 2, 1, 0x36, 0x12)
 	if !bytes.Equal(got, want) {

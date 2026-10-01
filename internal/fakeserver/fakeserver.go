@@ -355,7 +355,7 @@ func (s *Server) runUDP(ctx context.Context, conn transport.PacketConn, isObfusc
 				data = plain
 			} else if n >= 4 {
 				key = binary.LittleEndian.Uint32(data)
-				data = wire.BuildPacketDatagram(nil, serverwire.GlobServStatReq{Challenge: key})
+				data = serverwire.GlobServStatReq{Challenge: key}.Build(nil)
 			} else {
 				continue
 			}
@@ -367,7 +367,7 @@ func (s *Server) runUDP(ctx context.Context, conn transport.PacketConn, isObfusc
 		if !s.runDelay(ctx) {
 			return
 		}
-		answer := wire.BuildPacketDatagram(nil, reply)
+		answer := reply.Build(nil)
 		if key != 0 {
 			answer = sealDatagram(answer, key)
 		}
