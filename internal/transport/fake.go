@@ -246,12 +246,12 @@ type fakeListener struct {
 	closeOnce sync.Once
 }
 
-func (l *fakeListener) Accept() (net.Conn, error) {
+func (l *fakeListener) Accept() (net.Conn, netip.AddrPort, error) {
 	select {
 	case c := <-l.queue:
-		return c, nil
+		return c, c.remote.AddrPort(), nil
 	case <-l.done:
-		return nil, net.ErrClosed
+		return nil, netip.AddrPort{}, net.ErrClosed
 	}
 }
 

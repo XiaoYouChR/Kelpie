@@ -199,12 +199,12 @@ func (e *Engine) runAcceptor() {
 		case <-e.ctx.Done():
 			return
 		}
-		netConn, err := e.listener.Accept()
+		netConn, remote, err := e.listener.Accept()
 		if err != nil {
 			return
 		}
 		e.startLeaf(func() {
-			e.runIncoming(netConn, self)
+			e.runIncoming(netConn, remote, self)
 			<-handshakes
 		})
 	}
@@ -212,23 +212,22 @@ func (e *Engine) runAcceptor() {
 
 // runIncoming waits for an accepted connection's first bytes, which tell
 // whether the peer obfuscates, before the hub sees the connection.
-func (e *Engine) runIncoming(netConn net.Conn, self wire.Hash) {
+func (e *Engine) runIncoming(netConn net.Conn, remote netip.AddrPort, self wire.Hash) {
 	conn, err := openObfuscated(e.ctx, netConn, func(c net.Conn) (net.Conn, error) {
 		return obfuscation.OpenIncoming(c, self)
 	})
-	if err == nil && !e.send(e.ctx, connAccepted{conn}) {
+	if err == nil && !e.send(e.ctx, connAccepted{conn, remote}) {
 		netConn.Close()
 	}
 }
 
-func (e *Engine) onConnAccepted(netConn net.Conn) {
-	addr, ok := netConn.RemoteAddr().(*net.TCPAddr)
-	if !ok || len(e.conns) >= maxConnections {
-		netConn.Close()
+func (e *Engine) onConnAccepted(m connAccepted) {
+	if len(e.conns) >= maxConnections {
+		m.conn.Close()
 		return
 	}
-	c := e.addConn(addr.AddrPort(), false, false)
-	c.net = netConn
+	c := e.addConn(m.remote, false, false)
+	c.net = m.conn
 	e.startConnLeaves(c)
 	c.session = peer.BuildIncoming(e.buildPeerConfig(), c.remote, e.now())
 }

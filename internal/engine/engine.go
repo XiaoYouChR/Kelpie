@@ -434,8 +434,11 @@ func (e *Engine) Close() error {
 type (
 	commandPosted  struct{ command Command }
 	closeRequested struct{ reply chan<- error }
-	connAccepted   struct{ conn net.Conn }
-	connOpened     struct {
+	connAccepted   struct {
+		conn   net.Conn
+		remote netip.AddrPort
+	}
+	connOpened struct {
 		id   uint64
 		conn net.Conn
 		err  error
@@ -535,7 +538,7 @@ func (e *Engine) onMessage(m any) {
 	case commandPosted:
 		e.onCommand(m.command)
 	case connAccepted:
-		e.onConnAccepted(m.conn)
+		e.onConnAccepted(m)
 	case connOpened:
 		e.onConnOpened(m)
 	case packetReceived:

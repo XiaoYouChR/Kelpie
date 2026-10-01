@@ -1,9 +1,7 @@
 // Package transport is the engine's seam for TCP and UDP sockets.
 //
-// Listeners and UDP sockets are dual-stack: one socket serves IPv4 and IPv6.
-// Accepted connections report their peer as a *net.TCPAddr; call
-// AddrPort().Unmap() on it, since a dual-stack socket may report an IPv4 peer
-// as an IPv4-mapped IPv6 address.
+// Listeners and UDP sockets are dual-stack: one socket serves IPv4 and IPv6,
+// and both report an IPv4 peer as an IPv4 address, never IPv4-mapped.
 package transport
 
 import (
@@ -22,13 +20,13 @@ type Transport interface {
 }
 
 type Listener interface {
-	Accept() (net.Conn, error)
+	// Accept returns the next connection and its peer's address.
+	Accept() (net.Conn, netip.AddrPort, error)
 	Close() error
 	Port() int
 }
 
 type PacketConn interface {
-	// ReadFrom reports an IPv4 sender as an IPv4 address, never IPv4-mapped.
 	ReadFrom(b []byte) (int, netip.AddrPort, error)
 	WriteTo(b []byte, addr netip.AddrPort) (int, error)
 	Close() error
@@ -68,6 +66,15 @@ func (Real) LookupHost(ctx context.Context, host string) ([]netip.Addr, error) {
 }
 
 type realListener struct{ *net.TCPListener }
+
+func (l realListener) Accept() (net.Conn, netip.AddrPort, error) {
+	conn, err := l.AcceptTCP()
+	if err != nil {
+		return nil, netip.AddrPort{}, err
+	}
+	remote := conn.RemoteAddr().(*net.TCPAddr).AddrPort()
+	return conn, netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port()), nil
+}
 
 func (l realListener) Port() int { return l.Addr().(*net.TCPAddr).Port }
 
