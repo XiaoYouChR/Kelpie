@@ -20,6 +20,7 @@ class Link:
 @dataclass(frozen=True, slots=True)
 class Setup:
     folder: Path
+    stateFolder: Path
     serverMet: Path
     nodesDat: Path
     tcpPort: int

@@ -29,7 +29,7 @@ def installBinary() -> Path:
 
 @asynccontextmanager
 async def start(link: Link, setup: Setup) -> AsyncIterator[Callable[[], Awaitable[Sample]]]:
-    client = Client(installBinary(), setup.folder / "state")
+    client = Client(installBinary(), setup.stateFolder)
     await client.start(Settings(
         serverMetSource=str(setup.serverMet),
         nodesDatSource=str(setup.nodesDat),
@@ -53,5 +53,6 @@ async def start(link: Link, setup: Setup) -> AsyncIterator[Callable[[], Awaitabl
             )
 
         yield probe
+        await client.remove(link.hash)
     finally:
         await client.close()

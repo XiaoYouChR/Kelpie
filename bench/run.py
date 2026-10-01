@@ -5,7 +5,10 @@
 
 Links run one after another, each from a cold start in a fresh data folder
 that is deleted afterwards; never run two engines at once, they would compete
-for bandwidth. elapsed_s counts from the engine's cold start, so time to first
+for bandwidth. Only the engine's identity survives between runs, in
+work/<engine>-state: aMule and eMule ban an IP for two hours when the client
+on its port comes back with another user hash, so a fresh identity per run
+gets every source seen before refused. elapsed_s counts from the engine's cold start, so time to first
 byte includes connecting to servers and Kad. Next to the CSV each link leaves
 `<csv stem>.<HASH>.log` (aMule) and `<csv stem>.<HASH>.trace.jsonl` (Kelpie).
 
@@ -79,6 +82,7 @@ async def run(arguments: argparse.Namespace) -> int:
             print(f"== {arguments.engine} {link.linkClass} {link.hash} {link.name}", flush=True)
             setup = Setup(
                 folder=BENCH_FOLDER / "work" / f"{arguments.engine}-{link.hash}",
+                stateFolder=BENCH_FOLDER / "work" / f"{arguments.engine}-state",
                 serverMet=BENCH_FOLDER / "lists" / "server.met",
                 nodesDat=BENCH_FOLDER / "lists" / "nodes.dat",
                 tcpPort=TCP_PORT,

@@ -38,7 +38,7 @@ async def start(link: Link, setup: Setup) -> AsyncIterator[Callable[[], Awaitabl
         nodeLists=(setup.nodesDat,),
         traceFile=setup.traceFile,
     )
-    engine = kelpie.Kelpie(lambda: executable, setup.folder / "state", lambda: settings)
+    engine = kelpie.Kelpie(lambda: executable, setup.stateFolder, lambda: settings)
     latest = Sample(received=0, peers=0, activePeers=0, isComplete=False, network="starting")
     try:
         async with engine.runDownload(kelpie.Link.parse(link.text), setup.folder / link.name) as run:
@@ -66,5 +66,6 @@ async def start(link: Link, setup: Setup) -> AsyncIterator[Callable[[], Awaitabl
                 yield probe
             finally:
                 supervising.cancel()
+        await engine.remove(link.hash)
     finally:
         await engine.close()
