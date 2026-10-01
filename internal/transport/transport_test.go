@@ -353,3 +353,21 @@ func TestFakeIsRaceFree(t *testing.T) {
 	wg.Wait()
 	server.Close()
 }
+
+func TestLookupHost(t *testing.T) {
+	network := BuildNetwork()
+	host := network.AddHost(v4a)
+	network.SetName("server.example", v4b)
+	ctx := context.Background()
+	if addrs, err := host.LookupHost(ctx, "server.example"); err != nil || len(addrs) != 1 || addrs[0] != v4b {
+		t.Fatalf("fake lookup = %v, %v", addrs, err)
+	}
+	var dnsErr *net.DNSError
+	if _, err := host.LookupHost(ctx, "missing.example"); !errors.As(err, &dnsErr) || !dnsErr.IsNotFound {
+		t.Fatalf("missing name: %v", err)
+	}
+	addrs, err := Real{}.LookupHost(ctx, "localhost")
+	if err != nil || len(addrs) == 0 || !addrs[0].Is4() || !addrs[0].IsLoopback() {
+		t.Fatalf("real lookup of localhost = %v, %v", addrs, err)
+	}
+}

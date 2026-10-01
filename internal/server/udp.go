@@ -83,7 +83,7 @@ func (s *Server) runStats(now time.Time, out *Output) {
 	for range s.servers {
 		l := s.servers[u.statCursor%len(s.servers)]
 		u.statCursor++
-		if l.isDead || (!l.pingedAt.IsZero() && now.Sub(l.pingedAt) < udpStatReaskTime) {
+		if l.isDead || !l.isResolved() || (!l.pingedAt.IsZero() && now.Sub(l.pingedAt) < udpStatReaskTime) {
 			continue
 		}
 		u.lastStat = now
@@ -181,7 +181,7 @@ func (s *Server) searchFiles(udpFlags uint32) []Wanted {
 func (s *Server) nextSearchServer(now time.Time) *listed {
 	for _, l := range s.servers {
 		isDue := l.searchedAt.IsZero() || now.Sub(l.searchedAt) > udpSearchTime
-		if l != s.current && isDue && l.Failures < maxFailures && len(s.searchFiles(l.UDPFlags)) > 0 {
+		if l != s.current && isDue && l.Failures < maxFailures && l.isResolved() && len(s.searchFiles(l.UDPFlags)) > 0 {
 			return l
 		}
 	}

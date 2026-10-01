@@ -564,3 +564,44 @@ func TestObfuscationPortFromLogin(t *testing.T) {
 		t.Fatalf("reconnect = %+v, want %+v", out.Connect, want)
 	}
 }
+
+// A server listed by host name is looked up first, connected once it has
+// an address, and looked up again every DNS_SOLVE_TIME while not in use.
+func TestHostNameServer(t *testing.T) {
+	dyn := Entry{Endpoint: netip.AddrPortFrom(netip.Addr{}, 4661), Host: "dyn.example"}
+	s := BuildServer(config, []Entry{dyn, dyn})
+	out := s.OnTick(start, nil)
+	if !reflect.DeepEqual(out.Resolve, []string{"dyn.example"}) || len(out.Connect) > 0 {
+		t.Fatalf("first tick = %+v", out)
+	}
+	if out := s.OnTick(start.Add(time.Second), nil); len(out.Resolve) > 0 {
+		t.Fatalf("looked up again while waiting: %v", out.Resolve)
+	}
+	resolved := ep("1.0.0.9:4661")
+	out = s.OnResolved("dyn.example", resolved.Addr(), start)
+	if !reflect.DeepEqual(dialed(out), []netip.AddrPort{resolved}) {
+		t.Fatalf("connect after lookup = %+v", out.Connect)
+	}
+	s.OnConnected(resolved, start)
+	s.OnPacket(resolved, packet.IDChange{ClientID: highID}, start)
+	later := start.Add(dnsSolveTime + time.Minute)
+	if out := s.OnTick(later, nil); len(out.Resolve) > 0 {
+		t.Fatalf("looked up the connected server: %v", out.Resolve)
+	}
+	s.OnDisconnected(resolved, later)
+	if out := s.OnTick(later, nil); !reflect.DeepEqual(out.Resolve, []string{"dyn.example"}) {
+		t.Fatalf("no new lookup once free: %+v", out)
+	}
+	s.OnResolved("dyn.example", netip.Addr{}, later)
+	if s.servers[0].Endpoint != resolved {
+		t.Fatalf("failed lookup dropped the address: %v", s.servers[0].Endpoint)
+	}
+	later = later.Add(dnsSolveTime + time.Minute)
+	if out := s.OnTick(later, nil); len(out.Connect) > 0 {
+		t.Fatalf("connected while looking up: %+v", out.Connect)
+	}
+	out = s.OnResolved("dyn.example", netip.MustParseAddr("1.0.0.10"), later)
+	if !reflect.DeepEqual(dialed(out), []netip.AddrPort{ep("1.0.0.10:4661")}) {
+		t.Fatalf("connect after new address = %+v", out.Connect)
+	}
+}

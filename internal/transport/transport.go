@@ -17,6 +17,8 @@ type Transport interface {
 	// OpenListener and OpenUDP pick a free port when port is 0.
 	OpenListener(port int) (Listener, error)
 	OpenUDP(port int) (PacketConn, error)
+	// LookupHost resolves a host name to its IPv4 addresses.
+	LookupHost(ctx context.Context, host string) ([]netip.Addr, error)
 }
 
 type Listener interface {
@@ -55,6 +57,14 @@ func (Real) OpenUDP(port int) (PacketConn, error) {
 		return nil, err
 	}
 	return realPacketConn{conn}, nil
+}
+
+func (Real) LookupHost(ctx context.Context, host string) ([]netip.Addr, error) {
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
+	for i, a := range addrs {
+		addrs[i] = a.Unmap()
+	}
+	return addrs, err
 }
 
 type realListener struct{ *net.TCPListener }

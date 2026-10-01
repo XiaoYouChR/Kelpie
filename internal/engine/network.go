@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"context"
 	"log"
 	"net/netip"
 	"slices"
+	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
 	"github.com/XiaoYouChR/Kelpie/internal/server"
@@ -16,9 +18,17 @@ import (
 )
 
 const (
-	kadVersion  = kadwire.Version
-	maxDatagram = 65536
+	kadVersion    = kadwire.Version
+	maxDatagram   = 65536
+	lookupTimeout = 30 * time.Second
 )
+
+// hostResolved is a server host name's IPv4 address; invalid when the
+// lookup failed.
+type hostResolved struct {
+	host string
+	addr netip.Addr
+}
 
 // runServer performs the server's Output in its documented order.
 func (e *Engine) runServer(out server.Output) {
@@ -47,6 +57,9 @@ func (e *Engine) runServer(out server.Output) {
 			e.openConn(callback.Endpoint, false, obfuscateFor, 0)
 		}
 	}
+	for _, host := range out.Resolve {
+		e.startLeaf(func() { e.runLookup(host) })
+	}
 	for _, event := range out.Events {
 		switch ev := event.(type) {
 		case server.SourcesFound:
@@ -66,6 +79,20 @@ func (e *Engine) runServer(out server.Output) {
 			log.Printf("engine: server message: %s", ev.Text)
 		}
 	}
+}
+
+// runLookup is a leaf that resolves a server's host name.
+func (e *Engine) runLookup(host string) {
+	ctx, cancel := context.WithTimeout(e.ctx, lookupTimeout)
+	addrs, err := e.ports.Transport.LookupHost(ctx, host)
+	cancel()
+	var addr netip.Addr
+	if err == nil && len(addrs) > 0 {
+		addr = addrs[0]
+	} else {
+		log.Printf("engine: server host %s: %v", host, err)
+	}
+	e.send(e.ctx, hostResolved{host, addr})
 }
 
 func (e *Engine) serverConnByEndpoint(addr netip.AddrPort) *conn {

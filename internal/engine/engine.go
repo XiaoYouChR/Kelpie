@@ -546,6 +546,8 @@ func (e *Engine) onMessage(m any) {
 		e.onDatagram(m.from, m.data)
 	case natOpened:
 		e.onNATOpened(m)
+	case hostResolved:
+		e.runServer(e.server.OnResolved(m.host, m.addr, e.now()))
 	}
 }
 

@@ -26,6 +26,7 @@ const (
 	sourceFrameTime     = 15 * (16 + 4) * time.Second // m_dwNextTCPSrcReq (DownloadQueue.cpp)
 	offerTime           = time.Minute                 // ED2KREPUBLISHTIME
 	maxOfferFiles       = 200                         // SendListToServer limit (SharedFileList.cpp)
+	dnsSolveTime        = 30 * time.Minute            // DNS_SOLVE_TIME (aMule AsyncDNS.h)
 	largeFileSize       = 4290048000                  // OLD_MAX_EMULE_FILE_SIZE
 	edonkeyVersion      = 0x3C                        // EDONKEYVERSION
 	// CapSupportCrypt makes the server answer with OP_FOUNDSOURCES_OBFU,
@@ -86,8 +87,9 @@ type Datagram struct {
 }
 
 // Output is what the engine must do, in field order: close server
-// connections, open new ones, send to the server at To, and connect to peers
-// that asked for a callback. A server connection is named by the server's
+// connections, open new ones, send to the server at To, connect to peers
+// that asked for a callback, and resolve host names, each answered with
+// OnResolved. A server connection is named by the server's
 // endpoint, even when dialled on its obfuscation port; reports about a
 // closed one are ignored.
 type Output struct {
@@ -97,6 +99,7 @@ type Output struct {
 	Send         []wire.Packet
 	SendUDP      []Datagram
 	ConnectPeers []Callback
+	Resolve      []string
 	Events       []Event
 }
 
@@ -156,7 +159,14 @@ type listed struct {
 	searchedAt time.Time
 	// tcpFlags are from the server's last OP_IDCHANGE.
 	tcpFlags uint32
+	// resolvedAt is when the answer for Host came; isResolving while it
+	// is awaited.
+	resolvedAt  time.Time
+	isResolving bool
 }
+
+// isResolved: a server listed by host name has an address.
+func (l *listed) isResolved() bool { return l.Endpoint.Addr().IsValid() }
 
 // canObfuscateTCP is aMule's SupportsObfuscationTCP (Server.h:146).
 func (l *listed) canObfuscateTCP() bool {
@@ -196,8 +206,8 @@ type Server struct {
 	udp udpSearch
 }
 
-// BuildServer takes the entries of every server list; a server listed twice
-// keeps its first entry.
+// BuildServer takes the entries of every server list; a server listed twice,
+// by endpoint or by host name and port, keeps its first entry.
 func BuildServer(config Config, entries []Entry) *Server {
 	s := &Server{
 		config:  config,
@@ -205,12 +215,17 @@ func BuildServer(config Config, entries []Entry) *Server {
 		askedAt: map[wire.Hash]time.Time{},
 		offered: map[wire.Hash]bool{},
 	}
-	seen := map[netip.AddrPort]bool{}
+	type key struct {
+		host     string
+		endpoint netip.AddrPort
+	}
+	seen := map[key]bool{}
 	for _, e := range entries {
-		if seen[e.Endpoint] {
+		k := key{e.Host, e.Endpoint}
+		if seen[k] {
 			continue
 		}
-		seen[e.Endpoint] = true
+		seen[k] = true
 		s.servers = append(s.servers, &listed{Entry: e})
 	}
 	return s
@@ -237,6 +252,7 @@ func (s *Server) OnTick(now time.Time, wanted []Wanted) Output {
 			s.setFailed(a.server.Endpoint)
 		}
 	}
+	s.runResolve(now, &out)
 	s.runConnect(now, &out)
 	if s.current != nil {
 		s.runSession(now, &out)
@@ -287,6 +303,53 @@ func (s *Server) OnDisconnected(server netip.AddrPort, now time.Time) Output {
 	var out Output
 	s.runConnect(now, &out)
 	return out
+}
+
+// OnResolved takes the address host resolved to; an invalid addr means
+// the lookup failed, and the old address, if any, stays. A server in use
+// keeps its address until the next lookup.
+func (s *Server) OnResolved(host string, addr netip.Addr, now time.Time) Output {
+	for _, l := range s.servers {
+		if l.Host != host || !l.isResolving {
+			continue
+		}
+		l.isResolving = false
+		l.resolvedAt = now
+		endpoint := netip.AddrPortFrom(addr, l.Endpoint.Port())
+		isInUse := l == s.current || slices.ContainsFunc(s.attempts, func(a attempt) bool { return a.server == l })
+		if isUsable(endpoint) && !isInUse && s.serverByEndpoint(endpoint) == nil {
+			l.Endpoint = endpoint
+		}
+	}
+	var out Output
+	s.runConnect(now, &out)
+	return out
+}
+
+// runResolve looks host names up again every DNS_SOLVE_TIME, as aMule does
+// before UDP packets (ServerUDPSocket.cpp:420-450); aMule also looks one up
+// before each connection, which Kelpie folds into the same cycle: a server
+// is not connected while its lookup is out.
+func (s *Server) runResolve(now time.Time, out *Output) {
+	for _, l := range s.servers {
+		isFresh := !l.resolvedAt.IsZero() && now.Sub(l.resolvedAt) < dnsSolveTime
+		if l.Host == "" || l.isResolving || isFresh || l == s.current {
+			continue
+		}
+		l.isResolving = true
+		if !slices.Contains(out.Resolve, l.Host) {
+			out.Resolve = append(out.Resolve, l.Host)
+		}
+	}
+}
+
+func (s *Server) serverByEndpoint(endpoint netip.AddrPort) *listed {
+	for _, l := range s.servers {
+		if l.Endpoint == endpoint {
+			return l
+		}
+	}
+	return nil
 }
 
 // OnPacket takes a packet from the server at from, logged in or still
@@ -480,7 +543,7 @@ func (s *Server) nextServer() *listed {
 	var best *listed
 	for _, l := range s.servers {
 		canObfuscate := l.canObfuscateTCP() || l.UDPFlags&packet.UDPFlagUDPObfuscation != 0
-		if s.tried[l] || l.Failures >= maxFailures || (!s.isPlainPass && !canObfuscate) {
+		if s.tried[l] || l.Failures >= maxFailures || !l.isResolved() || l.isResolving || (!s.isPlainPass && !canObfuscate) {
 			continue
 		}
 		if best == nil || isBetter(l, best) {

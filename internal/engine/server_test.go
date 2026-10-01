@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/binary"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/XiaoYouChR/Kelpie/internal/fakeserver"
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
 // startFakeServer runs an eD2k server on its own host until the test ends.
@@ -65,4 +67,22 @@ func TestServerLoginObfuscated(t *testing.T) {
 	if !strings.Contains(text, "in  198.51.100.100:4661 server.IDChange") {
 		t.Fatalf("no IDChange over the obfuscated connection:\n%s", text)
 	}
+}
+
+// A server.met entry with only a host name is reached through a lookup.
+func TestServerByHostName(t *testing.T) {
+	w := buildWorld(t)
+	srv := w.startFakeServer("198.51.100.100")
+	w.network.SetName("server.test", srv.Addr().Addr())
+	a := w.addNode("198.51.100.1")
+	met := binary.LittleEndian.AppendUint32([]byte{0x0E}, 1)
+	met = wire.BuildAddrPort(met, netip.AddrPortFrom(netip.IPv4Unspecified(), srv.Addr().Port()))
+	met = wire.BuildTags(met, []wire.Tag{{Type: wire.TagString, ID: 0x85, String: "server.test"}})
+	path := filepath.Join(a.folder, "server.met")
+	if err := os.WriteFile(path, met, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.config.ServerLists = []string{path}
+	a.start()
+	w.waitFor("server login", func() bool { return a.events.lastNetwork().IsServerConnected })
 }
