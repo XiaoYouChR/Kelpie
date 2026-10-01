@@ -61,14 +61,17 @@ type sourceState int
 const (
 	// stateNew sources are ready to be asked once their reask time comes.
 	stateNew sourceState = iota
-	// stateWaiting sources are due but the connection budget is spent
-	// (eMule's DS_TOOMANYCONNS).
-	stateWaiting
 	stateConnecting
-	// stateAsking sources are connected and have not yet answered with a
-	// queue rank or a slot.
+	// stateAsking sources are connected and have not yet answered our file
+	// request.
 	stateAsking
+	// stateQueued sources answered our file request, so we asked them for a
+	// slot: aMule sets DS_ONQUEUE as soon as OP_STARTUPLOADREQ is sent
+	// (BaseClient.cpp:1280-1290), before any queue rank arrives.
 	stateQueued
+	// stateReasking sources are queued and were sent OP_REASKFILEPING that
+	// has not been answered yet.
+	stateReasking
 	stateDownloading
 	// stateFailed sources wait out deadSourceTime before they are tried again.
 	stateFailed
@@ -135,9 +138,10 @@ type source struct {
 	canExchange bool
 
 	state sourceState
-	// hasAnswered: the connected source answered our file request with its
-	// part status, so we asked it for a slot.
-	hasAnswered bool
+	// deadline is when a callback in stateConnecting gives up, zero for a
+	// Connect the engine answers itself, and when a source in stateFailed is
+	// tried again.
+	deadline time.Time
 	// isNoNeeded: its last part status had no part we need (aMule
 	// DS_NONEEDEDPARTS).
 	isNoNeeded bool
@@ -146,14 +150,11 @@ type source struct {
 	a4afUntil time.Time
 	peer      uint64
 
-	lastAsked       time.Time
-	callbackTimeout time.Time
-	retryAt         time.Time
-	lastExchange    time.Time
+	lastAsked    time.Time
+	lastExchange time.Time
 
-	isUDPPending bool
-	udpReasks    int
-	udpFailed    int
+	udpReasks int
+	udpFailed int
 
 	receivedBytes int64
 }
@@ -323,7 +324,7 @@ func (t *Transfer) OnConnectFailed(endpoint netip.AddrPort, reason string, now t
 
 func (t *Transfer) setFailed(s *source, reason string, now time.Time) TraceEvent {
 	s.state = stateFailed
-	s.retryAt = now.Add(deadSourceTime)
+	s.deadline = now.Add(deadSourceTime)
 	event := t.buildTrace(now, s, EventFailed)
 	event.Reason = reason
 	return event
@@ -368,7 +369,6 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Ac
 	s.canExchange = hello.CanExchange
 	s.CanObfuscate = hello.CanObfuscate
 	s.state = stateAsking
-	s.hasAnswered = false
 	s.a4afUntil = time.Time{}
 	s.lastAsked = now
 	s.peer = peer
@@ -447,8 +447,7 @@ func (t *Transfer) setQueued(s *source, rank int, now time.Time) TraceEvent {
 // OnReaskAnswered records the OP_REASKACK a source sent to our ReaskUDP.
 func (t *Transfer) OnReaskAnswered(endpoint netip.AddrPort, rank int, now time.Time) []Action {
 	for _, s := range t.sources {
-		if s.isUDPPending && netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort) == endpoint {
-			s.isUDPPending = false
+		if s.state == stateReasking && netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort) == endpoint {
 			return []Action{t.setQueued(s, rank, now)}
 		}
 	}
@@ -478,12 +477,10 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 		return nil
 	}
 	actions := append(t.removePeer(peer, now), t.sendReceived(s, now)...)
-	switch {
-	case s.state == stateAsking && !s.hasAnswered:
+	switch s.state {
+	case stateAsking:
 		return append(actions, t.setFailed(s, reason, now))
-	case s.state == stateAsking:
-		s.state = stateQueued
-	case s.state == stateDownloading:
+	case stateDownloading:
 		s.state = stateQueued
 		s.lastAsked = now
 	}
@@ -577,7 +574,7 @@ func (t *Transfer) SetA4AF(found Source, until time.Time) {
 			s.UserHash = found.UserHash
 		}
 		s.a4afUntil = until
-		if s.state == stateConnecting || s.state == stateWaiting {
+		if s.state == stateConnecting {
 			s.state = stateNew
 		}
 	}
@@ -606,13 +603,13 @@ func (t *Transfer) runSource(s *source, budget *int) []Action {
 	now := t.tick.Now
 	switch s.state {
 	case stateFailed:
-		if now.Before(s.retryAt) {
+		if now.Before(s.deadline) {
 			return nil
 		}
 		s.state = stateNew
 		s.lastAsked = time.Time{}
 	case stateConnecting:
-		if !s.callbackTimeout.IsZero() && !now.Before(s.callbackTimeout) {
+		if !s.deadline.IsZero() && !now.Before(s.deadline) {
 			return []Action{t.setFailed(s, "callback timeout", now)}
 		}
 		return nil
@@ -634,15 +631,15 @@ func (t *Transfer) runSource(s *source, budget *int) []Action {
 		untilReask = max(0, reaskTime-now.Sub(s.lastAsked))
 	}
 	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s) {
-		s.isUDPPending = true
+		s.state = stateReasking
 		s.udpReasks++
 		return []Action{ReaskUDP{Endpoint: netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort), UserHash: s.UserHash, CanObfuscate: s.CanObfuscate}}
 	}
 	if untilReask > 0 {
 		return nil
 	}
-	if s.isUDPPending {
-		s.isUDPPending = false
+	if s.state == stateReasking {
+		s.state = stateQueued
 		s.udpFailed++
 	}
 	return t.requestConnect(s, budget)
@@ -651,7 +648,7 @@ func (t *Transfer) runSource(s *source, budget *int) []Action {
 func (t *Transfer) canReaskUDP(s *source) bool {
 	isReliable := s.udpReasks <= minUDPReasks || float64(s.udpFailed)/float64(s.udpReasks) <= maxUDPFailedShare
 	return s.canReaskUDP && s.UDPPort != 0 && s.ClientID == 0 && !s.Buddy.IsValid() &&
-		!t.tick.IsFirewalled && !s.isUDPPending && isReliable
+		!t.tick.IsFirewalled && isReliable
 }
 
 func (t *Transfer) requestConnect(s *source, budget *int) []Action {
@@ -668,14 +665,13 @@ func (t *Transfer) requestConnect(s *source, budget *int) []Action {
 		action = Connect{Endpoint: s.Endpoint, UserHash: s.UserHash, CanObfuscate: s.CanObfuscate}
 	}
 	if *budget <= 0 {
-		s.state = stateWaiting
 		return nil
 	}
 	*budget--
 	s.state = stateConnecting
-	s.callbackTimeout = time.Time{}
+	s.deadline = time.Time{}
 	if _, isConnect := action.(Connect); !isConnect {
-		s.callbackTimeout = t.tick.Now.Add(callbackTimeout)
+		s.deadline = t.tick.Now.Add(callbackTimeout)
 	}
 	return []Action{action}
 }

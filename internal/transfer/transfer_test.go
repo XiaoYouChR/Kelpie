@@ -683,6 +683,29 @@ func TestResumeKeepsPartOfBlock(t *testing.T) {
 	}
 }
 
+// An OP_REASKACK that arrives after the source connected to us is late: the
+// connection already tells where we stand, and the slot it gave stays.
+func TestLateReaskAnswerKeepsSlot(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
+	h.tick(transfer.Tick{ConnectBudget: 1})
+	h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, start))
+	h.run(h.transfer.OnQueued(1, 42, start))
+	h.run(h.transfer.OnPeerGone(1, "idle", start))
+	reaskAt := start.Add(fileReaskTime - 10*time.Second)
+	if got := h.tick(transfer.Tick{Now: reaskAt, ConnectBudget: 1}); countActions[transfer.ReaskUDP](got) != 1 {
+		t.Fatalf("no UDP reask: %+v", got)
+	}
+
+	h.run(h.transfer.OnPeerConnected(2, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, reaskAt))
+	h.transfer.OnPeerParts(2, piece.Set{true})
+	h.run(h.transfer.OnSlotGranted(2, reaskAt))
+	h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, reaskAt.Add(time.Second)))
+	if got := h.transfer.Request(2, 1); len(got) != 1 {
+		t.Fatalf("late UDP answer took the slot away: requested %v", got)
+	}
+}
+
 // A source with no part we need is reasked only after twice the reask
 // interval and never over UDP (aMule PartFile.cpp:1574-1580).
 func TestNoNeededPartsSourceWaitsTwiceTheReask(t *testing.T) {
