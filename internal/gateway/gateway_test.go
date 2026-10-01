@@ -406,15 +406,29 @@ func TestEOFClosesEngineThenFlushes(t *testing.T) {
 	if eng.closes != 1 {
 		t.Errorf("Close called %d times, want 1", eng.closes)
 	}
-	got := parseLines(t, out.Bytes())
+	// Each outbox call wakes the writer, so the network line may be written
+	// before, between or after the run's lines; only progress before ended
+	// is promised.
+	var got []map[string]any
+	var network map[string]any
+	for _, message := range parseLines(t, out.Bytes()) {
+		if message["type"] == "network" {
+			network = message
+		} else {
+			got = append(got, message)
+		}
+	}
 	want := []map[string]any{
 		{"type": "ready", "version": "v1", "protocol": 1.0},
-		{"type": "network", "isServerConnected": false, "isHighId": false, "isKadFirewalled": false, "kadNodes": 9.0, "isBehindCarrierNat": false},
 		buildProgressMessage(4, 7),
 		{"type": "ended", "run": 4.0, "error": nil},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("output\n got %v\nwant %v", got, want)
+	}
+	wantNetwork := map[string]any{"type": "network", "isServerConnected": false, "isHighId": false, "isKadFirewalled": false, "kadNodes": 9.0, "isBehindCarrierNat": false}
+	if !reflect.DeepEqual(network, wantNetwork) {
+		t.Errorf("network %v, want %v", network, wantNetwork)
 	}
 }
 
