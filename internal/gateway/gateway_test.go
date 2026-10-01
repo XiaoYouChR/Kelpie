@@ -54,9 +54,9 @@ func (f *fakeEngine) postedCommands() []engine.Command {
 	return append([]engine.Command(nil), f.commands...)
 }
 
-// startFake returns a StartFunc handing out eng, and a channel that receives
-// the events it was started with.
-func startFake(eng *fakeEngine) (StartFunc, chan engine.Events) {
+// startFake returns a start function handing out eng, and a channel that
+// receives the events it was started with.
+func startFake(eng *fakeEngine) (func(engine.Config, engine.Events) (Engine, error), chan engine.Events) {
 	events := make(chan engine.Events, 1)
 	return func(_ engine.Config, e engine.Events) (Engine, error) {
 		events <- e

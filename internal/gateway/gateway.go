@@ -24,11 +24,9 @@ type Engine interface {
 	Close() error
 }
 
-type StartFunc func(config engine.Config, events engine.Events) (Engine, error)
-
-// Run answers hello, posts every later command to the engine, and writes the
-// engine's events to out until in reaches EOF.
-func Run(in io.Reader, out io.Writer, version string, start StartFunc) error {
+// Run answers hello with the engine start builds, posts every later command
+// to it, and writes the engine's events to out until in reaches EOF.
+func Run(in io.Reader, out io.Writer, version string, start func(engine.Config, engine.Events) (Engine, error)) error {
 	reader := bufio.NewReader(in)
 	line, readErr := reader.ReadBytes('\n')
 	if len(bytes.TrimSpace(line)) == 0 {
