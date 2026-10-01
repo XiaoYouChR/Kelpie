@@ -134,8 +134,8 @@ type Engine struct {
 	network    Network
 	hasNetwork bool
 
-	nextConn        uint64
-	conns           map[uint64]*conn
+	nextConn uint64
+	conns    map[uint64]*conn
 	// runs are the open runs in the order they started; runByHash indexes
 	// them.
 	runs            []*run
@@ -144,7 +144,6 @@ type Engine struct {
 	sourceLowIDs    map[lowIDKey]map[wire.Hash]bool
 	uploadEndpoints map[uploadKey]uploadTarget
 	a4afClients     map[wire.Hash]*a4afClient
-	kadChecks       map[uint64]kadCheck
 	recentConnects  []time.Time
 	budgetCursor    int
 	lastSecond      time.Time
@@ -213,7 +212,6 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 		sourceLowIDs:    map[lowIDKey]map[wire.Hash]bool{},
 		uploadEndpoints: map[uploadKey]uploadTarget{},
 		a4afClients:     map[wire.Hash]*a4afClient{},
-		kadChecks:       map[uint64]kadCheck{},
 		buddy:           buddy{incoming: map[netip.Addr]incomingBuddy{}},
 		directCallbacks: map[netip.Addr]time.Time{},
 	}

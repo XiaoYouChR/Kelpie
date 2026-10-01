@@ -65,6 +65,9 @@ type conn struct {
 	// the upload bytes being read or waiting to be written.
 	uploadBlocks   []diskJob
 	uploadBuffered int64
+	// kadCheck is set on a connection opened for a Kad check until the
+	// check is done with it.
+	kadCheck *kadCheck
 	// isHandshaken is set once the engine has acted on the handshake, which
 	// is later than the session completes it: within the Output that carries
 	// HandshakeCompleted the transfers do not know the peer yet.

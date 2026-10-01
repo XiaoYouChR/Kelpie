@@ -16,8 +16,8 @@ const (
 	versionUDPCheck       = 6
 )
 
-// kadCheck is a connection we opened for Kad: to show a node that its TCP
-// port is open (udp nil), or to have a client send us a UDP test.
+// kadCheck is why we opened a connection for Kad: to show a node that its
+// TCP port is open (udp nil), or to have a client send us a UDP test.
 type kadCheck struct {
 	kadPort uint16
 	udp     *kad.UDPCheck
@@ -58,7 +58,7 @@ func (e *Engine) startFirewallCheck(r kad.FirewallCheck) {
 		return
 	}
 	c := e.openPeerConn(r.Addr, r.UserHash, wire.CanObfuscate(r.CryptOptions, r.UserHash))
-	e.kadChecks[c.id] = kadCheck{kadPort: r.KadPort}
+	c.kadCheck = &kadCheck{kadPort: r.KadPort}
 }
 
 func (e *Engine) sendFirewallAck(c *conn, kadPort uint16) {
@@ -83,40 +83,39 @@ func (e *Engine) startUDPCheck(r kad.UDPCheck) {
 		return
 	}
 	c := e.openPeerConn(r.Addr, wire.Hash{}, false)
-	e.kadChecks[c.id] = kadCheck{udp: &r}
+	c.kadCheck = &kadCheck{udp: &r}
 }
 
 // onKadHandshake runs the Kad check a connection was opened for
 // (BaseClient.cpp:1660-1672).
 func (e *Engine) onKadHandshake(c *conn) {
-	check, ok := e.kadChecks[c.id]
-	if !ok {
+	check := c.kadCheck
+	if check == nil {
 		return
 	}
 	if check.udp == nil {
-		delete(e.kadChecks, c.id)
+		c.kadCheck = nil
 		e.sendFirewallAck(c, check.kadPort)
 		return
 	}
 	caps := c.session.Capabilities()
 	if caps.KadVersion < versionUDPCheck || caps.KadPort == 0 {
-		delete(e.kadChecks, c.id)
+		c.kadCheck = nil
 		e.kad.SendUDPCheckEnded(kad.UDPCheckEnded{IP: c.remote.Addr(), IsCancelled: true})
 		return
 	}
 	check.isSent = true
-	e.kadChecks[c.id] = check
 	e.sendPacket(c, client.FirewallCheckUDPReq{InternPort: check.udp.InternPort, ExternPort: check.udp.ExternPort, Key: check.udp.Key}, wire.Hash{}, 0)
 }
 
 // onKadConnClosed ends a UDP test whose answer did not come while the
 // connection lasted: a failure once the request went out.
 func (e *Engine) onKadConnClosed(c *conn) {
-	check, ok := e.kadChecks[c.id]
-	if !ok {
+	check := c.kadCheck
+	if check == nil {
 		return
 	}
-	delete(e.kadChecks, c.id)
+	c.kadCheck = nil
 	if check.udp != nil {
 		e.kad.SendUDPCheckEnded(kad.UDPCheckEnded{IP: c.remote.Addr(), IsCancelled: !check.isSent})
 	}
