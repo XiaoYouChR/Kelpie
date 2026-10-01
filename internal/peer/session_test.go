@@ -537,8 +537,11 @@ func TestSourceExchange(t *testing.T) {
 	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}, false))
 	l.sent = nil
 	l.run(l.a, l.a.s.RequestSources(file, l.now))
-	if r := l.sent[0].(client.RequestSources2); r.Version != client.ExtendedSourcesVersion {
-		t.Fatalf("asked a Kelpie peer in version %d", r.Version)
+	// aMule 2.3 closes on a standalone OP_REQUESTSOURCES2 (seen on the real
+	// network), so it travels in a multipacket.
+	multi := l.sent[0].(client.MultiPacketExt)
+	if r := multi.Requests[0].(client.RequestSources2); len(multi.Requests) != 1 || r.Version != client.ExtendedSourcesVersion {
+		t.Fatalf("asked a Kelpie peer with %+v", multi)
 	}
 	if lastOf[SourcesRequested](t, l.b).File != file {
 		t.Fatal("request not seen")
@@ -585,7 +588,7 @@ func TestSourceExchangeWithEmule(t *testing.T) {
 	}, shares, start)
 	s.Add(file, piece.BlockSize, piece.Set{false}, false)
 	out := s.RequestSources(file, start)
-	if r := out.Send[0].(client.RequestSources2); r.Version != client.SourceExchange2Version {
+	if r := out.Send[0].(client.MultiPacket).Requests[0].(client.RequestSources2); r.Version != client.SourceExchange2Version {
 		t.Fatalf("version %d", r.Version)
 	}
 	answer := client.AnswerSources2{Version: 4, Hash: file, Sources: []client.Source{
