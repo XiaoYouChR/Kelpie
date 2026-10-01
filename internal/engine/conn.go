@@ -428,7 +428,7 @@ func (e *Engine) closeConn(c *conn, reason string) {
 		return
 	}
 	e.queue.OnConnectionGone(c.id)
-	if c.session != nil && c.isHandshaken {
+	if c.isHandshaken {
 		for _, event := range c.session.Stop().Events {
 			e.onPeerEvent(c, event)
 		}
