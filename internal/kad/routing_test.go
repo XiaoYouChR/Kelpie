@@ -12,25 +12,54 @@ import (
 
 var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// buildNode makes a node in bucket index of self, with a distinct address.
+// buildNode makes a node in the first leaf of bucket index of self, with a
+// distinct address.
 func buildNode(self wire.Hash, index, n int) Node {
 	rng := rand.New(rand.NewPCG(uint64(index), uint64(n)))
 	return Node{
-		ID:      buildRandomID(self, index, rng),
+		ID:      buildRandomID(self, index, 0, rng),
 		Addr:    netip.MustParseAddrPort(fmt.Sprintf("10.%d.%d.%d:4672", index, n/250, n%250+1)),
 		TCPPort: 4662,
 		Version: 8,
 	}
 }
 
-func TestBuildRandomIDLandsInBucket(t *testing.T) {
+func TestBuildRandomIDLandsInLeaf(t *testing.T) {
 	self := mustHash("23A8CEFF57A7A32D562D649ED7893796")
 	rng := rand.New(rand.NewPCG(1, 2))
 	for index := range 128 {
-		for range 20 {
-			if got := bucketIndex(self, buildRandomID(self, index, rng)); got != index {
-				t.Fatalf("random ID for bucket %d lands in %d", index, got)
+		for leaf := range leafCount(index) {
+			for range 20 {
+				id := buildRandomID(self, index, leaf, rng)
+				if got := bucketIndex(self, id); got != index {
+					t.Fatalf("random ID for bucket %d lands in %d", index, got)
+				}
+				if got := leafIndex(distance(self, id), index); got != leaf && index < 125 {
+					t.Fatalf("random ID for leaf %d of bucket %d lands in leaf %d", leaf, index, got)
+				}
 			}
+		}
+	}
+}
+
+// TestTableHoldsLeavesLikeEMule checks the table's capacity against eMule's
+// zone splitting: eight leaves of K in bucket 0, five in every other.
+func TestTableHoldsLeavesLikeEMule(t *testing.T) {
+	self := mustHash("23A8CEFF57A7A32D562D649ED7893796")
+	tb := buildTable(self, start)
+	rng := rand.New(rand.NewPCG(3, 4))
+	n := 0
+	for _, index := range []int{0, 1, 6} {
+		for leaf := range leafCount(index) {
+			for range bucketSize + 2 {
+				n++
+				tb.add(Node{ID: buildRandomID(self, index, leaf, rng), Addr: netip.MustParseAddrPort(fmt.Sprintf("10.9.%d.%d:4672", n/250, n%250+1)), Version: 8}, true, start)
+			}
+		}
+	}
+	for index, want := range map[int]int{0: 8 * bucketSize, 1: 5 * bucketSize, 6: 5 * bucketSize} {
+		if got := len(tb.buckets[index].contacts); got != want {
+			t.Fatalf("bucket %d holds %d contacts, want %d", index, got, want)
 		}
 	}
 }

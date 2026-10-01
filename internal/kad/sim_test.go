@@ -35,30 +35,44 @@ type sim struct {
 	queue  []simDatagram
 }
 
-// buildSim makes count nodes whose IDs all lie within SEARCHTOLERANCE of
-// fileHash; every node but the first knows only the first.
-func buildSim(t *testing.T, count int) *sim {
+// buildSim makes a node for each ID; every node but the first knows only
+// the first.
+func buildSim(t *testing.T, ids []wire.Hash) *sim {
 	s := &sim{t: t, now: start, byAddr: map[netip.AddrPort]*simNode{}}
-	rng := rand.New(rand.NewPCG(7, 7))
-	for i := range count {
-		id := fileHash
-		for j := 2; j < len(id); j++ {
-			id[j] = byte(rng.UintN(256))
-		}
+	for i, id := range ids {
 		var user wire.Hash
-		user[0], user[15] = 0xEE, byte(i)
-		addr := netip.MustParseAddrPort(fmt.Sprintf("10.0.0.%d:4672", i+1))
+		user[0], user[14], user[15] = 0xEE, byte(i>>8), byte(i)
+		addr := netip.MustParseAddrPort(fmt.Sprintf("10.0.%d.%d:4672", i/250, i%250+1))
 		n := &simNode{addr: addr, c: buildCore(coreConfig{
 			ID: id, UserHash: user, TCPPort: 4662, UDPPort: 4672, Rand: rand.New(rand.NewPCG(uint64(i), 3)),
 		}, s.now)}
 		s.nodes = append(s.nodes, n)
 		s.byAddr[addr] = n
 	}
-	seed := Node{ID: s.nodes[0].c.id, Addr: s.nodes[0].addr, TCPPort: 4662, Version: kadwire.Version}
 	for _, n := range s.nodes[1:] {
-		n.c.addNodes([]Node{seed}, s.now)
+		s.addSeed(n)
 	}
 	return s
+}
+
+func (s *sim) addSeed(n *simNode) {
+	n.c.addNodes([]Node{{ID: s.nodes[0].c.id, Addr: s.nodes[0].addr, TCPPort: 4662, Version: kadwire.Version}}, s.now)
+}
+
+// buildIDs makes count random IDs; isNearFile keeps them all within
+// SEARCHTOLERANCE of fileHash.
+func buildIDs(count int, isNearFile bool) []wire.Hash {
+	rng := rand.New(rand.NewPCG(7, 7))
+	ids := make([]wire.Hash, count)
+	for i := range ids {
+		for j := range ids[i] {
+			ids[i][j] = byte(rng.UintN(256))
+		}
+		if isNearFile {
+			copy(ids[i][:2], fileHash[:2])
+		}
+	}
+	return ids
 }
 
 func (s *sim) record(n *simNode, out output) {
@@ -99,7 +113,7 @@ func (s *sim) run(d time.Duration) {
 }
 
 func TestSimulatedNetwork(t *testing.T) {
-	s := buildSim(t, 12)
+	s := buildSim(t, buildIDs(12, true))
 	s.run(10 * time.Minute)
 
 	for i, n := range s.nodes {
@@ -148,5 +162,32 @@ func TestSimulatedNetwork(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("searcher found %+v, want [%+v]", got, want)
+	}
+}
+
+// TestNewcomerFillsItsTable joins a settled network through one seed. Like
+// eMule, the newcomer keeps looking up sparse leaves every 10 s, and its
+// table grows past one bucket of K per level.
+func TestNewcomerFillsItsTable(t *testing.T) {
+	ids := buildIDs(400, false)
+	s := buildSim(t, ids[:len(ids)-1])
+	s.run(15 * time.Minute)
+	newcomer := &simNode{addr: netip.MustParseAddrPort("10.9.9.9:4672"), c: buildCore(coreConfig{
+		ID: ids[len(ids)-1], UserHash: wire.Hash{0xEF}, TCPPort: 4662, UDPPort: 4672, Rand: rand.New(rand.NewPCG(9, 9)),
+	}, s.now)}
+	s.nodes = append(s.nodes, newcomer)
+	s.byAddr[newcomer.addr] = newcomer
+	s.addSeed(newcomer)
+	s.run(3 * time.Minute)
+
+	contacts, verified := 0, newcomer.c.table.verifiedCount()
+	for i := range newcomer.c.table.buckets {
+		contacts += len(newcomer.c.table.buckets[i].contacts)
+	}
+	if first := len(newcomer.c.table.buckets[0].contacts); first <= bucketSize {
+		t.Fatalf("bucket 0 holds %d contacts, want more than one leaf's K", first)
+	}
+	if contacts < 150 || verified < 50 {
+		t.Fatalf("newcomer knows %d contacts, %d verified, after 3 minutes", contacts, verified)
 	}
 }

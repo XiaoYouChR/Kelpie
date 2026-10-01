@@ -20,6 +20,9 @@ type lookupKind int
 
 const (
 	nodeLookup lookupKind = iota
+	// randomLookup is eMule's NODE search: it asks one contact at a time
+	// and ends with the first answer, whose contacts fill the table.
+	randomLookup
 	sourceSearch
 	sourcePublish
 )
@@ -183,7 +186,11 @@ func (c *core) startLookup(kind lookupKind, target wire.Hash, size uint64, now t
 	for _, ct := range contacts {
 		l.addCandidate(ct.Node)
 	}
-	for _, cand := range l.possible[:min(alphaQuery, len(l.possible))] {
+	count := alphaQuery
+	if kind == randomLookup {
+		count = 1
+	}
+	for _, cand := range l.possible[:min(count, len(l.possible))] {
 		c.sendFind(l, cand, now)
 	}
 	c.lookups = append(c.lookups, l)
@@ -211,6 +218,10 @@ func (c *core) onRes(from netip.AddrPort, res kadwire.Res, now time.Time) {
 		c.table.add(Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}, false, now)
 	}
 	if l.isDone || l.isStopping {
+		return
+	}
+	if l.kind == randomLookup {
+		c.cancelLookup(l)
 		return
 	}
 	l.lastResponse = now
@@ -366,7 +377,7 @@ func (c *core) runLookups(now time.Time) {
 	for _, l := range c.lookups {
 		switch {
 		case l.isStopping:
-		case l.kind != nodeLookup && (l.answers >= l.total() || now.After(l.created.Add(l.lifetime()-stopMargin))):
+		case (l.kind == sourceSearch || l.kind == sourcePublish) && (l.answers >= l.total() || now.After(l.created.Add(l.lifetime()-stopMargin))):
 			l.stop(now)
 		default:
 			c.runJumpStart(l, now)

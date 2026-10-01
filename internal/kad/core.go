@@ -21,9 +21,10 @@ const (
 	maxPublishes     = 3                // KADEMLIATOTALSTORESRC
 	bootstrapGap     = 2 * time.Second  // CKademlia::Process, while it has no contacts
 	selfLookupGap    = 4 * time.Hour    // m_tNextSelfLookup
-	bucketRefreshGap = 10 * time.Second // m_tBigTimer: one zone at a time...
-	bucketLookupGap  = time.Hour        // ...each zone hourly (m_tNextBigTimer)
-	bucketCheckGap   = time.Minute      // CRoutingZone::OnSmallTimer
+	bucketRefreshGap = 10 * time.Second // m_bigTimer: one leaf lookup every 10 s...
+	bucketLookupGap  = time.Hour        // ...each leaf at most hourly (m_nextBigTimer)
+	sparseLeaf       = 2                // CRoutingZone::OnBigTimer: only leaves with GetRemaining() >= K * 0.8
+	bucketCheckGap   = time.Minute      // CRoutingZone::OnSmallTimer, per leaf
 	contactRecheck   = time.Hour        // CContact::UpdateType: a fresh contact expires in an hour
 	firewallCheckGap = time.Hour        // m_tNextFirewallCheck
 	firewallChecks   = 4                // KADEMLIAFIREWALLCHECKS
@@ -113,12 +114,12 @@ type core struct {
 	finds            []*find
 	publishes        []*publish
 
-	nextBootstrap     time.Time
-	nextSelfLookup    time.Time
-	nextBucketRefresh time.Time
-	nextFileSearch    time.Time
-	nextPublish       time.Time
-	nextIndexCleanup  time.Time
+	nextBootstrap    time.Time
+	nextSelfLookup   time.Time
+	nextRandomLookup time.Time
+	nextFileSearch   time.Time
+	nextPublish      time.Time
+	nextIndexCleanup time.Time
 
 	out output
 }
@@ -343,33 +344,39 @@ func (c *core) runBootstrap(now time.Time) {
 	c.rpcs.add(&rpc{kind: rpcBootstrap, node: Node{Addr: to}, sent: now})
 }
 
-// runBucketChecks is CRoutingZone::OnSmallTimer: once a minute per bucket it
+// runBucketChecks is CRoutingZone::OnSmallTimer: once a minute per leaf it
 // says hello to a contact we have not greeted yet, or to the one we heard
 // from longest ago if that was over an hour back. The hello also makes
 // the contact add us to its own table.
 func (c *core) runBucketChecks(now time.Time) {
 	for i := range c.table.buckets {
 		b := &c.table.buckets[i]
-		if len(b.contacts) == 0 || now.Before(b.nextCheck) {
-			continue
-		}
-		b.nextCheck = now.Add(bucketCheckGap)
-		var due *contact
+		var due [maxLeaves]*contact
+		var isPopulated [maxLeaves]bool
 		for _, ct := range b.contacts {
-			if !ct.isHelloed {
-				due = ct
-				break
-			}
-			if ct.isVerified && now.Sub(ct.lastSeen) >= contactRecheck && (due == nil || ct.lastSeen.Before(due.lastSeen)) {
-				due = ct
+			isPopulated[ct.leaf] = true
+			d := due[ct.leaf]
+			switch {
+			case d != nil && !d.isHelloed:
+			case !ct.isHelloed:
+				due[ct.leaf] = ct
+			case ct.isVerified && now.Sub(ct.lastSeen) >= contactRecheck && (d == nil || ct.lastSeen.Before(d.lastSeen)):
+				due[ct.leaf] = ct
 			}
 		}
-		if due == nil || c.rpcs.hasPending(due.Addr, rpcHello) {
-			continue
+		for leaf := range leafCount(i) {
+			if !isPopulated[leaf] || now.Before(b.nextChecks[leaf]) {
+				continue
+			}
+			b.nextChecks[leaf] = now.Add(bucketCheckGap)
+			ct := due[leaf]
+			if ct == nil || c.rpcs.hasPending(ct.Addr, rpcHello) {
+				continue
+			}
+			ct.isHelloed = true
+			c.send(ct.Addr, kadwire.HelloReq{ID: c.id, TCPPort: c.tcpPort, Version: kadwire.Version})
+			c.rpcs.add(&rpc{kind: rpcHello, node: ct.Node, sent: now})
 		}
-		due.isHelloed = true
-		c.send(due.Addr, kadwire.HelloReq{ID: c.id, TCPPort: c.tcpPort, Version: kadwire.Version})
-		c.rpcs.add(&rpc{kind: rpcHello, node: due.Node, sent: now})
 	}
 }
 
@@ -377,18 +384,38 @@ func (c *core) runMaintenance(now time.Time) {
 	if !now.Before(c.nextSelfLookup) && c.startLookup(nodeLookup, c.id, 0, now) != nil {
 		c.nextSelfLookup = now.Add(selfLookupGap)
 	}
-	if !now.Before(c.nextBucketRefresh) {
-		for i := range c.table.buckets {
-			b := &c.table.buckets[i]
-			if len(b.contacts) > 0 && now.Sub(b.lastLookup) >= bucketLookupGap {
-				b.lastLookup = now
-				c.nextBucketRefresh = now.Add(bucketRefreshGap)
-				c.startLookup(nodeLookup, buildRandomID(c.id, i, c.rng), 0, now)
-				break
-			}
+	c.runRandomLookups(now)
+	c.runFirewallCheck(now)
+}
+
+// runRandomLookups is CKademlia::Process's big timer: every
+// bucketRefreshGap it looks up a random ID in one sparse leaf, so the table
+// fills where it is emptiest. eMule's leaves exist down to the zone that
+// holds us; buckets past the deepest populated one stand in for it.
+func (c *core) runRandomLookups(now time.Time) {
+	if now.Before(c.nextRandomLookup) {
+		return
+	}
+	deepest := 0
+	for i := range c.table.buckets {
+		if len(c.table.buckets[i].contacts) > 0 {
+			deepest = i
 		}
 	}
-	c.runFirewallCheck(now)
+	for i := range min(deepest+2, len(c.table.buckets)) {
+		b := &c.table.buckets[i]
+		for leaf := range leafCount(i) {
+			if now.Before(b.nextLookups[leaf]) || c.table.leafSize(b, leaf) > sparseLeaf {
+				continue
+			}
+			if c.startLookup(randomLookup, buildRandomID(c.id, i, leaf, c.rng), 0, now) == nil {
+				return
+			}
+			b.nextLookups[leaf] = now.Add(bucketLookupGap)
+			c.nextRandomLookup = now.Add(bucketRefreshGap)
+			return
+		}
+	}
 }
 
 // runFirewallCheck keeps up to firewallChecks requests out until that many
@@ -402,7 +429,7 @@ func (c *core) runFirewallCheck(now time.Time) {
 	if f.responses+c.rpcs.count(rpcFirewall) >= firewallChecks {
 		return
 	}
-	for _, ct := range c.table.closestContacts(buildRandomID(c.id, 0, c.rng), len(c.table.byID), true) {
+	for _, ct := range c.table.closestContacts(buildRandomID(c.id, 0, 0, c.rng), len(c.table.byID), true) {
 		if f.asked[ct.Addr.Addr()] {
 			continue
 		}

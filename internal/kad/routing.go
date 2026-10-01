@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	bucketSize = 10 // K
+	bucketSize = 10 // K: contacts per leaf
 	// A contact that misses this many checks in a row leaves the table.
 	maxFailures = 2
+	maxLeaves   = 8
 )
 
 type contact struct {
@@ -25,18 +26,25 @@ type contact struct {
 	isHelloed  bool
 	failures   int
 	lastSeen   time.Time
+	leaf       int
 }
 
 type bucket struct {
 	contacts     []*contact
 	replacements []*contact
-	lastLookup   time.Time
-	nextCheck    time.Time
+	nextChecks   [maxLeaves]time.Time
+	nextLookups  [maxLeaves]time.Time
 }
 
 // table is a Kademlia routing table: bucket i holds contacts whose ID first
 // differs from ours at bit i. Lookups only use the contacts, not the
-// replacements, which wait for a contact to fail.
+// replacements, which wait for a contact of their leaf to fail.
+//
+// eMule's routing zones split while their level is below KBASE (4) or their
+// index below KK (5) (CRoutingZone::CanSplit). Bucket i is the zone at level
+// i+1 with index 1, so it ends up as leaves of K contacts keyed by the
+// distance bits after its leading 1: bucket 0 as eight (three bits each),
+// every other bucket as five (000, 001, 01, 10, 11).
 type table struct {
 	self    wire.Hash
 	buckets [128]bucket
@@ -44,10 +52,14 @@ type table struct {
 	byAddr  map[netip.AddrPort]*contact
 }
 
+// buildTable makes an empty table whose leaves are first looked up
+// bucketRefreshGap after now, as CRoutingZone::StartTimer schedules them.
 func buildTable(self wire.Hash, now time.Time) *table {
 	t := &table{self: self, byID: map[wire.Hash]*contact{}, byAddr: map[netip.AddrPort]*contact{}}
 	for i := range t.buckets {
-		t.buckets[i].lastLookup = now
+		for leaf := range t.buckets[i].nextLookups {
+			t.buckets[i].nextLookups[leaf] = now.Add(bucketRefreshGap)
+		}
 	}
 	return t
 }
@@ -100,13 +112,15 @@ func (t *table) add(n Node, isVerified bool, now time.Time) *contact {
 }
 
 func (t *table) addToBucket(c *contact, isVerified bool) {
-	b := &t.buckets[bucketIndex(t.self, c.ID)]
-	if len(b.contacts) < bucketSize {
+	index := bucketIndex(t.self, c.ID)
+	b := &t.buckets[index]
+	c.leaf = leafIndex(distance(t.self, c.ID), index)
+	if t.leafSize(b, c.leaf) < bucketSize {
 		b.contacts = append(b.contacts, c)
 		return
 	}
 	if isVerified {
-		if i := slices.IndexFunc(b.contacts, func(o *contact) bool { return !o.isVerified }); i >= 0 {
+		if i := t.unverifiedIndex(b, c.leaf); i >= 0 {
 			b.replacements = append(b.replacements, b.contacts[i])
 			b.contacts[i] = c
 			t.removeExcessReplacements(b)
@@ -115,6 +129,20 @@ func (t *table) addToBucket(c *contact, isVerified bool) {
 	}
 	b.replacements = append(b.replacements, c)
 	t.removeExcessReplacements(b)
+}
+
+func (t *table) leafSize(b *bucket, leaf int) int {
+	n := 0
+	for _, c := range b.contacts {
+		if c.leaf == leaf {
+			n++
+		}
+	}
+	return n
+}
+
+func (t *table) unverifiedIndex(b *bucket, leaf int) int {
+	return slices.IndexFunc(b.contacts, func(o *contact) bool { return o.leaf == leaf && !o.isVerified })
 }
 
 func (t *table) removeExcessReplacements(b *bucket) {
@@ -126,28 +154,28 @@ func (t *table) removeExcessReplacements(b *bucket) {
 	}
 }
 
-// updateBucket moves a newly verified replacement into the bucket's contacts if
-// there is room or an unverified contact to swap with.
+// updateBucket moves a newly verified replacement into its leaf if there is
+// room or an unverified contact to swap with.
 func (t *table) updateBucket(c *contact) {
 	b := &t.buckets[bucketIndex(t.self, c.ID)]
 	i := slices.Index(b.replacements, c)
 	if i < 0 {
 		return
 	}
-	if len(b.contacts) < bucketSize {
+	if t.leafSize(b, c.leaf) < bucketSize {
 		b.replacements = slices.Delete(b.replacements, i, i+1)
 		b.contacts = append(b.contacts, c)
 		return
 	}
-	if j := slices.IndexFunc(b.contacts, func(o *contact) bool { return !o.isVerified }); j >= 0 {
+	if j := t.unverifiedIndex(b, c.leaf); j >= 0 {
 		b.replacements[i] = b.contacts[j]
 		b.contacts[j] = c
 	}
 }
 
 // onTimeout records an unanswered request. An unverified contact goes at once; a
-// verified one after maxFailures misses, and the best replacement takes its
-// place.
+// verified one after maxFailures misses, and the best replacement of its
+// leaf takes its place.
 func (t *table) onTimeout(addr netip.AddrPort) {
 	c := t.byAddr[addr]
 	if c == nil {
@@ -173,12 +201,12 @@ func (t *table) remove(c *contact) {
 		return
 	}
 	b.contacts = slices.Delete(b.contacts, i, i+1)
-	if len(b.replacements) == 0 {
-		return
-	}
-	best := slices.IndexFunc(b.replacements, func(o *contact) bool { return o.isVerified })
+	best := slices.IndexFunc(b.replacements, func(o *contact) bool { return o.leaf == c.leaf && o.isVerified })
 	if best < 0 {
-		best = len(b.replacements) - 1
+		best = slices.IndexFunc(b.replacements, func(o *contact) bool { return o.leaf == c.leaf })
+	}
+	if best < 0 {
+		return
 	}
 	b.contacts = append(b.contacts, b.replacements[best])
 	b.replacements = slices.Delete(b.replacements, best, best+1)
@@ -250,15 +278,66 @@ func bucketIndex(self, id wire.Hash) int {
 	return 127
 }
 
-// buildRandomID returns an ID that lands in bucket index of self.
-func buildRandomID(self wire.Hash, index int, rng *rand.Rand) wire.Hash {
-	var id wire.Hash
-	for i := range id {
-		id[i] = byte(rng.UintN(256))
+func leafCount(index int) int {
+	if index == 0 {
+		return 8
 	}
-	byteIndex, mask := index/8, byte(0x80>>(index%8))
-	copy(id[:byteIndex], self[:byteIndex])
-	keep := ^(mask<<1 - 1)
-	id[byteIndex] = self[byteIndex]&keep | ^self[byteIndex]&mask | id[byteIndex]&(mask-1)
-	return id
+	return 5
+}
+
+// leafIndex numbers the leaf of bucket index that distance d falls in by
+// the three bits after the leading 1: bucket 0 uses them as they are; other
+// buckets keep 000 and 001 apart and merge the pairs 01x, 10x and 11x.
+func leafIndex(d wire.Hash, index int) int {
+	bits := bitsAt(d, index+1, 3)
+	if index == 0 || bits < 0b010 {
+		return int(bits)
+	}
+	return int(bits>>1) + 1
+}
+
+// bitsAt is the n bits of h from bit position from on, most significant
+// first; bits past the end read as 0.
+func bitsAt(h wire.Hash, from, n int) byte {
+	var v byte
+	for p := from; p < from+n; p++ {
+		v <<= 1
+		if p < 128 && h[p/8]&(0x80>>(p%8)) != 0 {
+			v |= 1
+		}
+	}
+	return v
+}
+
+// buildRandomID returns an ID that lands in the given leaf of bucket index
+// of self.
+func buildRandomID(self wire.Hash, index, leaf int, rng *rand.Rand) wire.Hash {
+	var d wire.Hash
+	for i := range d {
+		d[i] = byte(rng.UintN(256))
+	}
+	bits, n := byte(leaf), 3
+	if index > 0 && leaf >= 2 {
+		bits, n = byte(leaf-1), 2
+	}
+	setBit(&d, index, true)
+	for p := range index {
+		setBit(&d, p, false)
+	}
+	for k := range n {
+		setBit(&d, index+1+k, bits&(1<<(n-1-k)) != 0)
+	}
+	return distance(self, d)
+}
+
+func setBit(h *wire.Hash, p int, isSet bool) {
+	if p >= 128 {
+		return
+	}
+	mask := byte(0x80 >> (p % 8))
+	if isSet {
+		h[p/8] |= mask
+	} else {
+		h[p/8] &^= mask
+	}
 }
