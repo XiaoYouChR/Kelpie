@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"io/fs"
+	"maps"
 	"slices"
 	"time"
 
@@ -396,6 +397,32 @@ func addToSet[K comparable](sets map[K]map[wire.Hash]bool, key K, file wire.Hash
 		sets[key] = map[wire.Hash]bool{}
 	}
 	sets[key][file] = true
+}
+
+// refreshKnownSources keeps only the sources running transfers still hold;
+// a transfer refuses sources beyond its cap, and these sets follow it.
+func (e *Engine) refreshKnownSources() {
+	clear(e.sourceUsers)
+	clear(e.sourceLowIDs)
+	for _, r := range e.runList {
+		if r.transfer == nil {
+			continue
+		}
+		for _, src := range r.transfer.Sources() {
+			e.addKnownSource(r.file.Hash, src)
+		}
+	}
+}
+
+// refreshAsked forgets file requests older than the reask time, which no
+// longer hold back a request on an incoming connection.
+func (e *Engine) refreshAsked() {
+	now := e.now()
+	for _, r := range e.runList {
+		maps.DeleteFunc(r.asked, func(_ wire.Hash, asked time.Time) bool {
+			return now.Sub(asked) >= fileReaskTime
+		})
+	}
 }
 
 func (e *Engine) removeKnownSources(file wire.Hash) {

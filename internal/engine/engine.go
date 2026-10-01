@@ -590,6 +590,9 @@ func (e *Engine) onTick() {
 	}
 	e.runTransfers(now)
 	e.refreshUploadEndpoints()
+	e.refreshKnownSources()
+	e.refreshAsked()
+	e.refreshA4AF()
 	e.runServer(e.server.OnTick(now, e.buildServerWanted()))
 	if e.kad != nil {
 		e.kad.SetWanted(e.buildKadWanted())

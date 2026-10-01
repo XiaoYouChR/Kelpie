@@ -713,3 +713,12 @@ func (t *Transfer) requestSources(tick Tick) []Action {
 	}
 	return actions
 }
+
+// Sources lists the sources the transfer keeps.
+func (t *Transfer) Sources() []Source {
+	sources := make([]Source, len(t.sources))
+	for i, s := range t.sources {
+		sources[i] = s.Source
+	}
+	return sources
+}

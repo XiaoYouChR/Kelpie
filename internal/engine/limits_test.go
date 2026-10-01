@@ -16,10 +16,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/clock"
 	"github.com/XiaoYouChR/Kelpie/internal/disk"
 	"github.com/XiaoYouChR/Kelpie/internal/identity"
+	"github.com/XiaoYouChR/Kelpie/internal/link"
 	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
+	"github.com/XiaoYouChR/Kelpie/internal/transfer"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
@@ -289,4 +292,67 @@ func TestConnectionGoroutinesExit(t *testing.T) {
 	w.waitFor("the connection goroutines to end", func() bool {
 		return runtime.NumGoroutine() <= baseline
 	})
+}
+
+// buildIdleEngine is an Engine with no goroutines, for tests that call its
+// hub methods directly, holding one download run.
+func buildIdleEngine(t *testing.T, clock *clock.Fake) (*Engine, *run) {
+	t.Helper()
+	f := buildTestFile("known.bin", 1_000_000, 5)
+	file, err := link.Parse(f.link())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &run{
+		mode:     ModeDownload,
+		file:     file,
+		transfer: transfer.Build(transfer.Options{File: file, Path: "/known.bin", Mode: transfer.ModeDownload, Random: rand.New(rand.NewPCG(1, 1))}, clock.Now()),
+		asked:    map[wire.Hash]time.Time{},
+	}
+	e := &Engine{
+		ports:        Ports{Clock: clock},
+		runByHash:    map[wire.Hash]*run{file.Hash: r},
+		runList:      []*run{r},
+		sourceUsers:  map[wire.Hash]map[wire.Hash]bool{},
+		sourceLowIDs: map[lowIDKey]map[wire.Hash]bool{},
+		a4afClients:  map[wire.Hash]*a4afClient{},
+	}
+	return e, r
+}
+
+// Maps keyed by peer identities shrink back to what the downloads hold
+// once many identities have come and gone.
+func TestPeerMapsAreBounded(t *testing.T) {
+	clock := clock.BuildFake(start)
+	e, r := buildIdleEngine(t, clock)
+	var sources []transfer.Source
+	for i := range 2000 {
+		user := wire.Hash{byte(i), byte(i >> 8), 1}
+		addr := netip.AddrFrom4([4]byte{198, 51, byte(100 + i>>8), byte(i)})
+		sources = append(sources, transfer.Source{Endpoint: netip.AddrPortFrom(addr, 4662), UserHash: user})
+		r.asked[user] = clock.Now()
+		e.a4afClients[user] = &a4afClient{file: r.file.Hash, lastAsked: clock.Now(), suspended: map[wire.Hash]time.Time{}}
+	}
+	for _, src := range sources {
+		e.addKnownSource(r.file.Hash, src)
+	}
+	r.transfer.OnSourcesFound(sources, transfer.ChannelExchange, clock.Now())
+
+	e.refreshKnownSources()
+	if got, want := len(e.sourceUsers), len(r.transfer.Sources()); got != want || want != 400 {
+		t.Fatalf("%d known users for %d sources", got, want)
+	}
+
+	clock.Advance(fileReaskTime)
+	held := wire.Hash{0xFF}
+	e.a4afClients[held] = &a4afClient{file: r.file.Hash, lastAsked: clock.Now(), suspended: map[wire.Hash]time.Time{}}
+	clock.Advance(a4afTime - fileReaskTime)
+	e.refreshAsked()
+	e.refreshA4AF()
+	if len(r.asked) != 0 {
+		t.Fatalf("%d file requests remembered after the reask time", len(r.asked))
+	}
+	if len(e.a4afClients) != 1 || e.a4afClients[held] == nil {
+		t.Fatalf("%d A4AF clients remembered, want only the one still held", len(e.a4afClients))
+	}
 }
