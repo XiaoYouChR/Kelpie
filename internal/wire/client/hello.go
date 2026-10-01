@@ -115,9 +115,9 @@ func setHelloField(h *Hello, t wire.Tag) bool {
 	case t.ID == tagBuddyUDP && isUint:
 		h.Buddy = netip.AddrPortFrom(h.Buddy.Addr(), uint16(t.Uint))
 	case t.ID == tagMiscOptions1 && isUint:
-		h.Misc1 = ParseMiscOptions1(uint32(t.Uint))
+		h.Misc1 = parseMiscOptions1(uint32(t.Uint))
 	case t.ID == tagMiscOptions2 && isUint:
-		h.Misc2 = ParseMiscOptions2(uint32(t.Uint))
+		h.Misc2 = parseMiscOptions2(uint32(t.Uint))
 	case t.ID == tagEmuleVersion && isUint:
 		h.EmuleVersion = uint32(t.Uint)
 	case t.ID == tagModMiscOptions && isUint:
@@ -191,7 +191,7 @@ type MiscOptions1 struct {
 	HasPreview              bool
 }
 
-func ParseMiscOptions1(v uint32) MiscOptions1 {
+func parseMiscOptions1(v uint32) MiscOptions1 {
 	return MiscOptions1{
 		AICHVersion:             byte(v>>29) & 0x07,
 		IsUnicode:               v>>28&1 != 0,
@@ -235,7 +235,7 @@ type MiscOptions2 struct {
 	HasFileIdentifiers   bool
 }
 
-func ParseMiscOptions2(v uint32) MiscOptions2 {
+func parseMiscOptions2(v uint32) MiscOptions2 {
 	return MiscOptions2{
 		KadVersion:           byte(v) & 0x0F,
 		HasLargeFiles:        v>>4&1 != 0,
@@ -285,12 +285,9 @@ const (
 	InfoCompression      byte = 0x20
 	InfoUDPPort          byte = 0x21
 	InfoUDPVersion       byte = 0x22
-	InfoSourceExchange   byte = 0x23
-	InfoComments         byte = 0x24
 	InfoExtendedRequest  byte = 0x25
 	InfoCompatibleClient byte = 0x26
 	InfoFeatures         byte = 0x27
-	InfoModVersion       byte = 0x55
 )
 
 func (EmuleInfo) Protocol() byte       { return wire.ProtocolEMule }
