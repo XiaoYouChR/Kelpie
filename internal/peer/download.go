@@ -185,6 +185,9 @@ func (s *Session) sendFileRequest(file wire.Hash, d *download, out *Output) {
 	if piece.PartCount(d.size) > 1 {
 		requests = append(requests, client.SetRequestFileID{Hash: file})
 	}
+	if s.caps.HasAICH {
+		requests = append(requests, client.AICHFileHashRequest{Hash: file})
+	}
 	switch {
 	case s.caps.HasExtMultiPacket:
 		out.send(client.MultiPacketExt{Hash: file, Size: uint64(d.size), Requests: requests})
@@ -202,6 +205,8 @@ func (s *Session) onMultiPacketAnswer(p client.MultiPacketAnswer, out *Output) {
 			s.onFileName(a.Hash, out)
 		case client.FileStatus:
 			s.onFileStatus(a, out)
+		case client.AICHFileHashAnswer:
+			s.onRoot(a.Hash, a.Root, out)
 		}
 	}
 }

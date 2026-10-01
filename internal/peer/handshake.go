@@ -40,6 +40,7 @@ func (s *Session) buildHello() client.Hello {
 		UDPPort:  s.cfg.UDPPort,
 		KadPort:  s.cfg.KadPort,
 		Misc1: client.MiscOptions1{
+			AICHVersion:             aichVersion,
 			IsUnicode:               true,
 			UDPVersion:              udpVersion,
 			DataCompressionVersion:  dataCompressionVersion,
@@ -137,6 +138,7 @@ func (s *Session) setHello(h client.Hello) {
 		HasSourceExchange2:         h.Misc2.HasSourceExchange2,
 		HasExtendedSources:         h.ModMisc&client.ModMiscExtendedSources != 0,
 		HasExtendedSourcesSkipTags: h.ModMisc&client.ModMiscExtendedSourcesSkipTags != 0,
+		HasAICH:                    h.Misc1.AICHVersion&aichVersion != 0,
 		CryptOptions:               toCryptOptions(h.Misc2),
 	}
 }
