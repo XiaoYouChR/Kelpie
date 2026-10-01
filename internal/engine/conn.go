@@ -76,23 +76,39 @@ func (e *Engine) addConn(remote netip.AddrPort, isServer, isOutgoing bool) *conn
 
 // openConn dials remote from a leaf; the hub learns the result from
 // connOpened. A non-zero obfuscateFor is the peer's user hash, and the
-// connection is obfuscated with it.
-func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wire.Hash) *conn {
+// connection is obfuscated with it. A server connection with a non-zero
+// obfuscationPort is dialled on that port and obfuscated by key agreement.
+func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wire.Hash, obfuscationPort uint16) *conn {
 	c := e.addConn(remote, isServer, true)
-	c.isObfuscated = obfuscateFor != wire.Hash{}
+	c.isObfuscated = obfuscateFor != wire.Hash{} || obfuscationPort != 0
 	if !isServer {
 		e.recentConnects = append(e.recentConnects, e.now())
 	}
 	keyPart := [4]byte(binary.LittleEndian.AppendUint32(nil, e.ports.Rand.Uint32()))
+	var secret [16]byte
+	binary.LittleEndian.PutUint64(secret[:8], e.ports.Rand.Uint64())
+	binary.LittleEndian.PutUint64(secret[8:], e.ports.Rand.Uint64())
+	dial := c.remote
+	if obfuscationPort != 0 {
+		dial = netip.AddrPortFrom(c.remote.Addr(), obfuscationPort)
+	}
 	if e.packetLog != nil {
-		e.packetLog.Printf("open %s obfuscated=%t", c.remote, c.isObfuscated)
+		e.packetLog.Printf("open %s obfuscated=%t", dial, c.isObfuscated)
 	}
 	e.startLeaf(func() {
 		ctx, cancel := context.WithTimeout(c.ctx, connectTimeout)
-		netConn, err := e.ports.Transport.OpenTCP(ctx, c.remote)
+		netConn, err := e.ports.Transport.OpenTCP(ctx, dial)
 		cancel()
-		if err == nil && obfuscateFor != (wire.Hash{}) {
-			netConn, err = openObfuscated(netConn, obfuscateFor, keyPart)
+		switch {
+		case err != nil:
+		case obfuscationPort != 0:
+			netConn, err = openObfuscated(netConn, func(c net.Conn) (*obfuscation.Conn, error) {
+				return obfuscation.OpenServer(c, secret, keyPart[0])
+			})
+		case obfuscateFor != wire.Hash{}:
+			netConn, err = openObfuscated(netConn, func(c net.Conn) (*obfuscation.Conn, error) {
+				return obfuscation.OpenOutgoing(c, obfuscateFor, keyPart)
+			})
 		}
 		if !e.send(c.ctx, connOpened{c.id, netConn, err}) && netConn != nil {
 			netConn.Close()
@@ -101,9 +117,9 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 	return c
 }
 
-func openObfuscated(netConn net.Conn, user wire.Hash, keyPart [4]byte) (net.Conn, error) {
+func openObfuscated(netConn net.Conn, open func(net.Conn) (*obfuscation.Conn, error)) (net.Conn, error) {
 	netConn.SetDeadline(time.Now().Add(connectTimeout))
-	obfuscated, err := obfuscation.OpenOutgoing(netConn, user, keyPart)
+	obfuscated, err := open(netConn)
 	if err != nil {
 		netConn.Close()
 		return nil, err
@@ -677,7 +693,7 @@ func (e *Engine) runQueueActions(actions []upload.Action) {
 				if target.canObfuscate {
 					obfuscateFor = a.Peer.User
 				}
-				e.openConn(target.endpoint, false, obfuscateFor)
+				e.openConn(target.endpoint, false, obfuscateFor, 0)
 			}
 		}
 	}

@@ -251,8 +251,13 @@ func TestDelayHoldsAnswersOnClock(t *testing.T) {
 }
 
 func TestMetLoadsInServerList(t *testing.T) {
-	addrs := []netip.AddrPort{serverAddr, netip.MustParseAddrPort("10.0.0.9:4242")}
-	entries, err := server.ParseMet(fakeserver.BuildMet(addrs...))
+	network := transport.BuildNetwork()
+	other := netip.MustParseAddrPort("10.0.0.9:4242")
+	servers := []*fakeserver.Server{
+		startServer(t, network, fakeserver.Config{}),
+		startServer(t, network, fakeserver.Config{Transport: network.AddHost(other.Addr()), Addr: other, ObfuscationPort: 4246}),
+	}
+	entries, err := server.ParseMet(fakeserver.BuildMet(servers...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,8 +265,11 @@ func TestMetLoadsInServerList(t *testing.T) {
 		t.Fatalf("got %d entries", len(entries))
 	}
 	for i, e := range entries {
-		if e.Endpoint != addrs[i] || e.UDPFlags&packet.UDPFlagGetSources2 == 0 || e.Name == "" {
+		if e.Endpoint != servers[i].Addr() || e.UDPFlags&packet.UDPFlagGetSources2 == 0 || e.Name == "" {
 			t.Errorf("entry %d = %+v", i, e)
 		}
+	}
+	if e := entries[1]; e.TCPObfuscationPort != 4246 || e.UDPFlags&packet.UDPFlagTCPObfuscation == 0 {
+		t.Errorf("obfuscating entry = %+v", e)
 	}
 }

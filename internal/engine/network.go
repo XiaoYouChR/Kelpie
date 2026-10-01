@@ -27,8 +27,8 @@ func (e *Engine) runServer(out server.Output) {
 			e.closeConn(c, "server closed")
 		}
 	}
-	for _, addr := range out.Connect {
-		e.openConn(addr, true, wire.Hash{})
+	for _, d := range out.Connect {
+		e.openConn(d.Server, true, wire.Hash{}, d.ObfuscationPort)
 	}
 	if c := e.serverConnByEndpoint(out.To); c != nil {
 		for _, p := range out.Send {
@@ -44,7 +44,7 @@ func (e *Engine) runServer(out server.Output) {
 			if callback.CanObfuscate {
 				obfuscateFor = callback.UserHash
 			}
-			e.openConn(callback.Endpoint, false, obfuscateFor)
+			e.openConn(callback.Endpoint, false, obfuscateFor, 0)
 		}
 	}
 	for _, event := range out.Events {

@@ -38,6 +38,7 @@ func TestTCPRoundTrip(t *testing.T) {
 	packets := []wire.Packet{
 		Login{UserHash: userHash, Port: 4662, Name: "Kelpie", Version: 0x3C, Flags: CapZlib | CapNewTags | CapUnicode | CapLargeFiles | CapIPv6, EmuleVersion: 0x2000, IPv6: v6, Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x0F, Uint: 4662}}},
 		IDChange{ClientID: 0x04030201, Flags: FlagCompression | FlagRelatedSearch | FlagIPv6, Reserved: 4661, ReportedIP: netip.MustParseAddr("1.2.3.4")},
+		IDChange{ClientID: 0x04030201, Flags: FlagTCPObfuscation, ReportedIP: netip.MustParseAddr("1.2.3.4"), ObfuscationPort: 4665},
 		ServerMessage{Text: "server version 17.15\nwelcome"},
 		ServerStatus{Users: 1000, Files: 200000},
 		ServerIdent{Hash: fileHash, Addr: netip.MustParseAddrPort("1.2.3.4:4661"), Name: "eMule Security", Description: "desc", YourIP: v6, IPv6Status: IPv6StatusHave | IPv6StatusReachable | IPv6StatusProbed, IPv6: netip.MustParseAddr("2a01:4f8::2"), Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x87, Uint: 9}}},

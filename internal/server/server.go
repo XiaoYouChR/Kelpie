@@ -87,16 +87,24 @@ type Datagram struct {
 
 // Output is what the engine must do, in field order: close server
 // connections, open new ones, send to the server at To, and connect to peers
-// that asked for a callback. A server connection is named by the endpoint it
-// was opened to; reports about a closed one are ignored.
+// that asked for a callback. A server connection is named by the server's
+// endpoint, even when dialled on its obfuscation port; reports about a
+// closed one are ignored.
 type Output struct {
 	Close        []netip.AddrPort
-	Connect      []netip.AddrPort
+	Connect      []Dial
 	To           netip.AddrPort
 	Send         []wire.Packet
 	SendUDP      []Datagram
 	ConnectPeers []Callback
 	Events       []Event
+}
+
+// Dial is a server connection to open. A non-zero ObfuscationPort means
+// dialling that port and obfuscating the connection.
+type Dial struct {
+	Server          netip.AddrPort
+	ObfuscationPort uint16
 }
 
 // Callback is a peer that asked, through the server, for us to connect.
@@ -146,6 +154,13 @@ type listed struct {
 	pingedAt  time.Time
 	// searchedAt is when the server was last asked for sources over UDP.
 	searchedAt time.Time
+	// tcpFlags are from the server's last OP_IDCHANGE.
+	tcpFlags uint32
+}
+
+// canObfuscateTCP is aMule's SupportsObfuscationTCP (Server.h:146).
+func (l *listed) canObfuscateTCP() bool {
+	return l.TCPObfuscationPort != 0 && (l.UDPFlags&packet.UDPFlagTCPObfuscation != 0 || l.tcpFlags&packet.FlagTCPObfuscation != 0)
 }
 
 // attempt is a server connection that has not logged in yet.
@@ -163,12 +178,15 @@ type Server struct {
 
 	attempts []attempt
 	// current is the server we are logged in to.
-	current  *listed
-	tried    map[*listed]bool
-	retryAt  time.Time
-	clientID uint32
-	tcpFlags uint32
-	lastSent time.Time
+	current *listed
+	tried   map[*listed]bool
+	retryAt time.Time
+	// isPlainPass is aMule's !m_bTryObfuscated: a pass first tries only
+	// servers that obfuscate, then all of them plain.
+	isPlainPass bool
+	clientID    uint32
+	tcpFlags    uint32
+	lastSent    time.Time
 
 	askedAt         map[wire.Hash]time.Time
 	nextSourceFrame time.Time
@@ -338,6 +356,11 @@ func (s *Server) onIDChange(sender *listed, p packet.IDChange, now time.Time, ou
 	if p.ClientID == 0 {
 		return
 	}
+	// aMule keeps both for the next connection (ServerSocket.cpp:262, 289-296).
+	sender.tcpFlags = p.Flags
+	if p.ObfuscationPort != 0 {
+		sender.TCPObfuscationPort = uint16(p.ObfuscationPort)
+	}
 	if sender != s.current {
 		for _, a := range s.attempts {
 			if a.server != sender {
@@ -412,17 +435,28 @@ func (s *Server) setFailed(server netip.AddrPort) {
 }
 
 // runConnect keeps maxAttempts servers of the current pass in flight. A
-// pass tries every server once, best first; when it runs out and no
-// attempt is left, eMule waits CS_RETRYCONNECTTIME so a short list is not
-// hammered.
+// pass tries every server once, best first. As in aMule
+// (ServerConnect.cpp:54-88), the first pass tries only servers that
+// obfuscate, on their obfuscation port when they have one, and "another
+// pass without obfuscation" follows at once. When the plain pass runs out
+// and no attempt is left, eMule waits CS_RETRYCONNECTTIME so a short list
+// is not hammered.
 func (s *Server) runConnect(now time.Time, out *Output) {
 	if s.current != nil || now.Before(s.retryAt) {
 		return
 	}
 	for len(s.attempts) < maxAttempts {
 		next := s.nextServer()
-		if next == nil {
-			if len(s.attempts) == 0 && len(s.tried) > 0 {
+		switch {
+		case next == nil && len(s.attempts) > 0:
+			return
+		case next == nil && !s.isPlainPass:
+			s.isPlainPass = true
+			clear(s.tried)
+			continue
+		case next == nil:
+			if len(s.tried) > 0 {
+				s.isPlainPass = false
 				clear(s.tried)
 				s.retryAt = now.Add(passRetryTime)
 			}
@@ -430,16 +464,23 @@ func (s *Server) runConnect(now time.Time, out *Output) {
 		}
 		s.tried[next] = true
 		s.attempts = append(s.attempts, attempt{server: next, since: now})
-		out.Connect = append(out.Connect, next.Endpoint)
+		dial := Dial{Server: next.Endpoint}
+		if !s.isPlainPass && next.canObfuscateTCP() {
+			dial.ObfuscationPort = next.TCPObfuscationPort
+		}
+		out.Connect = append(out.Connect, dial)
 	}
 }
 
 // nextServer prefers high preference, then fewer failures, then more users
-// and files: a bigger server knows more sources.
+// and files: a bigger server knows more sources. An obfuscated pass skips
+// servers that support neither TCP nor UDP obfuscation, as aMule's
+// GetNextServer does (ServerList.cpp:580-596).
 func (s *Server) nextServer() *listed {
 	var best *listed
 	for _, l := range s.servers {
-		if s.tried[l] || l.Failures >= maxFailures {
+		canObfuscate := l.canObfuscateTCP() || l.UDPFlags&packet.UDPFlagUDPObfuscation != 0
+		if s.tried[l] || l.Failures >= maxFailures || (!s.isPlainPass && !canObfuscate) {
 			continue
 		}
 		if best == nil || isBetter(l, best) {

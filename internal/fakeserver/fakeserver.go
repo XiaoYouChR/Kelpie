@@ -30,7 +30,8 @@ const (
 	udpFlags = packet.UDPFlagGetSources | packet.UDPFlagGetSources2 | packet.UDPFlagNewTags |
 		packet.UDPFlagUnicode | packet.UDPFlagLargeFiles
 
-	metUDPFlags byte = 0x92 // ST_UDPFLAGS
+	metUDPFlags           byte = 0x92 // ST_UDPFLAGS
+	metTCPPortObfuscation byte = 0x97 // ST_TCPPORTOBFUSCATION
 )
 
 type Config struct {
@@ -46,12 +47,16 @@ type Config struct {
 	ShouldDropLogins bool
 	// Delay holds back every answer, TCP and UDP, by this long on Clock.
 	Delay time.Duration
+	// ObfuscationPort, when not 0, is a second TCP port where clients log
+	// in obfuscated; the server announces it.
+	ObfuscationPort uint16
 }
 
 type Server struct {
-	config   Config
-	listener transport.Listener
-	udp      transport.PacketConn
+	config     Config
+	listener   transport.Listener
+	obfuscated transport.Listener
+	udp        transport.PacketConn
 
 	mu        sync.Mutex
 	clients   map[*client]struct{}
@@ -81,8 +86,16 @@ func Create(config Config) (*Server, error) {
 		listener.Close()
 		return nil, err
 	}
-	config.Addr = netip.AddrPortFrom(config.Addr.Addr(), uint16(listener.Port()))
-	return &Server{config: config, listener: listener, udp: udp, clients: map[*client]struct{}{}, nextLowID: 1}, nil
+	s := &Server{config: config, listener: listener, udp: udp, clients: map[*client]struct{}{}, nextLowID: 1}
+	if config.ObfuscationPort != 0 {
+		if s.obfuscated, err = config.Transport.OpenListener(int(config.ObfuscationPort)); err != nil {
+			listener.Close()
+			udp.Close()
+			return nil, err
+		}
+	}
+	s.config.Addr = netip.AddrPortFrom(config.Addr.Addr(), uint16(listener.Port()))
+	return s, nil
 }
 
 func (s *Server) Addr() netip.AddrPort { return s.config.Addr }
@@ -96,11 +109,11 @@ func (s *Server) Run(ctx context.Context) error {
 		defer wg.Done()
 		s.runUDP(ctx)
 	}()
-	errs := make(chan error, 1)
-	go func() {
+	errs := make(chan error, 2)
+	accept := func(listener transport.Listener, isObfuscated bool) {
 		defer wg.Done()
 		for {
-			conn, err := s.listener.Accept()
+			conn, err := listener.Accept()
 			if err != nil {
 				errs <- err
 				return
@@ -108,10 +121,24 @@ func (s *Server) Run(ctx context.Context) error {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				s.runConn(ctx, conn)
+				if !isObfuscated {
+					s.runConn(ctx, conn)
+					return
+				}
+				obfuscated, err := openObfuscated(conn)
+				if err != nil {
+					conn.Close()
+					return
+				}
+				s.runConn(ctx, obfuscated)
 			}()
 		}
-	}()
+	}
+	go accept(s.listener, false)
+	if s.obfuscated != nil {
+		wg.Add(1)
+		go accept(s.obfuscated, true)
+	}
 	var err error
 	select {
 	case <-ctx.Done():
@@ -119,6 +146,9 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	cancel()
 	s.listener.Close()
+	if s.obfuscated != nil {
+		s.obfuscated.Close()
+	}
 	s.udp.Close()
 	wg.Wait()
 	return err
@@ -185,7 +215,12 @@ func (s *Server) onLogin(ctx context.Context, conn net.Conn, login packet.Login)
 	if addr.Is4() {
 		reported = addr
 	}
-	c.send(packet.IDChange{ClientID: c.id, Flags: tcpFlags, ReportedIP: reported})
+	idChange := packet.IDChange{ClientID: c.id, Flags: tcpFlags, ReportedIP: reported}
+	if s.config.ObfuscationPort != 0 {
+		idChange.Flags |= packet.FlagTCPObfuscation
+		idChange.ObfuscationPort = uint32(s.config.ObfuscationPort)
+	}
+	c.send(idChange)
 	c.send(s.status())
 	c.send(packet.ServerIdent{Hash: md5.Sum([]byte(s.config.Addr.String())), Addr: s.config.Addr, Name: s.config.Name})
 	return c
@@ -296,7 +331,8 @@ func (s *Server) runUDP(ctx context.Context) {
 			status := s.status()
 			reply = packet.GlobServStatRes{
 				Challenge: p.Challenge, Users: status.Users, Files: status.Files,
-				MaxUsers: status.Users + 1000, SoftFiles: fileLimit, HardFiles: fileLimit, UDPFlags: udpFlags,
+				MaxUsers: status.Users + 1000, SoftFiles: fileLimit, HardFiles: fileLimit, UDPFlags: s.udpFlags(),
+				TCPObfuscationPort: s.config.ObfuscationPort,
 			}
 		}
 		if reply == nil {
@@ -332,16 +368,27 @@ func (c *client) send(p wire.Packet) {
 	c.conn.Write(wire.BuildPacket(nil, p))
 }
 
-// BuildMet builds a server.met listing addrs, each announcing the UDP flags
-// this server supports so clients ask it for global sources.
-func BuildMet(addrs ...netip.AddrPort) []byte {
-	b := binary.LittleEndian.AppendUint32([]byte{0x0E}, uint32(len(addrs)))
-	for _, addr := range addrs {
-		b = wire.BuildAddrPort(b, addr)
-		b = wire.BuildTags(b, []wire.Tag{
-			{Type: wire.TagString, ID: 0x01, String: "fakeserver " + addr.String()},
-			{Type: wire.TagUint32, ID: metUDPFlags, Uint: uint64(udpFlags)},
-		})
+func (s *Server) udpFlags() uint32 {
+	if s.config.ObfuscationPort != 0 {
+		return udpFlags | packet.UDPFlagTCPObfuscation
+	}
+	return udpFlags
+}
+
+// BuildMet builds a server.met listing servers, each announcing its UDP
+// flags, so clients ask it for global sources, and its obfuscation port.
+func BuildMet(servers ...*Server) []byte {
+	b := binary.LittleEndian.AppendUint32([]byte{0x0E}, uint32(len(servers)))
+	for _, s := range servers {
+		b = wire.BuildAddrPort(b, s.config.Addr)
+		tags := []wire.Tag{
+			{Type: wire.TagString, ID: 0x01, String: "fakeserver " + s.config.Addr.String()},
+			{Type: wire.TagUint32, ID: metUDPFlags, Uint: uint64(s.udpFlags())},
+		}
+		if s.config.ObfuscationPort != 0 {
+			tags = append(tags, wire.Tag{Type: wire.TagUint16, ID: metTCPPortObfuscation, Uint: uint64(s.config.ObfuscationPort)})
+		}
+		b = wire.BuildTags(b, tags)
 	}
 	return b
 }

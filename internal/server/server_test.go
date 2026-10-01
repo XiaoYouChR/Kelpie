@@ -43,8 +43,8 @@ func loggedIn(t *testing.T, entries []Entry, clientID, flags uint32, wanted []Wa
 	t.Helper()
 	s := BuildServer(config, entries)
 	out := s.OnTick(start, wanted)
-	if out.Connect[0] != entries[0].Endpoint {
-		t.Fatalf("connect = %v, want %v first", out.Connect, entries[0].Endpoint)
+	if dialed(out)[0] != entries[0].Endpoint {
+		t.Fatalf("connect = %v, want %v first", dialed(out), entries[0].Endpoint)
 	}
 	s.OnConnected(entries[0].Endpoint, start)
 	out = s.OnPacket(entries[0].Endpoint, packet.IDChange{ClientID: clientID, Flags: flags}, start)
@@ -52,6 +52,15 @@ func loggedIn(t *testing.T, entries []Entry, clientID, flags uint32, wanted []Wa
 		t.Fatal("not connected after IDChange")
 	}
 	return s, out
+}
+
+// dialed is the servers out connects to, obfuscated or not.
+func dialed(out Output) []netip.AddrPort {
+	var servers []netip.AddrPort
+	for _, d := range out.Connect {
+		servers = append(servers, d.Server)
+	}
+	return servers
 }
 
 func sent[T wire.Packet](out Output) []T {
@@ -77,14 +86,14 @@ func TestChoiceAndRotation(t *testing.T) {
 	now := start
 	var order, pending []netip.AddrPort
 	out := s.OnTick(now, nil)
-	for len(out.Connect) > 0 || len(pending) > 0 {
-		order = append(order, out.Connect...)
-		pending = append(pending, out.Connect...)
+	for len(dialed(out)) > 0 || len(pending) > 0 {
+		order = append(order, dialed(out)...)
+		pending = append(pending, dialed(out)...)
 		if len(pending) > maxAttempts {
 			t.Fatalf("%d attempts in flight", len(pending))
 		}
-		if again := s.OnTick(now, nil); len(again.Connect) > 0 {
-			t.Fatalf("tick connects %v while %v are pending", again.Connect, pending)
+		if again := s.OnTick(now, nil); len(dialed(again)) > 0 {
+			t.Fatalf("tick connects %v while %v are pending", dialed(again), pending)
 		}
 		out = s.OnConnectFailed(pending[0], now)
 		pending = pending[1:]
@@ -94,13 +103,13 @@ func TestChoiceAndRotation(t *testing.T) {
 		t.Fatalf("pass order = %v, want %v", order, want)
 	}
 	for ; now.Before(start.Add(passRetryTime)); now = now.Add(time.Second) {
-		if out := s.OnTick(now, nil); len(out.Connect) > 0 {
+		if out := s.OnTick(now, nil); len(dialed(out)) > 0 {
 			t.Fatalf("retried at %v, before CS_RETRYCONNECTTIME", now.Sub(start))
 		}
 	}
 	// Every server failed once, so the order is the same again.
-	if out := s.OnTick(now.Add(time.Second), nil); !reflect.DeepEqual(out.Connect, want[:2]) {
-		t.Fatalf("new pass connects %v", out.Connect)
+	if out := s.OnTick(now.Add(time.Second), nil); !reflect.DeepEqual(dialed(out), want[:2]) {
+		t.Fatalf("new pass connects %v", dialed(out))
 	}
 }
 
@@ -110,8 +119,8 @@ func TestChoiceAndRotation(t *testing.T) {
 func TestFirstLoginWins(t *testing.T) {
 	a, b := ep("1.0.0.1:4661"), ep("1.0.0.2:4661")
 	s := BuildServer(config, []Entry{{Endpoint: a, Users: 10}, {Endpoint: b}})
-	if out := s.OnTick(start, nil); !reflect.DeepEqual(out.Connect, []netip.AddrPort{a, b}) {
-		t.Fatalf("connect = %v", out.Connect)
+	if out := s.OnTick(start, nil); !reflect.DeepEqual(dialed(out), []netip.AddrPort{a, b}) {
+		t.Fatalf("connect = %v", dialed(out))
 	}
 	if out := s.OnConnected(b, start); out.To != b || len(sent[packet.Login](out)) != 1 {
 		t.Fatalf("login to b = %+v", out)
@@ -130,13 +139,13 @@ func TestFirstLoginWins(t *testing.T) {
 	if !s.IsServerConnected() || s.current.Endpoint != b {
 		t.Fatal("not logged in to b")
 	}
-	if out := s.OnDisconnected(a, start); len(out.Connect) > 0 || s.servers[0].Failures != 0 {
+	if out := s.OnDisconnected(a, start); len(dialed(out)) > 0 || s.servers[0].Failures != 0 {
 		t.Fatalf("closed loser reported: %+v failures=%d", out, s.servers[0].Failures)
 	}
 	if out := s.OnPacket(a, packet.IDChange{ClientID: 1234}, start); len(out.Events) > 0 || s.ClientID() != highID {
 		t.Fatalf("packet from the closed loser used: %+v", out)
 	}
-	if out := s.OnTick(start.Add(time.Hour), nil); len(out.Connect) > 0 || len(out.Close) > 0 {
+	if out := s.OnTick(start.Add(time.Hour), nil); len(dialed(out)) > 0 || len(out.Close) > 0 {
 		t.Fatalf("attempt left after login: %+v", out)
 	}
 }
@@ -146,8 +155,8 @@ func TestFailedAttemptCountsAgainstItsServer(t *testing.T) {
 	s := BuildServer(config, []Entry{{Endpoint: a, Users: 10}, {Endpoint: b}})
 	s.OnTick(start, nil)
 	s.OnConnected(a, start)
-	if out := s.OnDisconnected(a, start); len(out.Connect) > 0 {
-		t.Fatalf("reconnected while b is pending: %v", out.Connect)
+	if out := s.OnDisconnected(a, start); len(dialed(out)) > 0 {
+		t.Fatalf("reconnected while b is pending: %v", dialed(out))
 	}
 	if s.servers[0].Failures != 1 || s.servers[1].Failures != 0 {
 		t.Fatalf("failures = %d, %d", s.servers[0].Failures, s.servers[1].Failures)
@@ -159,7 +168,7 @@ func TestServerIsGivenUpAfterMaxFailures(t *testing.T) {
 	now := start
 	attempts := 0
 	for range 1000 {
-		if out := s.OnTick(now, nil); len(out.Connect) > 0 {
+		if out := s.OnTick(now, nil); len(dialed(out)) > 0 {
 			attempts++
 			s.OnConnectFailed(first, now)
 		}
@@ -175,11 +184,11 @@ func TestLoginTimesOut(t *testing.T) {
 	s := BuildServer(config, []Entry{{Endpoint: a, Users: 2}, {Endpoint: b, Users: 1}, {Endpoint: c}})
 	s.OnTick(start, nil)
 	s.OnConnected(a, start.Add(time.Second))
-	if out := s.OnTick(start.Add(connectTimeout), nil); len(out.Close) > 0 || len(out.Connect) > 0 {
+	if out := s.OnTick(start.Add(connectTimeout), nil); len(out.Close) > 0 || len(dialed(out)) > 0 {
 		t.Fatalf("gave up too early: %+v", out)
 	}
 	out := s.OnTick(start.Add(connectTimeout+time.Second), nil)
-	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a, b}) || !reflect.DeepEqual(out.Connect, []netip.AddrPort{c}) {
+	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a, b}) || !reflect.DeepEqual(dialed(out), []netip.AddrPort{c}) {
 		t.Fatalf("timeout output = %+v", out)
 	}
 }
@@ -224,8 +233,8 @@ func TestIDChangeGivesLowIDOrHighID(t *testing.T) {
 func TestReconnectMovesToAnotherServer(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661"), Users: 10}, {Endpoint: ep("1.0.0.2:4661")}}
 	s, _ := loggedIn(t, entries, highID, 0, nil)
-	if out := s.OnDisconnected(first, start.Add(time.Hour)); !reflect.DeepEqual(out.Connect, []netip.AddrPort{ep("1.0.0.2:4661")}) {
-		t.Fatalf("reconnect = %v", out.Connect)
+	if out := s.OnDisconnected(first, start.Add(time.Hour)); !reflect.DeepEqual(dialed(out), []netip.AddrPort{ep("1.0.0.2:4661")}) {
+		t.Fatalf("reconnect = %v", dialed(out))
 	}
 }
 
@@ -506,5 +515,52 @@ func TestKeepAlive(t *testing.T) {
 	}
 	if out := s.OnTick(start.Add(keepAliveTime+time.Minute), nil); len(out.Send) != 0 {
 		t.Fatal("keep-alive repeated at once")
+	}
+}
+
+// TestObfuscatedPassFirst follows aMule's TryAnotherConnectionrequest: the
+// first pass tries only servers that obfuscate, each on its obfuscation
+// port when it has one, and a plain pass over every server follows at once.
+func TestObfuscatedPassFirst(t *testing.T) {
+	a, b, c := ep("1.0.0.1:4661"), ep("1.0.0.2:4661"), ep("1.0.0.3:4661")
+	s := BuildServer(config, []Entry{
+		{Endpoint: a, Users: 30, TCPObfuscationPort: 4665, UDPFlags: packet.UDPFlagTCPObfuscation},
+		{Endpoint: b, Users: 20, UDPFlags: packet.UDPFlagUDPObfuscation},
+		{Endpoint: c, Users: 10},
+	})
+	out := s.OnTick(start, nil)
+	if want := []Dial{{Server: a, ObfuscationPort: 4665}, {Server: b}}; !reflect.DeepEqual(out.Connect, want) {
+		t.Fatalf("obfuscated pass = %+v, want %+v", out.Connect, want)
+	}
+	if out := s.OnConnectFailed(a, start); len(out.Connect) > 0 {
+		t.Fatalf("plain pass began while b is pending: %+v", out.Connect)
+	}
+	// a and b failed once, so c comes first.
+	out = s.OnConnectFailed(b, start)
+	if want := []Dial{{Server: c}, {Server: a}}; !reflect.DeepEqual(out.Connect, want) {
+		t.Fatalf("plain pass = %+v, want %+v", out.Connect, want)
+	}
+	if out := s.OnConnectFailed(c, start); !reflect.DeepEqual(out.Connect, []Dial{{Server: b}}) {
+		t.Fatalf("plain pass continues with %+v", out.Connect)
+	}
+	s.OnConnectFailed(a, start)
+	if out := s.OnConnectFailed(b, start); len(out.Connect) > 0 {
+		t.Fatalf("connected again before CS_RETRYCONNECTTIME: %+v", out.Connect)
+	}
+	out = s.OnTick(start.Add(passRetryTime+time.Second), nil)
+	if want := []Dial{{Server: a, ObfuscationPort: 4665}, {Server: b}}; !reflect.DeepEqual(out.Connect, want) {
+		t.Fatalf("next pass = %+v, want obfuscated again", out.Connect)
+	}
+}
+
+// A server's OP_IDCHANGE tells its obfuscation port and flag; the next
+// connection to it is obfuscated.
+func TestObfuscationPortFromLogin(t *testing.T) {
+	s, _ := loggedIn(t, []Entry{{Endpoint: first}}, highID, 0, nil)
+	s.OnPacket(first, packet.IDChange{ClientID: highID, Flags: packet.FlagTCPObfuscation, ObfuscationPort: 4665}, start)
+	s.OnDisconnected(first, start)
+	out := s.OnTick(start.Add(passRetryTime+time.Second), nil)
+	if want := []Dial{{Server: first, ObfuscationPort: 4665}}; !reflect.DeepEqual(out.Connect, want) {
+		t.Fatalf("reconnect = %+v, want %+v", out.Connect, want)
 	}
 }
