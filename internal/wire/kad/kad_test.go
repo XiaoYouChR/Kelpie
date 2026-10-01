@@ -59,6 +59,8 @@ func TestRoundTrip(t *testing.T) {
 		BootstrapRes{ID: idA, TCPPort: 4661, Version: Version, Contacts: []Contact{localContact()}},
 		HelloReq{ID: idA, TCPPort: 4662, Version: 9, Tags: []wire.Tag{{Type: wire.TagUint16, ID: TagSourceUPort, Uint: 4672}}},
 		HelloRes{ID: idA, TCPPort: 4662, Version: 9},
+		HelloRes{ID: idA, TCPPort: 4662, Version: 8, Tags: []wire.Tag{{Type: wire.TagUint8, ID: TagKadMiscOptions, Uint: uint64(MiscRequestsAck)}}},
+		HelloResAck{ID: idA},
 		Req{SearchType: FindNode, Target: idA, Receiver: idB},
 		Res{Target: idA, Contacts: []Contact{{ID: idC, Addr: netip.MustParseAddr("127.0.0.1"), UDPPort: 4672, TCPPort: 4661, Version: 8}}},
 		SearchKeysReq{Target: idA},
@@ -82,6 +84,16 @@ func TestRoundTrip(t *testing.T) {
 	}
 	for _, p := range packets {
 		roundTrip(t, p)
+	}
+}
+
+// TestHelloResAckGolden: aMule's ACK is our ID and a zero tag count
+// (KademliaUDPListener.cpp:612).
+func TestHelloResAckGolden(t *testing.T) {
+	got := HelloResAck{ID: idB}.Build(nil)
+	want := "e0cfd63131e96ad1d7593cb7c089c0e0" + "00"
+	if hex.EncodeToString(got) != want {
+		t.Fatalf("ack = %x\nwant  %s", got, want)
 	}
 }
 

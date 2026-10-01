@@ -17,6 +17,7 @@ const (
 	opHelloReq            byte = 0x11
 	opHelloRes            byte = 0x19
 	opReq                 byte = 0x21
+	opHelloResAck         byte = 0x22
 	opRes                 byte = 0x29
 	opSearchKeysReq       byte = 0x33
 	opSearchSourcesReq    byte = 0x34
@@ -49,17 +50,20 @@ const (
 	FindNode  byte = 0x0B
 )
 
-// Source tag IDs carried in SearchEntry.Tags.
+// Source tag IDs carried in SearchEntry.Tags, and TagKadMiscOptions, which a
+// Hello carries.
 const (
-	TagFileSize    byte = 0x02
-	TagEncryption  byte = 0xF3
-	TagBuddyHash   byte = 0xF8
-	TagServerPort  byte = 0xFA
-	TagServerIP    byte = 0xFB
-	TagSourceUPort byte = 0xFC
-	TagSourcePort  byte = 0xFD
-	TagSourceIP    byte = 0xFE
-	TagSourceType  byte = 0xFF
+	TagFileSize byte = 0x02
+	// TagKadMiscOptions holds the MiscOption bits (FileTags.h:114).
+	TagKadMiscOptions byte = 0xF2
+	TagEncryption     byte = 0xF3
+	TagBuddyHash      byte = 0xF8
+	TagServerPort     byte = 0xFA
+	TagServerIP       byte = 0xFB
+	TagSourceUPort    byte = 0xFC
+	TagSourcePort     byte = 0xFD
+	TagSourceIP       byte = 0xFE
+	TagSourceType     byte = 0xFF
 )
 
 // Parse decodes a Kad packet body; wire.ParseDatagram has already inflated
@@ -80,6 +84,8 @@ func Parse(protocol, opcode byte, body []byte) (wire.Packet, error) {
 		p = HelloReq(parseHello(r))
 	case opHelloRes:
 		p = HelloRes(parseHello(r))
+	case opHelloResAck:
+		p = HelloResAck{ID: ParseID(r), Tags: parseTags(r, int(r.Uint8()))}
 	case opReq:
 		p = Req{SearchType: r.Uint8(), Target: ParseID(r), Receiver: ParseID(r)}
 	case opRes:
@@ -331,6 +337,31 @@ func parseHello(r *wire.Reader) Hello {
 	h := Hello{ID: ParseID(r), TCPPort: r.Uint16(), Version: r.Uint8()}
 	h.Tags = parseTags(r, int(r.Uint8()))
 	return h
+}
+
+// TagKadMiscOptions bits, as SendMyDetails sets them
+// (KademliaUDPListener.cpp:133).
+const (
+	MiscUDPFirewalled byte = 0x01
+	MiscTCPFirewalled byte = 0x02
+	MiscRequestsAck   byte = 0x04
+)
+
+// HelloResAck is KADEMLIA2_HELLO_RES_ACK: the third leg of a hello, sent when
+// a HelloRes asks for it, which proves the sender's IP.
+type HelloResAck struct {
+	ID   wire.Hash
+	Tags []wire.Tag
+}
+
+func (HelloResAck) Protocol() byte { return wire.ProtocolKad }
+func (HelloResAck) Opcode() byte   { return opHelloResAck }
+func (p HelloResAck) Build(b []byte) []byte {
+	b = append(BuildID(b, p.ID), byte(len(p.Tags)))
+	for _, t := range p.Tags {
+		b = wire.BuildTag(b, t)
+	}
+	return b
 }
 
 type Req struct {
