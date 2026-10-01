@@ -5,7 +5,6 @@ import pytest
 
 from kelpie import Error, ErrorCode, Link
 
-
 LINKS_FILE = Path(__file__).parents[1] / "testdata" / "links.json"
 
 

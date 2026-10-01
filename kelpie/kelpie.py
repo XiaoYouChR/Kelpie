@@ -11,7 +11,6 @@ from typing import Any
 from .errors import Error, ErrorCode
 from .models import Link, Network, Progress, Settings
 
-
 PROTOCOL = 1
 MIN_ENGINE_VERSION = (0, 1, 0)
 CLOSE_TIMEOUT = 15
@@ -151,7 +150,13 @@ class Kelpie:
                     self._routes[run.id] = run
                     send(
                         self._process,
-                        {"type": "run", "run": run.id, "mode": mode, "link": str(link), "file": str(file)},
+                        {
+                            "type": "run",
+                            "run": run.id,
+                            "mode": mode,
+                            "link": str(link),
+                            "file": str(file),
+                        },
                     )
             yield run
         finally:
@@ -179,7 +184,9 @@ class Kelpie:
                     limit=STREAM_LIMIT,
                 )
             except OSError as error:
-                raise Error(ErrorCode.START_FAILED, f"cannot start {executable}: {error}") from error
+                raise Error(
+                    ErrorCode.START_FAILED, f"cannot start {executable}: {error}"
+                ) from error
             send(process, buildHello(self._dataFolder, settings, self._rateLimits))
             ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             task = asyncio.create_task(self.supervise(process, ready))
@@ -189,7 +196,9 @@ class Kelpie:
         finally:
             self._starting = None
 
-    async def supervise(self, process: asyncio.subprocess.Process, ready: asyncio.Future[None]) -> None:
+    async def supervise(
+        self, process: asyncio.subprocess.Process, ready: asyncio.Future[None]
+    ) -> None:
         stderr: deque[str] = deque(maxlen=20)
         stderrTask = asyncio.create_task(refreshStderr(process, stderr))
         routes: dict[int, Run] = {}
@@ -200,7 +209,8 @@ class Kelpie:
             process.kill()
             line = b""
             failure = Error(
-                ErrorCode.START_FAILED, f"Engine Process did not answer hello within {HANDSHAKE_TIMEOUT} s"
+                ErrorCode.START_FAILED,
+                f"Engine Process did not answer hello within {HANDSHAKE_TIMEOUT} s",
             )
         else:
             failure = parseHandshake(line) if line else None
@@ -219,7 +229,10 @@ class Kelpie:
         lastLine = stderr[-1] if stderr else f"exit code {exitCode}"
         if not isReady:
             ready.set_exception(
-                failure or Error(ErrorCode.START_FAILED, f"Engine Process exited during startup: {lastLine}")
+                failure
+                or Error(
+                    ErrorCode.START_FAILED, f"Engine Process exited during startup: {lastLine}"
+                )
             )
             return
         if self._process is process:

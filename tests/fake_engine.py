@@ -12,6 +12,7 @@ KELPIE_FAKE_SCRIPT names a JSON file:
                     or {"crash": "stderr line"}. Runs for other hashes report one progress
                     and stay open. Every run stays open after its steps until stopped.
 """
+
 import json
 import os
 import sys
@@ -31,9 +32,18 @@ def crash(line, status):
 
 def buildProgress(runId, hash, size, fields):
     return {
-        "type": "progress", "run": runId, "hash": hash, "size": size, "received": 0,
-        "downloadRate": 0, "uploadRate": 0, "uploaded": 0, "peers": 0, "activePeers": 0,
-        "unknownField": True, **fields,
+        "type": "progress",
+        "run": runId,
+        "hash": hash,
+        "size": size,
+        "received": 0,
+        "downloadRate": 0,
+        "uploadRate": 0,
+        "uploaded": 0,
+        "peers": 0,
+        "activePeers": 0,
+        "unknownField": True,
+        **fields,
     }
 
 
@@ -55,7 +65,12 @@ def main():
                 if script.get("silentOnHello"):
                     time.sleep(3600)
                 if "failed" in script:
-                    send({"type": "failed", "error": {"code": "START_FAILED", "message": script["failed"]}})
+                    send(
+                        {
+                            "type": "failed",
+                            "error": {"code": "START_FAILED", "message": script["failed"]},
+                        }
+                    )
                     sys.exit(1)
                 send({"type": "ready", "version": script.get("version", "v0.1.0"), "protocol": 1})
                 if "network" in script:

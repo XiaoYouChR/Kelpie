@@ -5,7 +5,6 @@ from urllib.parse import quote, unquote
 
 from .errors import Error, ErrorCode
 
-
 HASH_PATTERN = re.compile(r"[0-9A-Fa-f]{32}")
 SIZE_PATTERN = re.compile(r"[0-9]+")
 SCHEME = "ed2k://"

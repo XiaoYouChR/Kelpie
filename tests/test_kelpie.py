@@ -6,8 +6,8 @@ import pytest
 
 from kelpie import Error, ErrorCode, Kelpie, Link, Network, Progress, Settings
 
-
 FAKE_ENGINE = Path(__file__).with_name("fake_engine.py")
+DEFAULT_SETTINGS = Settings()
 HASH_A = "31D6CFE0D16AE931B73C59D7E0C089C0"
 HASH_B = "0123456789ABCDEF0123456789ABCDEF"
 LINK_A = Link("a.bin", 2048, HASH_A)
@@ -34,7 +34,7 @@ class Engine:
     def setScript(self, script: dict) -> None:
         self.scriptFile.write_text(json.dumps({"log": str(self.log), **script}))
 
-    def buildKelpie(self, settings: Settings = Settings()) -> Kelpie:
+    def buildKelpie(self, settings: Settings = DEFAULT_SETTINGS) -> Kelpie:
         def executable() -> Path:
             self.starts += 1
             return FAKE_ENGINE
@@ -58,14 +58,22 @@ async def collect(run) -> list[Progress]:
 
 
 def test_download_reports_progress_until_complete(engine: Engine) -> None:
-    engine.setScript({"runs": {HASH_A: [
-        {"progress": {"received": 1024}},
-        {"progress": {"received": 2048}},
-        {"ended": None},
-    ]}})
+    engine.setScript(
+        {
+            "runs": {
+                HASH_A: [
+                    {"progress": {"received": 1024}},
+                    {"progress": {"received": 2048}},
+                    {"ended": None},
+                ]
+            }
+        }
+    )
 
     async def main():
-        kelpie = engine.buildKelpie(Settings(port=4662, enableKad=False, serverLists=(Path("/s.met"),)))
+        kelpie = engine.buildKelpie(
+            Settings(port=4662, enableKad=False, serverLists=(Path("/s.met"),))
+        )
         async with kelpie.runDownload(LINK_A, Path("/out/a.bin")) as current:
             assert kelpie.isActive(HASH_A)
             progress = await collect(current)
@@ -75,14 +83,18 @@ def test_download_reports_progress_until_complete(engine: Engine) -> None:
         assert progress[-1].size == 2048
 
     run(main())
-    hello, = engine.loadMessages("hello")
+    (hello,) = engine.loadMessages("hello")
     assert hello["protocol"] == 1
     assert hello["dataFolder"] == str(engine.folder / "data")
     assert hello["settings"] == {
-        "port": 4662, "enableKad": False, "enableUpnp": True, "serverLists": ["/s.met"],
-        "nodeLists": [], "traceFile": "",
+        "port": 4662,
+        "enableKad": False,
+        "enableUpnp": True,
+        "serverLists": ["/s.met"],
+        "nodeLists": [],
+        "traceFile": "",
     }
-    runMessage, = engine.loadMessages("run")
+    (runMessage,) = engine.loadMessages("run")
     assert runMessage["mode"] == "download"
     assert runMessage["file"] == "/out/a.bin"
     assert Link.parse(runMessage["link"]) == LINK_A
@@ -124,7 +136,7 @@ def test_cancelled_run_sends_stop(engine: Engine) -> None:
         await kelpie.close()
 
     run(main())
-    runMessage, = engine.loadMessages("run")
+    (runMessage,) = engine.loadMessages("run")
     assert engine.loadMessages("stop") == [{"type": "stop", "run": runMessage["run"]}]
 
 
@@ -318,14 +330,23 @@ def test_rate_limits_are_sent_in_hello_and_live(engine: Engine) -> None:
     first, second = engine.loadMessages("hello")
     assert first["rateLimits"] == {"download": 1000, "upload": 2000}
     assert second["rateLimits"] == {"download": 0, "upload": 512}
-    assert engine.loadMessages("setRateLimits") == [{"type": "setRateLimits", "download": 0, "upload": 512}]
+    assert engine.loadMessages("setRateLimits") == [
+        {"type": "setRateLimits", "download": 0, "upload": 512}
+    ]
 
 
 def test_network_is_reported_while_the_engine_runs(engine: Engine) -> None:
-    engine.setScript({"network": {
-        "isServerConnected": True, "isHighId": False, "isKadFirewalled": True, "kadNodes": 812,
-        "isBehindCarrierNat": True,
-    }})
+    engine.setScript(
+        {
+            "network": {
+                "isServerConnected": True,
+                "isHighId": False,
+                "isKadFirewalled": True,
+                "kadNodes": 812,
+                "isBehindCarrierNat": True,
+            }
+        }
+    )
 
     async def main():
         kelpie = engine.buildKelpie()
@@ -334,7 +355,10 @@ def test_network_is_reported_while_the_engine_runs(engine: Engine) -> None:
             async for _ in current:
                 break
             assert kelpie.network == Network(
-                isServerConnected=True, isHighId=False, isKadFirewalled=True, kadNodes=812,
+                isServerConnected=True,
+                isHighId=False,
+                isKadFirewalled=True,
+                kadNodes=812,
                 isBehindCarrierNat=True,
             )
         await kelpie.close()
