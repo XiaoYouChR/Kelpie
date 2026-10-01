@@ -1,6 +1,10 @@
 package piece
 
-import "github.com/XiaoYouChR/Kelpie/internal/wire"
+import (
+	"slices"
+
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
+)
 
 const (
 	PartSize int64 = 9_728_000
@@ -80,5 +84,5 @@ func (h *FileHasher) PartHashes() []wire.Hash {
 	if len(h.fullParts) == 0 {
 		return nil
 	}
-	return append(append([]wire.Hash(nil), h.fullParts...), h.part.Digest())
+	return append(slices.Clone(h.fullParts), h.part.Digest())
 }
