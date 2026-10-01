@@ -216,8 +216,8 @@ func TestBitfieldGolden(t *testing.T) {
 	}
 	r := Reader{Rest: raw}
 	back := r.Bitfield()
-	if r.Err() != nil || !reflect.DeepEqual(back.bools(), f.bools()) || back.Count() != 3 {
-		t.Fatalf("back = %v", back.bools())
+	if r.Err() != nil || !reflect.DeepEqual(toBools(back), toBools(f)) || back.Count() != 3 {
+		t.Fatalf("back = %v", toBools(back))
 	}
 }
 
@@ -225,7 +225,7 @@ func TestBitfieldDropsTrailingBits(t *testing.T) {
 	r := Reader{Rest: []byte{0x03, 0x00, 0xFF}}
 	f := r.Bitfield()
 	if f.Len() != 3 || f.Count() != 3 || f.Has(3) {
-		t.Fatalf("bitfield = %v", f.bools())
+		t.Fatalf("bitfield = %v", toBools(f))
 	}
 	if raw := BuildBitfield(nil, f); !bytes.Equal(raw, []byte{0x03, 0x00, 0x07}) {
 		t.Fatalf("re-encoded = %x", raw)
@@ -236,7 +236,7 @@ func TestBitfieldSet(t *testing.T) {
 	f := ToBitfield(make([]bool, 12))
 	f.Set(11)
 	if !f.Has(11) || f.Has(0) || f.Has(12) || f.Has(-1) || f.Count() != 1 {
-		t.Fatalf("bitfield = %v", f.bools())
+		t.Fatalf("bitfield = %v", toBools(f))
 	}
 }
 
@@ -339,4 +339,12 @@ func TestAddressFilters(t *testing.T) {
 			t.Errorf("IsDialable(%s) = %v, want %v", endpoint, got, want)
 		}
 	}
+}
+
+func toBools(f Bitfield) []bool {
+	out := make([]bool, f.Len())
+	for i := range out {
+		out[i] = f.Has(i)
+	}
+	return out
 }

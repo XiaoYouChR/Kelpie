@@ -44,14 +44,6 @@ func (f Bitfield) Count() int {
 	return n
 }
 
-func (f Bitfield) bools() []bool {
-	out := make([]bool, f.size)
-	for i := range out {
-		out[i] = f.Has(i)
-	}
-	return out
-}
-
 // Bitfield reads a uint16 part count followed by the packed bits. A count of
 // zero is how eMule says "I have the complete file".
 func (r *Reader) Bitfield() Bitfield {

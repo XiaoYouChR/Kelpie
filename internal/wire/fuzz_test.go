@@ -57,7 +57,7 @@ func FuzzTags(f *testing.F) {
 		r = &Reader{Rest: b}
 		field := r.Bitfield()
 		field.Count()
-		field.bools()
+		toBools(field)
 		BuildBitfield(nil, field)
 	})
 }
