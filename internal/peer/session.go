@@ -57,7 +57,11 @@ type Capabilities struct {
 	EmuleVersion uint32
 	// IsEmule: the peer speaks the eMule extended protocol (CT_EMULE_VERSION
 	// in Hello or OP_EMULEINFO).
-	IsEmule                    bool
+	IsEmule bool
+	// MuleVersion is aMule's m_byEmuleVersion: 0x99 when Hello carried
+	// CT_EMULE_VERSION, else the OP_EMULEINFO version byte, else 0
+	// (BaseClient.cpp:631,884).
+	MuleVersion                byte
 	CanCompress                bool
 	SecureIdent                byte
 	ExtendedRequests           byte

@@ -391,3 +391,18 @@ func TestImpostorNeverGetsSlot(t *testing.T) {
 	q.OnConnectionGone(1)
 	matchActions(t, q.OnTick(toTime(101)), Grant{4, file})
 }
+
+func TestOldClientScoresHalf(t *testing.T) {
+	_, q := buildWorld()
+	startSlots(t, q)
+	old := buildPeer(3)
+	old.MuleVersion = 0x19
+	emuleHash := buildPeer(4)
+	emuleHash.User[5], emuleHash.User[14] = 14, 111
+	modern := buildPeer(5)
+	modern.MuleVersion = 0x99
+	matchActions(t, q.OnRequest(3, old, file, toTime(2)), SendRank{3, 1})
+	matchActions(t, q.OnRequest(4, emuleHash, file, toTime(2)), SendRank{4, 1})
+	matchActions(t, q.OnRequest(5, modern, file, toTime(12)), SendRank{5, 3})
+	matchActions(t, q.OnRequest(5, modern, file, toTime(30)), SendRank{5, 1})
+}

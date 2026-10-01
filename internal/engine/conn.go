@@ -647,10 +647,11 @@ func toPayload(p wire.Packet) int64 {
 func toUploadPeer(c *conn) upload.Peer {
 	caps := c.session.Capabilities()
 	return upload.Peer{
-		User:    c.session.UserHash(),
-		IP:      c.remote.Addr(),
-		UDPPort: caps.UDPPort,
-		IsLowID: wire.IsLowID(caps.ClientID),
+		User:        c.session.UserHash(),
+		IP:          c.remote.Addr(),
+		UDPPort:     caps.UDPPort,
+		IsLowID:     wire.IsLowID(caps.ClientID),
+		MuleVersion: caps.MuleVersion,
 	}
 }
 

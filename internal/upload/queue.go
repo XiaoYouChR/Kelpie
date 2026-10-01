@@ -29,6 +29,7 @@ const (
 	datarateWindow   = 30 * time.Second         // CUploadQueue::Process keeps 30 s of rate samples
 	autoHighQueued   = 1                        // CKnownFile::UpdateAutoUpPriority: <=1 queued is PR_HIGH
 	autoNormalQueued = 20                       // <=20 queued is PR_NORMAL, more is PR_LOW
+	oldMuleVersion   = 0x19                     // CalculateScoreInternal halves eMule 0.19 and older
 )
 
 // Peer is a downloader as the queue knows it. User and IP together are its
@@ -39,6 +40,17 @@ type Peer struct {
 	IP      netip.Addr
 	UDPPort uint16
 	IsLowID bool
+	// MuleVersion is peer.Capabilities.MuleVersion.
+	MuleVersion byte
+}
+
+// isOld is aMule's test for clients from before eMule 0.20
+// (UploadClient.cpp:144): an old eMule protocol version, or no version at all
+// from a client whose user hash marks it as eMule (GetHashType,
+// BaseClient.cpp:1743).
+func (p Peer) isOld() bool {
+	isEmuleHash := p.User[5] == 14 && p.User[14] == 111
+	return p.MuleVersion <= oldMuleVersion && (p.MuleVersion > 0 || isEmuleHash)
 }
 
 type key struct {
@@ -393,13 +405,17 @@ func (q *Queue) bestWaiter(now time.Time) *waiter {
 }
 
 // score is eMule's CUpDownClient::GetScore: seconds waited × credit ratio ×
-// file priority / 10. Banned peers and impostors of an identified user score 0
-// and are never chosen (aMule UploadClient.cpp:91).
+// file priority / 10, halved for old clients. Banned peers and impostors of an
+// identified user score 0 and are never chosen (aMule UploadClient.cpp:91).
 func (q *Queue) score(w *waiter, counts map[wire.Hash]int, now time.Time) float64 {
 	if q.isBanned(w.peer.User, w.peer.IP) || q.trust(w.peer.User, w.peer.IP) == identity.TrustImpostor {
 		return 0
 	}
-	return now.Sub(w.waitStart).Seconds() * q.ratio(w.peer.User, w.peer.IP) * filePriority(counts[w.file]) / 10
+	score := now.Sub(w.waitStart).Seconds() * q.ratio(w.peer.User, w.peer.IP) * filePriority(counts[w.file]) / 10
+	if w.peer.isOld() {
+		score /= 2
+	}
+	return score
 }
 
 // rank is eMule's GetWaitingPosition: one plus the waiters scoring higher.

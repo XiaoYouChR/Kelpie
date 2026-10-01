@@ -128,6 +128,7 @@ func (s *Session) setHello(h client.Hello) {
 		IPv6:                       h.IPv6,
 		EmuleVersion:               h.EmuleVersion,
 		IsEmule:                    h.EmuleVersion != 0,
+		MuleVersion:                toMuleVersion(h.EmuleVersion),
 		CanCompress:                h.Misc1.DataCompressionVersion > 0,
 		SecureIdent:                h.Misc1.SecureIdentVersion,
 		ExtendedRequests:           h.Misc1.ExtendedRequestsVersion,
@@ -139,6 +140,13 @@ func (s *Session) setHello(h client.Hello) {
 		HasExtendedSourcesSkipTags: h.ModMisc&client.ModMiscExtendedSourcesSkipTags != 0,
 		CryptOptions:               toCryptOptions(h.Misc2),
 	}
+}
+
+func toMuleVersion(emuleVersion uint32) byte {
+	if emuleVersion == 0 {
+		return 0
+	}
+	return 0x99
 }
 
 // toCryptOptions drops a request without support and a requirement
@@ -186,6 +194,7 @@ func (s *Session) setEmuleInfo(p client.EmuleInfo) {
 		return
 	}
 	s.caps.IsEmule = true
+	s.caps.MuleVersion = p.Version
 	for _, t := range p.Tags {
 		switch t.ID {
 		case client.InfoCompression:
