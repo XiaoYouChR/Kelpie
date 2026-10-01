@@ -86,9 +86,9 @@ func (Connect) isAction()  {}
 // peer fall back to TCP.
 type Answer interface{ isAnswer() }
 
-// User is the asking waiter's user hash, zero when the asker is not known,
-// so that the engine can obfuscate the answer for it
-// (ClientUDPSocket.cpp:185, 226).
+// ReaskAck and FileNotFound carry the asking waiter's user hash, zero when
+// the asker is not known, so that the engine can obfuscate the answer for
+// it (ClientUDPSocket.cpp:185, 226).
 type ReaskAck struct {
 	Rank int
 	User wire.Hash
@@ -100,11 +100,11 @@ func (ReaskAck) isAnswer()     {}
 func (FileNotFound) isAnswer() {}
 func (QueueFull) isAnswer()    {}
 
-// conn is the peer's connection, 0 while it has none; the engine numbers
-// connections from 1.
 type waiter struct {
-	peer          Peer
-	file          wire.Hash
+	peer Peer
+	file wire.Hash
+	// conn is the peer's connection, 0 while it has none; the engine
+	// numbers connections from 1.
 	conn          uint64
 	waitStart     time.Time
 	lastAsk       time.Time
@@ -226,7 +226,7 @@ func (q *Queue) OnRequest(conn uint64, peer Peer, file wire.Hash, now time.Time)
 		return nil
 	}
 	w := &waiter{peer: peer, file: file, conn: conn, waitStart: now, lastAsk: now}
-	if len(q.waiters) == 0 && q.canAddSlot(now, true) {
+	if len(q.waiters) == 0 && q.canAddSlot(now) {
 		return []Action{q.startSlot(w, now)}
 	}
 	q.waiters[k] = w
@@ -314,7 +314,7 @@ func (q *Queue) OnTick(now time.Time) []Action {
 		q.waiters[s.peer.key()] = w
 		actions = append(actions, SendRank{s.conn, q.rank(w, now)})
 	}
-	if len(q.waiters) > 0 && q.canAddSlot(now, false) {
+	if len(q.waiters) > 0 && q.canAddSlot(now) {
 		if w := q.bestWaiter(now); w != nil {
 			actions = append(actions, q.startSlot(w, now))
 		}
@@ -470,11 +470,9 @@ func (q *Queue) canAddNextConnect() bool {
 	return q.canAcceptSlot(n)
 }
 
-// canAddSlot is eMule's ForceNewClient.
-func (q *Queue) canAddSlot(now time.Time, allowEmptyQueue bool) bool {
-	if !allowEmptyQueue && len(q.waiters) == 0 {
-		return false
-	}
+// canAddSlot is eMule's ForceNewClient; callers check the queue first, as
+// a newcomer to an empty queue may take a slot directly.
+func (q *Queue) canAddSlot(now time.Time) bool {
 	if now.Sub(q.lastSlotStart) < slotSpacing && q.datarate < fastRate {
 		return false
 	}
