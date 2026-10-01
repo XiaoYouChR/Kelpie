@@ -209,6 +209,7 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 	}
 	if config.PacketLog != nil {
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)
+		e.ports.Transport = udpLogTransport{Transport: ports.Transport, log: e.packetLog, clock: ports.Clock}
 	}
 	e.queue = upload.BuildQueue(e.ledger.Ratio, func(wire.Hash, netip.Addr) bool { return false })
 	e.queue.SetRate(config.RateLimits.Upload)
