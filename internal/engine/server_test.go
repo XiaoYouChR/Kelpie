@@ -176,3 +176,20 @@ func TestCallbackIsObfuscated(t *testing.T) {
 		t.Fatalf("callback connection not obfuscated:\n%s", text)
 	}
 }
+
+func TestHasOtherUser(t *testing.T) {
+	endpoint := netip.MustParseAddrPort("198.51.100.5:4662")
+	known, other := wire.Hash{1}, wire.Hash{2}
+	e := &Engine{uploadEndpoints: map[uploadKey]uploadTarget{
+		{known, endpoint.Addr()}: {endpoint: endpoint},
+	}}
+	if e.hasOtherUser(endpoint, known) {
+		t.Error("the known user counts as another")
+	}
+	if !e.hasOtherUser(endpoint, other) {
+		t.Error("a different user at a known endpoint not noticed")
+	}
+	if e.hasOtherUser(netip.MustParseAddrPort("198.51.100.6:4662"), other) {
+		t.Error("an unknown endpoint has another user")
+	}
+}

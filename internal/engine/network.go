@@ -52,7 +52,7 @@ func (e *Engine) runServer(out server.Output) {
 	for _, callback := range out.ConnectPeers {
 		if e.connByEndpoint(callback.Endpoint) == nil && len(e.conns) < maxConnections {
 			var obfuscateFor wire.Hash
-			if callback.CanObfuscate {
+			if callback.CanObfuscate && !e.hasOtherUser(callback.Endpoint, callback.UserHash) {
 				obfuscateFor = callback.UserHash
 			}
 			e.openConn(callback.Endpoint, false, obfuscateFor, 0)
@@ -141,6 +141,23 @@ func toStoreServers(entries []server.Entry) []store.Server {
 		servers = append(servers, s)
 	}
 	return servers
+}
+
+// hasOtherUser tells whether a Hello from endpoint named a user other than
+// user. aMule then connects plain, since it cannot tell which hash is true
+// (ServerSocket.cpp:527-536).
+func (e *Engine) hasOtherUser(endpoint netip.AddrPort, user wire.Hash) bool {
+	hasOther := false
+	for key, target := range e.uploadEndpoints {
+		if target.endpoint != endpoint {
+			continue
+		}
+		if key.user == user {
+			return false
+		}
+		hasOther = true
+	}
+	return hasOther
 }
 
 func (e *Engine) serverConnByEndpoint(addr netip.AddrPort) *conn {
