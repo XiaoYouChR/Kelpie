@@ -120,7 +120,7 @@ func (s *Session) startFirstFile(out *Output) {
 		return
 	}
 	first := s.down.files[0].file
-	if !s.cfg.CanAskSlot(s.userHash, first) {
+	if !s.cfg.CanAskSlot(s.caps.UserHash, first) {
 		return
 	}
 	s.down.started = first

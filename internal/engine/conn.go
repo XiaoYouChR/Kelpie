@@ -181,7 +181,7 @@ func (e *Engine) refreshUploadEndpoints() {
 	connected := map[uploadKey]bool{}
 	for _, c := range e.conns {
 		if c.isHandshaken {
-			connected[uploadKey{c.session.UserHash(), c.remote.Addr()}] = true
+			connected[uploadKey{c.session.Capabilities().UserHash, c.remote.Addr()}] = true
 		}
 	}
 	maps.DeleteFunc(e.uploadEndpoints, func(k uploadKey, _ uploadTarget) bool {
@@ -392,7 +392,7 @@ func (e *Engine) onPacketSent(m packetSent) {
 		r.transfer.OnUploaded(m.payload, now)
 	}
 	if c.session != nil {
-		e.ledger.OnTransferred(c.session.UserHash(), c.remote.Addr(), m.payload, 0)
+		e.ledger.OnTransferred(c.session.Capabilities().UserHash, c.remote.Addr(), m.payload, 0)
 	}
 }
 
@@ -510,10 +510,10 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 	now := e.now()
 	switch ev := event.(type) {
 	case peer.HandshakeCompleted:
-		e.ledger.OnHello(ev.UserHash, now)
+		e.ledger.OnHello(c.session.Capabilities().UserHash, now)
 		e.onHandshake(c, ev)
 	case peer.Identified:
-		e.ledger.OnIdentified(ev.UserHash, c.remote.Addr(), ev.PublicKey)
+		e.ledger.OnIdentified(c.session.Capabilities().UserHash, c.remote.Addr(), ev.PublicKey)
 	case peer.StatusReceived:
 		if r := e.downloadByHash(ev.File); r != nil {
 			r.transfer.OnPeerParts(c.id, ev.Parts)
@@ -540,12 +540,12 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 			e.runSession(c, c.session.Request(ev.File, r.transfer.Request(c.id, ev.Count)))
 		}
 	case peer.BlockReceived:
-		e.ledger.OnTransferred(c.session.UserHash(), c.remote.Addr(), 0, int64(len(ev.Data)))
+		e.ledger.OnTransferred(c.session.Capabilities().UserHash, c.remote.Addr(), 0, int64(len(ev.Data)))
 		if r := e.downloadByHash(ev.File); r != nil {
 			e.runTransferActions(r, r.transfer.OnBlockReceived(c.id, ev.Block, ev.Data, now))
 		}
 	case peer.UploadRequested:
-		if r := e.downloadByHash(ev.File); r != nil && e.isReaskDue(r, c.session.UserHash()) {
+		if r := e.downloadByHash(ev.File); r != nil && e.isReaskDue(r, c.session.Capabilities().UserHash) {
 			e.addFile(c, r)
 		}
 		c.uploadFile, c.uploadParts = ev.File, ev.Parts
@@ -591,11 +591,12 @@ func (e *Engine) requestTree(file wire.Hash) {
 func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	c.isHandshaken = true
 	caps := c.session.Capabilities()
+	user := caps.UserHash
 	if ev.YourIP.Is4() && wire.IsLowID(e.server.ClientID()) {
 		e.publicIP = ev.YourIP
 	}
 	if caps.Port != 0 {
-		e.uploadEndpoints[uploadKey{ev.UserHash, c.remote.Addr()}] = uploadTarget{c.endpoint(), wire.CanObfuscate(caps.CryptOptions, ev.UserHash)}
+		e.uploadEndpoints[uploadKey{user, c.remote.Addr()}] = uploadTarget{c.endpoint(), wire.CanObfuscate(caps.CryptOptions, user)}
 	}
 	for _, h := range c.session.Files() {
 		if r := e.downloadByHash(h); r != nil && !c.isClosed {
@@ -603,8 +604,8 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 		}
 	}
 	if !c.isOutgoing {
-		for _, h := range e.matchKnownSource(ev.UserHash, caps) {
-			if r := e.runByHash[h]; !c.isClosed && e.isReaskDue(r, ev.UserHash) && !e.isA4AF(ev.UserHash, h) {
+		for _, h := range e.matchKnownSource(user, caps) {
+			if r := e.runByHash[h]; !c.isClosed && e.isReaskDue(r, user) && !e.isA4AF(user, h) {
 				e.addFile(c, r)
 			}
 		}
@@ -630,10 +631,10 @@ func (e *Engine) isReaskDue(r *run, user wire.Hash) bool {
 
 // addTransferPeer tells a download that a handshaken connection serves it.
 func (e *Engine) addTransferPeer(c *conn, r *run) {
-	user := c.session.UserHash()
+	caps := c.session.Capabilities()
+	user := caps.UserHash
 	r.asked[user] = e.now()
 	e.addKnownSource(r.file.Hash, transfer.Source{UserHash: user})
-	caps := c.session.Capabilities()
 	hello := transfer.Source{
 		Endpoint:     c.endpoint(),
 		ClientID:     caps.ClientID,
@@ -674,8 +675,9 @@ func (e *Engine) removeFile(c *conn, h wire.Hash, reason string) {
 // file it is for: then it is for a download that knows this peer.
 func (e *Engine) onSlotGranted(c *conn, file wire.Hash) {
 	if file == (wire.Hash{}) {
-		for _, h := range e.matchKnownSource(c.session.UserHash(), c.session.Capabilities()) {
-			if !e.isA4AF(c.session.UserHash(), h) {
+		caps := c.session.Capabilities()
+		for _, h := range e.matchKnownSource(caps.UserHash, caps) {
+			if !e.isA4AF(caps.UserHash, h) {
 				e.addFile(c, e.runByHash[h])
 			}
 		}
@@ -758,7 +760,7 @@ func toPayload(p wire.Packet) int64 {
 func toUploadPeer(c *conn) upload.Peer {
 	caps := c.session.Capabilities()
 	return upload.Peer{
-		User:        c.session.UserHash(),
+		User:        caps.UserHash,
 		IP:          c.remote.Addr(),
 		UDPPort:     caps.UDPPort,
 		IsLowID:     wire.IsLowID(caps.ClientID),
@@ -810,7 +812,7 @@ func (e *Engine) buildPeerSources(file wire.Hash, asking *conn, askerParts piece
 			!isSeed && !slices.Contains(c.session.Files(), file) {
 			continue
 		}
-		src := peer.Source{Port: caps.Port, UserHash: c.session.UserHash(), IPv6: caps.IPv6, CryptOptions: caps.CryptOptions}
+		src := peer.Source{Port: caps.Port, UserHash: caps.UserHash, IPv6: caps.IPv6, CryptOptions: caps.CryptOptions}
 		switch {
 		case !wire.IsLowID(caps.ClientID) && c.remote.Addr().Is4():
 			src.IPv4 = c.remote.Addr()

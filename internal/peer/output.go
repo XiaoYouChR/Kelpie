@@ -28,17 +28,11 @@ type Event interface{ isEvent() }
 
 // HandshakeCompleted: both hellos are exchanged and Capabilities is final.
 // YourIP is the address the peer sees us at, a vote rather than a fact.
-type HandshakeCompleted struct {
-	UserHash wire.Hash
-	YourIP   netip.Addr
-}
+type HandshakeCompleted struct{ YourIP netip.Addr }
 
 // Identified: the peer proved it holds PublicKey. The engine checks the key
-// against the one it stored for UserHash, if any.
-type Identified struct {
-	UserHash  wire.Hash
-	PublicKey []byte
-}
+// against the one it stored for the peer's user hash, if any.
+type Identified struct{ PublicKey []byte }
 
 // StatusReceived carries which parts of File the peer has.
 type StatusReceived struct {

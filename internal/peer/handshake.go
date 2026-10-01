@@ -107,7 +107,7 @@ func (s *Session) onGreeting(p wire.Packet, out *Output) {
 	// The engine attaches a connection's files to their transfers on
 	// HandshakeCompleted, so the files the peer cannot serve go first.
 	s.rejectLargeFiles(out)
-	out.add(HandshakeCompleted{UserHash: s.userHash, YourIP: hello.YourIP})
+	out.add(HandshakeCompleted{YourIP: hello.YourIP})
 	s.sendIdentState(out)
 	for _, d := range s.down.files {
 		s.sendFileRequest(d, out)
@@ -116,8 +116,8 @@ func (s *Session) onGreeting(p wire.Packet, out *Output) {
 }
 
 func (s *Session) setHello(h client.Hello) {
-	s.userHash = h.UserHash
 	s.caps = Capabilities{
+		UserHash:           h.UserHash,
 		ClientID:           h.ClientID,
 		Port:               h.Port,
 		Server:             h.Server,
@@ -280,7 +280,7 @@ func (s *Session) onSignature(p client.Signature, out *Output) {
 	challenge := identity.Challenge{Value: s.ident.challenge, IPKind: identity.IPKind(p.IPKind), SignerIP: s.remote.Addr(), VerifierIP: s.toPublicIP()}
 	s.ident.challenge = 0
 	if s.ident.peerKey != nil && identity.MatchSignature(s.ident.peerKey, p.Signature, s.cfg.Self.PublicKey(), challenge) {
-		out.add(Identified{UserHash: s.userHash, PublicKey: s.ident.peerKey})
+		out.add(Identified{PublicKey: s.ident.peerKey})
 	}
 }
 

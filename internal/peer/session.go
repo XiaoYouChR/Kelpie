@@ -62,6 +62,7 @@ type Config struct {
 
 // Capabilities is what the peer told us about itself in the handshake.
 type Capabilities struct {
+	UserHash   wire.Hash
 	ClientID   uint32
 	Port       uint16
 	Server     netip.AddrPort
@@ -102,7 +103,6 @@ type Session struct {
 	cfg        Config
 	remote     netip.AddrPort
 	greeting   greeting
-	userHash   wire.Hash
 	caps       Capabilities
 	features   features
 	lastActive time.Time
@@ -155,7 +155,6 @@ func buildSession(cfg Config, remote netip.AddrPort, now time.Time) *Session {
 }
 
 func (s *Session) Capabilities() Capabilities { return s.caps }
-func (s *Session) UserHash() wire.Hash        { return s.userHash }
 
 // IsUploading tells whether the peer holds an upload slot with us.
 func (s *Session) IsUploading() bool { return s.up.slot != nil }

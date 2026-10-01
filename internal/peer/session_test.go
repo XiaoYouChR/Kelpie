@@ -205,7 +205,7 @@ func TestHandshakeBothDirections(t *testing.T) {
 	l := buildLink(t)
 	ha := lastOf[HandshakeCompleted](t, l.a)
 	hb := lastOf[HandshakeCompleted](t, l.b)
-	if ha.UserHash != l.b.s.cfg.Self.UserHash || hb.UserHash != l.a.s.cfg.Self.UserHash {
+	if l.a.s.Capabilities().UserHash != l.b.s.cfg.Self.UserHash || l.b.s.Capabilities().UserHash != l.a.s.cfg.Self.UserHash {
 		t.Fatal("user hashes not exchanged")
 	}
 	if ha.YourIP != l.a.s.cfg.PublicIP || hb.YourIP != l.b.s.cfg.PublicIP {
@@ -229,7 +229,7 @@ func TestHandshakeBothDirections(t *testing.T) {
 
 func TestIdentityBothWays(t *testing.T) {
 	l := buildLink(t)
-	if id := lastOf[Identified](t, l.a); id.UserHash != l.b.s.cfg.Self.UserHash || !bytes.Equal(id.PublicKey, l.b.s.cfg.Self.PublicKey()) {
+	if id := lastOf[Identified](t, l.a); !bytes.Equal(id.PublicKey, l.b.s.cfg.Self.PublicKey()) {
 		t.Fatalf("a identified %+v", id)
 	}
 	lastOf[Identified](t, l.b)

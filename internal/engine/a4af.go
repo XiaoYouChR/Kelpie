@@ -52,7 +52,7 @@ func (e *Engine) a4afClientByUser(user wire.Hash) *a4afClient {
 
 // onSlotAsked records that c sent OP_STARTUPLOADREQ for file.
 func (e *Engine) onSlotAsked(c *conn, file wire.Hash) {
-	client := e.a4afClientByUser(c.session.UserHash())
+	client := e.a4afClientByUser(c.session.Capabilities().UserHash)
 	client.file = file
 	client.lastAsked = e.now()
 	client.endpoint = c.endpoint()
@@ -122,7 +122,7 @@ func (e *Engine) onNoNeededParts(c *conn, file wire.Hash) {
 		return
 	}
 	r.transfer.OnNoNeededParts(c.id)
-	user := c.session.UserHash()
+	user := c.session.Capabilities().UserHash
 	target := e.swapTarget(c, user, file, false)
 	if target == nil {
 		return
@@ -144,7 +144,7 @@ func (e *Engine) onFileRejected(c *conn, file wire.Hash) {
 	if len(c.session.Files()) > 0 || c.isClosed {
 		return
 	}
-	if target := e.swapTarget(c, c.session.UserHash(), file, true); target != nil {
+	if target := e.swapTarget(c, c.session.Capabilities().UserHash, file, true); target != nil {
 		e.addFile(c, target)
 	}
 }
