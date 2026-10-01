@@ -271,6 +271,7 @@ func (e *Engine) runTransfers(now time.Time) {
 		order = append(order, e.runs[(e.budgetCursor+i)%n])
 	}
 	e.budgetCursor++
+	server, _ := e.server.Login()
 	for _, r := range order {
 		if r.transfer == nil || e.runByHash[r.file.Hash] != r {
 			continue
@@ -278,7 +279,7 @@ func (e *Engine) runTransfers(now time.Time) {
 		actions := r.transfer.OnTick(transfer.Tick{
 			Now:           now,
 			ConnectBudget: budget,
-			Server:        e.server.Current(),
+			Server:        server,
 			IsFirewalled:  e.isFirewalled(),
 			PublicIP:      e.publicIP,
 			Port:          uint16(e.tcpPort),

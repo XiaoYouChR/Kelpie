@@ -271,14 +271,15 @@ func (e *Engine) startConnLeaves(c *conn) {
 }
 
 func (e *Engine) buildPeerConfig(c *conn) peer.Config {
+	server, clientID := e.server.Login()
 	cfg := peer.Config{
 		Self:        e.self,
 		Version:     e.config.Version,
-		ClientID:    e.server.ClientID(),
+		ClientID:    clientID,
 		PublicIP:    e.publicIP,
 		Port:        uint16(e.tcpPort),
 		UDPPort:     uint16(e.udpPort),
-		Server:      e.server.Current(),
+		Server:      server,
 		Pipeline:    pipeline,
 		Random:      e.ports.Rand,
 		ShareByHash: e.shareByHash,
@@ -592,7 +593,7 @@ func (e *Engine) requestTree(file wire.Hash) {
 func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	c.isHandshaken = true
 	caps := c.session.Capabilities()
-	if ev.YourIP.Is4() && wire.IsLowID(e.server.ClientID()) {
+	if _, clientID := e.server.Login(); ev.YourIP.Is4() && wire.IsLowID(clientID) {
 		e.publicIP = ev.YourIP
 	}
 	if caps.Port != 0 {

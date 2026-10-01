@@ -596,9 +596,10 @@ func (e *Engine) refreshNetwork() {
 
 // buildNetwork is the Network now; without Kad, kadStatus stays zero.
 func (e *Engine) buildNetwork() Network {
+	_, clientID := e.server.Login()
 	network := Network{
-		IsServerConnected: e.server.ClientID() != 0,
-		IsHighID:          !wire.IsLowID(e.server.ClientID()),
+		IsServerConnected: clientID != 0,
+		IsHighID:          !wire.IsLowID(clientID),
 		IsKadFirewalled:   e.kadStatus.IsFirewalled,
 		KadNodes:          e.kadStatus.Nodes,
 	}
@@ -609,7 +610,8 @@ func (e *Engine) buildNetwork() Network {
 // isFirewalled is whether peers cannot connect to us: neither the server nor
 // Kad says we are reachable.
 func (e *Engine) isFirewalled() bool {
-	return wire.IsLowID(e.server.ClientID()) && (e.kad == nil || e.kadStatus.IsFirewalled)
+	_, clientID := e.server.Login()
+	return wire.IsLowID(clientID) && (e.kad == nil || e.kadStatus.IsFirewalled)
 }
 
 func (e *Engine) runNAT(mapPorts openNAT) {
@@ -628,7 +630,7 @@ func (e *Engine) onNATOpened(m natOpened) {
 	}
 	e.unmapNAT = m.unmap
 	e.mappedIP = m.ip
-	if isPublicIPv4(m.ip) && !e.publicIP.IsValid() && wire.IsLowID(e.server.ClientID()) {
+	if _, clientID := e.server.Login(); isPublicIPv4(m.ip) && !e.publicIP.IsValid() && wire.IsLowID(clientID) {
 		e.publicIP = m.ip
 	}
 }
