@@ -329,10 +329,10 @@ func TestReaskTiming(t *testing.T) {
 			at := func(d time.Duration) []transfer.Action {
 				return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 1})
 			}
-			if got := at(fileReaskTime - 3*time.Minute); len(got) != 0 {
-				t.Fatalf("actions 3 min before reask: %+v", got)
+			if got := at(fileReaskTime - 20*time.Second); len(got) != 0 {
+				t.Fatalf("actions 20 s before reask: %+v", got)
 			}
-			udp := at(fileReaskTime - 2*time.Minute + time.Second)
+			udp := at(fileReaskTime - 20*time.Second + time.Second)
 			wantUDP := 0
 			if test.canReaskUDP {
 				wantUDP = 1
@@ -341,7 +341,7 @@ func TestReaskTiming(t *testing.T) {
 				t.Fatalf("near reask: %+v", udp)
 			}
 			if test.canReaskUDP {
-				h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, start.Add(fileReaskTime-2*time.Minute+2*time.Second)))
+				h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, start.Add(fileReaskTime-20*time.Second+2*time.Second)))
 				if got := at(fileReaskTime); countActions[transfer.Connect](got) != 0 {
 					t.Fatalf("TCP reask after a UDP answer: %+v", got)
 				}

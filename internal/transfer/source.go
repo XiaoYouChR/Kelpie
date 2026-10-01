@@ -20,12 +20,11 @@ const (
 	// it last told us its rank, with no further connect guard
 	// (PartFile.cpp:1604-1621).
 	fileReaskTime = 1300 * time.Second
-	// udpReaskLead is the window before the TCP reask in which
-	// CPartFile::Process tries OP_REASKFILEPING instead.
-	udpReaskLead = 2 * time.Minute
-	// udpReaskLast is CPartFile::Process's lower bound: no UDP reask within
-	// one second of the TCP reask.
-	udpReaskLast = time.Second
+	// udpReaskLead is the window before the TCP reask in which a queued
+	// source is reasked with OP_REASKFILEPING instead: aMule tries it once
+	// FILEREASKTIME-20000 ms have passed (PartFile.cpp:1594-1601), eMule two
+	// minutes before.
+	udpReaskLead = 20 * time.Second
 	// callbackTimeout is CONNECTION_TIMEOUT, how long a callback may take.
 	callbackTimeout = 40 * time.Second
 	// deadSourceTime is DeadSourceList.cpp's BLOCKTIME for a file's own list.
@@ -585,7 +584,7 @@ func (t *Transfer) runSource(s *source, tick Tick, budget *int) []Action {
 	if !s.lastAsked.IsZero() {
 		untilReask = max(0, fileReaskTime-now.Sub(s.lastAsked))
 	}
-	if s.state == stateQueued && untilReask < udpReaskLead && untilReask > udpReaskLast && t.canReaskUDP(s, tick) {
+	if s.state == stateQueued && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s, tick) {
 		s.isUDPPending = true
 		s.udpReasks++
 		return []Action{ReaskUDP{Endpoint: netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort)}}
