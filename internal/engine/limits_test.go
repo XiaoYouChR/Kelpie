@@ -84,7 +84,6 @@ func (w *world) openRawPeer(ip string, n *node) *rawPeer {
 		PublicIP:      addr,
 		Port:          peerPort,
 		UDPPort:       peerPort + 10,
-		Pipeline:      pipeline,
 		Random:        rand.New(rand.NewPCG(7, 7)),
 		ShareByHash:   func(wire.Hash) (peer.Share, bool) { return peer.Share{}, false },
 		SourcesByHash: func(wire.Hash, piece.Set) []peer.Source { return nil },

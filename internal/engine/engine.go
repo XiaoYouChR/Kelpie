@@ -54,10 +54,7 @@ const (
 	maxNewConnections   = 20
 	newConnectionWindow = 5 * time.Second
 	connectTimeout      = 40 * time.Second // CONNECTION_TIMEOUT
-	// pipeline is how many blocks a download keeps requested from one peer;
-	// eMule asks for three ranges per OP_REQUESTPARTS.
-	pipeline    = 3
-	diskWorkers = 4
+	diskWorkers         = 4
 	// openPortTries bounds the search for a port free for both TCP and UDP
 	// when the caller asks for any port.
 	openPortTries = 8
