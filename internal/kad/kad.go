@@ -234,9 +234,9 @@ func (k *Kad) Run(ctx context.Context) error {
 			k.saveState(c)
 			return nil
 		case d := <-reads:
-			if p, senderKey, isKad := c.parseDatagram(d); isKad {
+			if p, keys, isKad := c.parseDatagram(d); isKad {
 				if p != nil {
-					out = c.onPacket(d.Addr, p, senderKey, k.cfg.Clock.Now())
+					out = c.onPacket(d.Addr, p, keys, k.cfg.Clock.Now())
 				}
 			} else {
 				select {
@@ -332,23 +332,23 @@ func (c *core) buildDatagram(d datagram) []byte {
 // parseDatagram reads a plain or obfuscated Kad datagram. isKad is false
 // for datagrams that belong to the engine; p is nil for a Kad datagram that
 // does not decode.
-func (c *core) parseDatagram(d Datagram) (p wire.Packet, senderKey uint32, isKad bool) {
+func (c *core) parseDatagram(d Datagram) (p wire.Packet, k keys, isKad bool) {
 	data := d.Data
 	if len(data) == 0 {
-		return nil, 0, false
+		return nil, keys{}, false
 	}
 	if data[0] != wire.ProtocolKad && data[0] != wire.ProtocolKadPacked {
 		kd, ok := obfuscation.ParseKadDatagram(data, buildID(nil, c.id), obfuscation.BuildKadVerifyKey(c.udpKey, d.Addr.Addr()))
 		if !ok || (kd.Packet[0] != wire.ProtocolKad && kd.Packet[0] != wire.ProtocolKadPacked) {
-			return nil, 0, false
+			return nil, keys{}, false
 		}
-		data, senderKey = kd.Packet, kd.SenderKey
+		data, k = kd.Packet, keys{sender: kd.SenderKey, receiver: kd.ReceiverKey}
 	}
 	p, ok := parsePacket(data)
 	if !ok {
-		return nil, 0, true
+		return nil, keys{}, true
 	}
-	return p, senderKey, true
+	return p, k, true
 }
 
 // parsePacket decodes a Kad datagram, inflating 0xE5 packets.

@@ -139,12 +139,12 @@ func (s *sim) drain() {
 		if to == nil || to.isUDPFirewalled && !to.sentTo[d.from.Addr()] {
 			continue
 		}
-		p, senderKey, isKad := to.c.parseDatagram(Datagram{Addr: d.from, Data: d.data})
+		p, keys, isKad := to.c.parseDatagram(Datagram{Addr: d.from, Data: d.data})
 		if !isKad || p == nil {
 			s.t.Fatalf("undecodable datagram %x", d.data)
 		}
 		s.isObfuscated = s.isObfuscated || d.data[0] != wire.ProtocolKad
-		s.record(to, to.c.onPacket(d.from, p, senderKey, s.now))
+		s.record(to, to.c.onPacket(d.from, p, keys, s.now))
 	}
 }
 
