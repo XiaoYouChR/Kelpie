@@ -21,6 +21,11 @@ its own.
 
 _Avoid_: daemon, sidecar
 
+## Link
+
+An eD2k file link: name, size, and hash. It names the file a Run is about;
+the Run's own file path decides where it is written.
+
 ## Transfer
 
 One eD2k file identified by its hash, together with its Durable State: resume
@@ -48,29 +53,35 @@ coalesced away.
 Why a Run failed, as a code and a message. It is the only way a failure
 reaches the caller, and it always arrives through the Run.
 
+## Source
+
+A peer that may have parts of a Transfer's file, as a link, a server, Kad,
+another peer, or the peer itself announced it.
+
 ## Settings
 
-The startup settings the caller chooses: port, Kad, UPnP, and the local server
-list and node list files. Kelpie reads them again each time it starts the
-Engine Process.
+The startup settings the caller chooses: port, Kad, port mapping on the home
+gateway, the local server list and node list files, and an optional trace
+file. Kelpie reads them again each time it starts the Engine Process.
 
 ## Rate Limit
 
-A session-wide cap on download or upload bytes per second; 0 means unlimited.
-It counts every byte on peer connections, protocol overhead included, so the
-observed rate never exceeds it. Server and Kad traffic is not limited. Rate
-Limits change while running and survive Engine Process restarts.
+A cap on download or upload bytes per second across all Transfers; 0 means
+unlimited. It counts every byte on peer connections, protocol overhead
+included, so the observed rate never exceeds it. Server, Kad, and other UDP
+traffic is not limited. Rate Limits change while running and survive Engine
+Process restarts.
 
 ## Network
 
 Whether a server connection is established, whether the server gave a HighID
 (other peers can connect to us) or a LowID, whether Kad sees us as firewalled,
 how many Kad nodes are known, and whether a carrier NAT keeps us from a HighID,
-as last reported. It is absent while no
-Engine Process runs.
+as last reported. It is absent while no Engine Process runs.
 
 ## Durable State
 
 Protocol state owned and persisted by the Engine Process: identity, credits,
-Kad nodes, and each Transfer's Durable State. The caller chooses its parent
-folder but does not read, write, or interpret its contents.
+Kad identity and nodes, what it learned about the listed servers, and each
+Transfer's Durable State. The caller chooses its folder but does not read,
+write, or interpret its contents.
