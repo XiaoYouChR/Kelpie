@@ -63,17 +63,11 @@ func (p Peer) key() key { return key{p.User, p.IP} }
 // Action is something the engine must do on the queue's behalf.
 type Action interface{ isAction() }
 
-// Grant tells the engine to send OP_ACCEPTUPLOADREQ on Conn and serve File.
-type Grant struct {
-	Conn uint64
-	File wire.Hash
-}
+// Grant tells the engine to send OP_ACCEPTUPLOADREQ on Conn.
+type Grant struct{ Conn uint64 }
 
 // Revoke tells the engine to stop serving Conn and send OP_OUTOFPARTREQS.
-type Revoke struct {
-	Conn   uint64
-	Reason Reason
-}
+type Revoke struct{ Conn uint64 }
 
 // SendRank tells the engine to send OP_QUEUERANKING with Rank on Conn.
 type SendRank struct {
@@ -89,15 +83,6 @@ func (Grant) isAction()    {}
 func (Revoke) isAction()   {}
 func (SendRank) isAction() {}
 func (Connect) isAction()  {}
-
-type Reason int
-
-const (
-	// ReasonRotated means the slot used its share; the peer is queued again.
-	ReasonRotated Reason = iota
-	ReasonBanned
-	ReasonFileRemoved
-)
 
 // Answer is the reply to a UDP reask; nil means stay silent, which makes the
 // peer fall back to TCP.
@@ -117,23 +102,23 @@ func (ReaskAck) isAnswer()     {}
 func (FileNotFound) isAnswer() {}
 func (QueueFull) isAnswer()    {}
 
+// conn is the peer's connection, 0 while it has none; the engine numbers
+// connections from 1.
 type waiter struct {
 	peer          Peer
 	file          wire.Hash
 	conn          uint64
-	isConnected   bool
 	waitStart     time.Time
 	lastAsk       time.Time
 	isNextConnect bool
 }
 
 type slot struct {
-	peer        Peer
-	file        wire.Hash
-	conn        uint64
-	isConnected bool
-	start       time.Time
-	sent        int64
+	peer  Peer
+	file  wire.Hash
+	conn  uint64
+	start time.Time
+	sent  int64
 }
 
 type sample struct {
@@ -197,8 +182,8 @@ func (q *Queue) RemoveFile(file wire.Hash) []Action {
 			kept = append(kept, s)
 			continue
 		}
-		if s.isConnected {
-			actions = append(actions, Revoke{s.conn, ReasonFileRemoved})
+		if s.conn != 0 {
+			actions = append(actions, Revoke{s.conn})
 		}
 	}
 	q.slots = kept
@@ -208,14 +193,14 @@ func (q *Queue) RemoveFile(file wire.Hash) []Action {
 // OnConnected reports that a TCP connection to peer finished its hello.
 func (q *Queue) OnConnected(conn uint64, peer Peer, now time.Time) []Action {
 	if s := q.slotByKey(peer.key()); s != nil {
-		s.peer, s.conn, s.isConnected = peer, conn, true
-		return []Action{Grant{conn, s.file}}
+		s.peer, s.conn = peer, conn
+		return []Action{Grant{conn}}
 	}
 	w := q.waiters[peer.key()]
 	if w == nil {
 		return nil
 	}
-	w.peer, w.conn, w.isConnected = peer, conn, true
+	w.peer, w.conn = peer, conn
 	if w.isNextConnect && q.canAddNextConnect() {
 		return []Action{q.startSlot(w, now)}
 	}
@@ -229,11 +214,11 @@ func (q *Queue) OnRequest(conn uint64, peer Peer, file wire.Hash, now time.Time)
 	}
 	k := peer.key()
 	if s := q.slotByKey(k); s != nil {
-		s.peer, s.file, s.conn, s.isConnected = peer, file, conn, true
-		return []Action{Grant{conn, file}}
+		s.peer, s.file, s.conn = peer, file, conn
+		return []Action{Grant{conn}}
 	}
 	if w := q.waiters[k]; w != nil {
-		w.peer, w.file, w.conn, w.isConnected, w.lastAsk = peer, file, conn, true, now
+		w.peer, w.file, w.conn, w.lastAsk = peer, file, conn, now
 		if w.isNextConnect && q.canAddNextConnect() {
 			return []Action{q.startSlot(w, now)}
 		}
@@ -242,7 +227,7 @@ func (q *Queue) OnRequest(conn uint64, peer Peer, file wire.Hash, now time.Time)
 	if !q.removeDuplicates(peer) || !q.canQueue(peer, file) {
 		return nil
 	}
-	w := &waiter{peer: peer, file: file, conn: conn, isConnected: true, waitStart: now, lastAsk: now}
+	w := &waiter{peer: peer, file: file, conn: conn, waitStart: now, lastAsk: now}
 	if len(q.waiters) == 0 && q.canAddSlot(now, true) {
 		return []Action{q.startSlot(w, now)}
 	}
@@ -277,11 +262,11 @@ func (q *Queue) OnReask(ip netip.Addr, udpPort uint16, file wire.Hash, now time.
 // again; it asks anew like any other peer.
 func (q *Queue) OnConnectionGone(conn uint64) {
 	for _, w := range q.waiters {
-		if w.isConnected && w.conn == conn {
-			w.isConnected = false
+		if w.conn == conn {
+			w.conn = 0
 		}
 	}
-	q.slots = slices.DeleteFunc(q.slots, func(s *slot) bool { return s.isConnected && s.conn == conn })
+	q.slots = slices.DeleteFunc(q.slots, func(s *slot) bool { return s.conn == conn })
 }
 
 // HasPeer reports whether the peer is waiting or holds a slot, so the queue
@@ -313,11 +298,13 @@ func (q *Queue) OnTick(now time.Time) []Action {
 	kept := q.slots[:0]
 	for _, s := range q.slots {
 		switch {
-		case !s.isConnected && now.Sub(s.start) > connectTimeout:
+		case s.conn == 0 && now.Sub(s.start) > connectTimeout:
 		case q.isBanned(s.peer.User, s.peer.IP):
-			actions = append(actions, Revoke{s.conn, ReasonBanned})
-		case s.isConnected && len(q.waiters) > 0 && (s.sent > sessionMaxTrans || now.Sub(s.start) > sessionMaxTime):
-			actions = append(actions, Revoke{s.conn, ReasonRotated})
+			if s.conn != 0 {
+				actions = append(actions, Revoke{s.conn})
+			}
+		case s.conn != 0 && len(q.waiters) > 0 && (s.sent > sessionMaxTrans || now.Sub(s.start) > sessionMaxTime):
+			actions = append(actions, Revoke{s.conn})
 			rotated = append(rotated, s)
 		default:
 			kept = append(kept, s)
@@ -325,7 +312,7 @@ func (q *Queue) OnTick(now time.Time) []Action {
 	}
 	q.slots = kept
 	for _, s := range rotated {
-		w := &waiter{peer: s.peer, file: s.file, conn: s.conn, isConnected: true, waitStart: now, lastAsk: now}
+		w := &waiter{peer: s.peer, file: s.file, conn: s.conn, waitStart: now, lastAsk: now}
 		q.waiters[s.peer.key()] = w
 		actions = append(actions, SendRank{s.conn, q.rank(w, now)})
 	}
@@ -339,13 +326,13 @@ func (q *Queue) OnTick(now time.Time) []Action {
 
 func (q *Queue) startSlot(w *waiter, now time.Time) Action {
 	delete(q.waiters, w.peer.key())
-	s := &slot{peer: w.peer, file: w.file, conn: w.conn, isConnected: w.isConnected, start: now}
+	s := &slot{peer: w.peer, file: w.file, conn: w.conn, start: now}
 	q.slots = append(q.slots, s)
 	q.lastSlotStart = now
-	if !s.isConnected {
+	if s.conn == 0 {
 		return Connect{s.peer}
 	}
-	return Grant{s.conn, s.file}
+	return Grant{s.conn}
 }
 
 // removeDuplicates applies AddClientToQueue's rule for one user hash waiting
@@ -409,7 +396,7 @@ func (q *Queue) bestWaiter(now time.Time) *waiter {
 		if score <= bestScore {
 			continue
 		}
-		if !w.peer.IsLowID || w.isConnected {
+		if !w.peer.IsLowID || w.conn != 0 {
 			best, bestScore = w, score
 		} else if !w.isNextConnect && score > bestLowScore {
 			bestLow, bestLowScore = w, score
@@ -588,7 +575,7 @@ func (q *Queue) slotByKey(k key) *slot {
 
 func (q *Queue) slotByConn(conn uint64) *slot {
 	for _, s := range q.slots {
-		if s.isConnected && s.conn == conn {
+		if s.conn == conn {
 			return s
 		}
 	}
