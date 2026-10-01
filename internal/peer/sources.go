@@ -54,7 +54,7 @@ func (s *Session) RequestSources(file wire.Hash, now time.Time) Output {
 		return out
 	}
 	version := byte(client.SourceExchange2Version)
-	if s.caps.HasExtendedSources {
+	if s.features.hasExtendedSources {
 		version = client.ExtendedSourcesVersion
 	}
 	s.sx.lastRequest = now
@@ -75,7 +75,7 @@ func (s *Session) SendSources(file wire.Hash, sources []Source) Output {
 		return out
 	}
 	delete(s.sx.answers, file)
-	isExtended := version == client.ExtendedSourcesVersion && s.caps.HasExtendedSources
+	isExtended := version == client.ExtendedSourcesVersion && s.features.hasExtendedSources
 	if !isExtended {
 		version = min(version, client.SourceExchange2Version)
 	}
@@ -181,7 +181,7 @@ func (s *Session) toExtendedSource(src Source) client.Source {
 	default:
 		record.ClientID = wire.IPv6Sentinel
 	}
-	if s.caps.HasExtendedSourcesSkipTags {
+	if s.features.hasExtendedSourcesSkipTags {
 		record.UserHash, record.CryptOptions = src.UserHash, src.CryptOptions
 	}
 	return record

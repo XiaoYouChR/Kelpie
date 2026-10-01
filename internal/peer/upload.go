@@ -85,7 +85,7 @@ func (s *Session) StopUpload() Output {
 // SendQueueRank tells a waiting peer its place in our upload queue.
 func (s *Session) SendQueueRank(rank uint32) Output {
 	var out Output
-	if s.caps.IsEmule {
+	if s.features.isEmule {
 		out.send(client.QueueRanking{Rank: uint16(min(rank, 0xFFFF))})
 	} else {
 		out.send(client.QueueRank{Rank: rank})
@@ -107,7 +107,7 @@ func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Outp
 		s.up.sent = s.up.sent[1:]
 	}
 	isLarge := s.up.sizes[file] > largeFileSize
-	if s.caps.CanCompress {
+	if s.features.canCompress {
 		if packed := toDeflated(data); len(packed) < len(data) {
 			for chunk := range slices.Chunk(packed, partPacketSize) {
 				if isLarge {
@@ -204,7 +204,7 @@ func (s *Session) onMultiPacket(id client.FileIdentifier, requests []wire.Packet
 		case client.AICHFileHashRequest:
 			// eMule ignores it once the root travels in the identifier
 			// (ListenSocket.cpp:1206).
-			if isExt2 || s.caps.HasFileIdentifiers {
+			if isExt2 || s.features.hasFileIdentifiers {
 				continue
 			}
 			if root, ok := s.onRootRequest(file, share, out); ok {

@@ -82,7 +82,7 @@ func (s *Session) onRecoveryAnswer(p client.AICHAnswer, out *Output) {
 // our root, or false. aMule answers only peers that support AICH
 // (ClientTCPSocket.cpp:1078).
 func (s *Session) onRootRequest(file wire.Hash, share Share, out *Output) (client.AICHFileHashAnswer, bool) {
-	if !s.caps.HasAICH {
+	if !s.features.hasAICH {
 		return client.AICHFileHashAnswer{}, false
 	}
 	if share.Tree == nil {

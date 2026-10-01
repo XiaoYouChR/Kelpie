@@ -99,28 +99,30 @@ func (s *Session) onGreeting(p wire.Packet, out *Output) {
 func (s *Session) setHello(h client.Hello) {
 	s.userHash = h.UserHash
 	s.caps = Capabilities{
-		ClientID:                   h.ClientID,
-		Port:                       h.Port,
-		Server:                     h.Server,
-		UDPPort:                    h.UDPPort,
-		KadPort:                    h.KadPort,
-		UDPVersion:                 h.Misc1.UDPVersion,
-		KadVersion:                 h.Misc2.KadVersion,
-		IPv6:                       h.IPv6,
-		IsEmule:                    h.EmuleVersion != 0,
-		MuleVersion:                toMuleVersion(h.EmuleVersion),
-		CanCompress:                h.Misc1.DataCompressionVersion > 0,
-		SecureIdent:                h.Misc1.SecureIdentVersion,
-		ExtendedRequests:           h.Misc1.ExtendedRequestsVersion,
-		HasMultiPacket:             h.Misc1.HasMultiPacket,
-		HasExtMultiPacket:          h.Misc2.HasExtMultiPacket,
-		HasFileIdentifiers:         h.Misc2.HasFileIdentifiers,
-		HasLargeFiles:              h.Misc2.HasLargeFiles,
-		HasSourceExchange2:         h.Misc2.HasSourceExchange2,
-		HasExtendedSources:         h.ModMisc&client.ModMiscExtendedSources != 0,
-		HasExtendedSourcesSkipTags: h.ModMisc&client.ModMiscExtendedSourcesSkipTags != 0,
-		HasAICH:                    h.Misc1.AICHVersion&aichVersion != 0,
-		CryptOptions:               toCryptOptions(h.Misc2),
+		ClientID:           h.ClientID,
+		Port:               h.Port,
+		Server:             h.Server,
+		UDPPort:            h.UDPPort,
+		KadPort:            h.KadPort,
+		UDPVersion:         h.Misc1.UDPVersion,
+		KadVersion:         h.Misc2.KadVersion,
+		IPv6:               h.IPv6,
+		MuleVersion:        toMuleVersion(h.EmuleVersion),
+		HasSourceExchange2: h.Misc2.HasSourceExchange2,
+		CryptOptions:       toCryptOptions(h.Misc2),
+	}
+	s.features = features{
+		isEmule:                    h.EmuleVersion != 0,
+		canCompress:                h.Misc1.DataCompressionVersion > 0,
+		secureIdent:                h.Misc1.SecureIdentVersion,
+		extendedRequests:           h.Misc1.ExtendedRequestsVersion,
+		hasMultiPacket:             h.Misc1.HasMultiPacket,
+		hasExtMultiPacket:          h.Misc2.HasExtMultiPacket,
+		hasFileIdentifiers:         h.Misc2.HasFileIdentifiers,
+		hasLargeFiles:              h.Misc2.HasLargeFiles,
+		hasExtendedSources:         h.ModMisc&client.ModMiscExtendedSources != 0,
+		hasExtendedSourcesSkipTags: h.ModMisc&client.ModMiscExtendedSourcesSkipTags != 0,
+		hasAICH:                    h.Misc1.AICHVersion&aichVersion != 0,
 	}
 }
 
@@ -174,23 +176,23 @@ func (s *Session) sendEmuleInfoAnswer(out *Output) {
 }
 
 func (s *Session) setEmuleInfo(p client.EmuleInfo) {
-	if s.caps.IsEmule {
+	if s.features.isEmule {
 		return
 	}
-	s.caps.IsEmule = true
+	s.features.isEmule = true
 	s.caps.MuleVersion = p.Version
 	for _, t := range p.Tags {
 		switch t.ID {
 		case client.InfoCompression:
-			s.caps.CanCompress = t.Uint > 0
+			s.features.canCompress = t.Uint > 0
 		case client.InfoUDPVersion:
 			s.caps.UDPVersion = byte(t.Uint)
 		case client.InfoUDPPort:
 			s.caps.UDPPort = uint16(t.Uint)
 		case client.InfoExtendedRequest:
-			s.caps.ExtendedRequests = byte(t.Uint)
+			s.features.extendedRequests = byte(t.Uint)
 		case client.InfoFeatures:
-			s.caps.SecureIdent = byte(t.Uint) & 0x03
+			s.features.secureIdent = byte(t.Uint) & 0x03
 		}
 	}
 }
@@ -208,7 +210,7 @@ type identState struct {
 // sendIdentState always asks for the key too: the engine compares the key
 // that signed against the one it stored, so the session needs no ledger.
 func (s *Session) sendIdentState(out *Output) {
-	if s.caps.SecureIdent == 0 {
+	if s.features.secureIdent == 0 {
 		return
 	}
 	for s.ident.challenge == 0 {
@@ -218,7 +220,7 @@ func (s *Session) sendIdentState(out *Output) {
 }
 
 func (s *Session) onIdentState(p client.SecureIdentState, out *Output) {
-	reply := identity.BuildReply(identity.State(p.State), s.caps.SecureIdent, wire.IsLowID(s.cfg.ClientID), s.ident.peerKey != nil)
+	reply := identity.BuildReply(identity.State(p.State), s.features.secureIdent, wire.IsLowID(s.cfg.ClientID), s.ident.peerKey != nil)
 	if reply.ShouldSendKey {
 		out.send(client.PublicKey{Key: s.cfg.Self.PublicKey()})
 	}

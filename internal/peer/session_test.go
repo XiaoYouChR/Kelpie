@@ -181,12 +181,12 @@ func TestHandshakeBothDirections(t *testing.T) {
 	if ha.YourIP != l.a.s.cfg.PublicIP || hb.YourIP != l.b.s.cfg.PublicIP {
 		t.Fatalf("YourIP votes %v %v", ha.YourIP, hb.YourIP)
 	}
-	caps := l.a.s.Capabilities()
-	if !caps.IsEmule || !caps.CanCompress || !caps.HasSourceExchange2 ||
-		!caps.HasExtMultiPacket || !caps.HasLargeFiles || !caps.HasExtendedSources || caps.UDPVersion != 4 ||
-		caps.SecureIdent != identity.Support || caps.IPv6 != l.b.s.cfg.IPv6 || caps.UDPPort != 4672 ||
+	caps, features := l.a.s.Capabilities(), l.a.s.features
+	if !features.isEmule || !features.canCompress || !caps.HasSourceExchange2 ||
+		!features.hasExtMultiPacket || !features.hasLargeFiles || !features.hasExtendedSources || caps.UDPVersion != 4 ||
+		features.secureIdent != identity.Support || caps.IPv6 != l.b.s.cfg.IPv6 || caps.UDPPort != 4672 ||
 		caps.CryptOptions != wire.CryptSupported|wire.CryptRequested {
-		t.Fatalf("capabilities %+v", caps)
+		t.Fatalf("capabilities %+v, features %+v", caps, features)
 	}
 	hello := l.sent[0].(client.Hello)
 	if hello.Name != "Kelpie" || hello.EmuleVersion != 0x4B<<24|1<<17|2<<10|3<<7 || caps.MuleVersion != 0x99 {
@@ -827,8 +827,8 @@ func TestEmuleInfoBeforeHelloAnswer(t *testing.T) {
 	if _, ok := out.Events[0].(HandshakeCompleted); !ok {
 		t.Fatalf("events %+v", out.Events)
 	}
-	if caps := s.Capabilities(); !caps.IsEmule || caps.MuleVersion != 0x30 || !caps.CanCompress || caps.UDPPort != 4672 || caps.Port != 6346 {
-		t.Fatalf("capabilities %+v", caps)
+	if caps := s.Capabilities(); !s.features.isEmule || caps.MuleVersion != 0x30 || !s.features.canCompress || caps.UDPPort != 4672 || caps.Port != 6346 {
+		t.Fatalf("capabilities %+v, features %+v", caps, s.features)
 	}
 }
 

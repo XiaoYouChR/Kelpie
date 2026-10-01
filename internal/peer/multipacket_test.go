@@ -23,7 +23,7 @@ func sentOf[T wire.Packet](t *testing.T, l *link) T {
 
 func TestFileRequestUsesFileIdentifier(t *testing.T) {
 	l := buildLink(t)
-	if !l.a.s.Capabilities().HasFileIdentifiers || !l.b.s.Capabilities().HasFileIdentifiers {
+	if !l.a.s.features.hasFileIdentifiers || !l.b.s.features.hasFileIdentifiers {
 		t.Fatal("file identifiers not advertised")
 	}
 	size := piece.PartSize + 1000

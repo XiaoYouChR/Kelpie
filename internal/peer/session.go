@@ -59,27 +59,32 @@ type Capabilities struct {
 	UDPVersion byte
 	KadVersion byte
 	IPv6       netip.Addr
-	// IsEmule: the peer speaks the eMule extended protocol (CT_EMULE_VERSION
-	// in Hello or OP_EMULEINFO).
-	IsEmule bool
 	// MuleVersion is aMule's m_byEmuleVersion: 0x99 when Hello carried
 	// CT_EMULE_VERSION, else the OP_EMULEINFO version byte, else 0
 	// (BaseClient.cpp:631,884).
-	MuleVersion                byte
-	CanCompress                bool
-	SecureIdent                byte
-	ExtendedRequests           byte
-	HasMultiPacket             bool
-	HasExtMultiPacket          bool
-	HasFileIdentifiers         bool
-	HasLargeFiles              bool
-	HasSourceExchange2         bool
-	HasExtendedSources         bool
-	HasExtendedSourcesSkipTags bool
-	HasAICH                    bool
+	MuleVersion        byte
+	HasSourceExchange2 bool
 	// CryptOptions is the peer's obfuscation setting from its Hello, in
 	// Source's layout.
 	CryptOptions byte
+}
+
+// features are the peer's protocol extensions that only decide the shape of
+// the packets the session builds.
+type features struct {
+	// isEmule: the peer speaks the eMule extended protocol (CT_EMULE_VERSION
+	// in Hello or OP_EMULEINFO).
+	isEmule                    bool
+	canCompress                bool
+	secureIdent                byte
+	extendedRequests           byte
+	hasMultiPacket             bool
+	hasExtMultiPacket          bool
+	hasFileIdentifiers         bool
+	hasLargeFiles              bool
+	hasExtendedSources         bool
+	hasExtendedSourcesSkipTags bool
+	hasAICH                    bool
 }
 
 type Session struct {
@@ -89,6 +94,7 @@ type Session struct {
 	isHandshaken bool
 	userHash     wire.Hash
 	caps         Capabilities
+	features     features
 	lastActive   time.Time
 	timeout      time.Duration
 	// earlyEmuleInfo is an OP_EMULEINFO that came before the peer's Hello.

@@ -177,7 +177,7 @@ func (s *Session) sendFileRequests(out *Output) {
 }
 
 func (s *Session) sendFileRequest(file wire.Hash, d *download, out *Output) {
-	if d.size > largeFileSize && !s.caps.HasLargeFiles {
+	if d.size > largeFileSize && !s.features.hasLargeFiles {
 		s.removeFile(file, out)
 		out.add(FileRejected{File: file})
 		return
@@ -185,7 +185,7 @@ func (s *Session) sendFileRequest(file wire.Hash, d *download, out *Output) {
 	request := client.FileRequest{Hash: file}
 	// eMule reads these extensions by the version the sender advertised,
 	// which for us is client.ExtendedRequestsVersion.
-	if s.caps.ExtendedRequests > 0 {
+	if s.features.extendedRequests > 0 {
 		request.HasParts, request.Parts = true, toBitfield(d.parts, d.size)
 		request.HasCompleteSources = true
 	}
@@ -196,7 +196,7 @@ func (s *Session) sendFileRequest(file wire.Hash, d *download, out *Output) {
 	}
 	// With file identifiers the root comes in the answer's identifier
 	// (DownloadClient.cpp:385-391).
-	if s.caps.HasAICH && !s.caps.HasFileIdentifiers {
+	if s.features.hasAICH && !s.features.hasFileIdentifiers {
 		requests = append(requests, client.AICHFileHashRequest{Hash: file})
 	}
 	s.sendMultiPacket(file, d.size, requests, out)
@@ -206,11 +206,11 @@ func (s *Session) sendFileRequest(file wire.Hash, d *download, out *Output) {
 // peer supports, as eMule picks it (DownloadClient.cpp:316-400).
 func (s *Session) sendMultiPacket(file wire.Hash, size int64, requests []wire.Packet, out *Output) {
 	switch {
-	case s.caps.HasFileIdentifiers:
+	case s.features.hasFileIdentifiers:
 		out.send(client.MultiPacketExt2{File: client.FileIdentifier{Hash: file, Size: uint64(size)}, Requests: requests})
-	case s.caps.HasExtMultiPacket:
+	case s.features.hasExtMultiPacket:
 		out.send(client.MultiPacketExt{Hash: file, Size: uint64(size), Requests: requests})
-	case s.caps.HasMultiPacket:
+	case s.features.hasMultiPacket:
 		out.send(client.MultiPacket{Hash: file, Requests: requests})
 	default:
 		out.send(requests...)
