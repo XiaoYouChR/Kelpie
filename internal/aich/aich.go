@@ -21,8 +21,11 @@ var blocksPerPart = piece.BlockCount(piece.PartSize, 0)
 // Hasher computes the leaf hashes of the data written to it, which starts at
 // a part border. Its zero value is ready to use.
 type Hasher struct {
-	block  hash.Hash
-	offset int64
+	block hash.Hash
+	// index is the block being hashed within its part, length the bytes of
+	// it hashed so far.
+	index  int
+	length int64
 	leaves []wire.AICHHash
 }
 
@@ -32,15 +35,17 @@ func (h *Hasher) Write(data []byte) (int, error) {
 		h.block = sha1.New()
 	}
 	for len(data) > 0 {
-		inPart := h.offset % piece.PartSize
-		blockEnd := min(inPart/piece.BlockSize*piece.BlockSize+piece.BlockSize, piece.PartSize)
-		n := min(int64(len(data)), blockEnd-inPart)
+		// Every part but the file's last is full, and the last ends with the data.
+		block := piece.BlockOf(piece.PartSize, 0, h.index)
+		n := min(int64(len(data)), block.End-block.Begin-h.length)
 		h.block.Write(data[:n])
-		h.offset += n
+		h.length += n
 		data = data[n:]
-		if inPart+n == blockEnd {
+		if h.length == block.End-block.Begin {
 			h.leaves = append(h.leaves, toAICHHash(h.block))
 			h.block.Reset()
+			h.length = 0
+			h.index = (h.index + 1) % blocksPerPart
 		}
 	}
 	return written, nil
@@ -48,7 +53,7 @@ func (h *Hasher) Write(data []byte) (int, error) {
 
 // Leaves lists the hash of every block, the last one possibly short.
 func (h *Hasher) Leaves() []wire.AICHHash {
-	if h.offset%piece.PartSize%piece.BlockSize == 0 {
+	if h.length == 0 {
 		return h.leaves
 	}
 	return append(h.leaves, toAICHHash(h.block))
