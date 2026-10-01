@@ -313,12 +313,10 @@ func buildIdleEngine(t *testing.T, clock *clock.Fake) (*Engine, *run) {
 		asked:    map[wire.Hash]time.Time{},
 	}
 	e := &Engine{
-		ports:        seams{Clock: clock},
-		runByHash:    map[wire.Hash]*run{file.Hash: r},
-		runs:         []*run{r},
-		sourceUsers:  map[wire.Hash]map[wire.Hash]bool{},
-		sourceLowIDs: map[lowIDKey]map[wire.Hash]bool{},
-		a4afClients:  map[wire.Hash]*a4afClient{},
+		ports:       seams{Clock: clock},
+		runByHash:   map[wire.Hash]*run{file.Hash: r},
+		runs:        []*run{r},
+		a4afClients: map[wire.Hash]*a4afClient{},
 	}
 	return e, r
 }
@@ -328,22 +326,10 @@ func buildIdleEngine(t *testing.T, clock *clock.Fake) (*Engine, *run) {
 func TestPeerMapsAreBounded(t *testing.T) {
 	clock := clock.BuildFake(start)
 	e, r := buildIdleEngine(t, clock)
-	var sources []transfer.Source
 	for i := range 2000 {
 		user := wire.Hash{byte(i), byte(i >> 8), 1}
-		addr := netip.AddrFrom4([4]byte{198, 51, byte(100 + i>>8), byte(i)})
-		sources = append(sources, transfer.Source{Endpoint: netip.AddrPortFrom(addr, 4662), UserHash: user})
 		r.asked[user] = clock.Now()
 		e.a4afClients[user] = &a4afClient{file: r.file.Hash, lastAsked: clock.Now(), suspended: map[wire.Hash]time.Time{}}
-	}
-	for _, src := range sources {
-		e.addKnownSource(r.file.Hash, src)
-	}
-	r.transfer.OnSourcesFound(sources, transfer.ChannelExchange, clock.Now())
-
-	e.refreshKnownSources()
-	if got, want := len(e.sourceUsers), len(r.transfer.Sources()); got != want || want != 400 {
-		t.Fatalf("%d known users for %d sources", got, want)
 	}
 
 	clock.Advance(fileReaskTime)

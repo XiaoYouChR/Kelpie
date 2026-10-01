@@ -562,7 +562,7 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		e.queue.OnConnectionGone(c.id)
 	case peer.SourcesFound:
 		if r := e.downloadByHash(ev.File); r != nil {
-			e.addSources(r, toExchangeSources(ev.Sources), transfer.ChannelExchange)
+			e.runTransferActions(r, r.transfer.OnSourcesFound(toExchangeSources(ev.Sources), transfer.ChannelExchange, now))
 		}
 	case peer.RootReceived:
 		if r := e.downloadByHash(ev.File); r != nil {
@@ -637,7 +637,6 @@ func (e *Engine) isReaskDue(r *run, user wire.Hash) bool {
 func (e *Engine) addTransferPeer(c *conn, r *run) {
 	user := c.session.UserHash()
 	r.asked[user] = e.now()
-	e.addKnownSource(r.file.Hash, transfer.Source{UserHash: user})
 	caps := c.session.Capabilities()
 	hello := transfer.Source{
 		Endpoint:     c.endpoint(),

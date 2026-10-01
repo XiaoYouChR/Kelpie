@@ -662,13 +662,11 @@ func (t *Transfer) requestConnect(s *source, budget *int) []Action {
 	return []Action{action}
 }
 
-// Sources lists the sources the transfer keeps.
-func (t *Transfer) Sources() []Source {
-	sources := make([]Source, len(t.sources))
-	for i, s := range t.sources {
-		sources[i] = s.Source
-	}
-	return sources
+// MatchSource tells whether the transfer keeps found as a source; found
+// names it as for OnSourcesFound: by user hash, else by LowID client id and
+// server, else by endpoint.
+func (t *Transfer) MatchSource(found Source) bool {
+	return t.matchingSource(found) != nil
 }
 
 // removeExpired forgets bans that ended, and the senders of connections

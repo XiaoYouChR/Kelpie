@@ -66,7 +66,7 @@ func (e *Engine) runServer(actions []server.Action) {
 				channel = transfer.ChannelGlobalServer
 			}
 			if r := e.downloadByHash(a.File); r != nil {
-				e.addSources(r, toServerSources(a.Sources), channel)
+				e.runTransferActions(r, r.transfer.OnSourcesFound(toServerSources(a.Sources), channel, e.now()))
 			}
 		case server.IDChanged:
 			e.serverAddr = a.Server
@@ -227,7 +227,7 @@ func (e *Engine) buildKadWanted() kad.Wanted {
 
 func (e *Engine) onKadSources(found kad.SourcesFound) {
 	if r := e.downloadByHash(found.Hash); r != nil {
-		e.addSources(r, toKadSources(found.Sources), transfer.ChannelKad)
+		e.runTransferActions(r, r.transfer.OnSourcesFound(toKadSources(found.Sources), transfer.ChannelKad, e.now()))
 	}
 }
 

@@ -139,19 +139,12 @@ type Engine struct {
 	// them.
 	runs            []*run
 	runByHash       map[wire.Hash]*run
-	sourceUsers     map[wire.Hash]map[wire.Hash]bool
-	sourceLowIDs    map[lowIDKey]map[wire.Hash]bool
 	uploadEndpoints map[uploadKey]uploadTarget
 	a4afClients     map[wire.Hash]*a4afClient
 	recentConnects  []time.Time
 	budgetCursor    int
 	lastSecond      time.Time
 	lastSave        time.Time
-}
-
-type lowIDKey struct {
-	clientID uint32
-	server   netip.AddrPort
 }
 
 type uploadKey struct {
@@ -206,8 +199,6 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 		disk:            buildLeafQueue[diskJob](caps.disk),
 		conns:           map[uint64]*conn{},
 		runByHash:       map[wire.Hash]*run{},
-		sourceUsers:     map[wire.Hash]map[wire.Hash]bool{},
-		sourceLowIDs:    map[lowIDKey]map[wire.Hash]bool{},
 		uploadEndpoints: map[uploadKey]uploadTarget{},
 		a4afClients:     map[wire.Hash]*a4afClient{},
 		buddy:           buddy{incoming: map[netip.Addr]incomingBuddy{}},
@@ -578,7 +569,6 @@ func (e *Engine) onTick() {
 	}
 	e.runTransfers(now)
 	e.refreshUploadEndpoints()
-	e.refreshKnownSources()
 	e.refreshAsked()
 	e.refreshA4AF()
 	e.runServer(e.server.OnTick(now, e.buildServerWanted(), e.publicIP))
