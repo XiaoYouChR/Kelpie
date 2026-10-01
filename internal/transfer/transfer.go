@@ -70,9 +70,6 @@ type Options struct {
 	Random *rand.Rand
 }
 
-// kadRepublishTime is eMule's KADEMLIAREPUBLISHTIMES (5 hours).
-const kadRepublishTime = 5 * time.Hour
-
 type Transfer struct {
 	file       link.File
 	path       string
@@ -91,8 +88,6 @@ type Transfer struct {
 	hashSetPeer       uint64
 	hashSetAskedPeers map[uint64]bool
 	aich              aichState
-
-	lastPublish time.Time
 
 	sources []*source
 	peers   map[uint64]*source
@@ -346,13 +341,4 @@ func (t *Transfer) requestHashSet() []Action {
 		}
 	}
 	return nil
-}
-
-func (t *Transfer) runPublish(now time.Time) []Action {
-	parts := t.picker.verifiedParts()
-	if parts.Count() == 0 || !t.lastPublish.IsZero() && now.Sub(t.lastPublish) < kadRepublishTime {
-		return nil
-	}
-	t.lastPublish = now
-	return []Action{Publish{Parts: parts}}
 }

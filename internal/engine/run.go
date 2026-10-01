@@ -19,15 +19,14 @@ import (
 // run is one open Run. transfer is nil while a seed's file is being
 // checked against the link.
 type run struct {
-	id        RunID
-	mode      Mode
-	file      link.File
-	path      string
-	handle    disk.File
-	transfer  *transfer.Transfer
-	share     peer.Share
-	published piece.Set
-	progress  Progress
+	id       RunID
+	mode     Mode
+	file     link.File
+	path     string
+	handle   disk.File
+	transfer *transfer.Transfer
+	share    peer.Share
+	progress Progress
 	// asked maps each user we sent the file request to the last time we did.
 	asked map[wire.Hash]time.Time
 	// isSyncing is set while a complete download is flushed to the device;
@@ -347,8 +346,6 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			if c := e.conns[a.Peer]; c != nil && c.session != nil {
 				e.runSession(c, c.session.RequestHashSet(r.file.Hash))
 			}
-		case transfer.Publish:
-			r.published = a.Parts
 		case transfer.Write:
 			e.disk.send(diskJob{kind: jobWrite, run: r.id, file: r.handle, block: a.Block, data: a.Data})
 		case transfer.HashPart:

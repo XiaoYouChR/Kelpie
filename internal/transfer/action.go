@@ -49,9 +49,6 @@ type RequestSources struct{ Peer uint64 }
 // RequestHashSet asks a connected peer for the file's part hashes.
 type RequestHashSet struct{ Peer uint64 }
 
-// Publish announces the parts we can share, to the server and to Kad.
-type Publish struct{ Parts piece.Set }
-
 // Write stores a received block on disk; the engine answers with OnBlockWritten
 // or OnDiskFailed.
 type Write struct {
@@ -113,7 +110,6 @@ func (RequestServerCallback) isAction() {}
 func (RequestKadCallback) isAction()    {}
 func (RequestSources) isAction()        {}
 func (RequestHashSet) isAction()        {}
-func (Publish) isAction()               {}
 func (Write) isAction()                 {}
 func (HashPart) isAction()              {}
 func (Close) isAction()                 {}

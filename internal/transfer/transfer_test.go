@@ -491,7 +491,7 @@ func TestSeedMode(t *testing.T) {
 	if got := h.transfer.Outcome(); got.Status != transfer.StatusRunning {
 		t.Fatalf("seed of a complete file: %+v", got)
 	}
-	if got := h.tick(transfer.Tick{ConnectBudget: 5, Server: endpoint(1)}); len(got) != 1 || countActions[transfer.Publish](got) != 1 {
+	if got := h.tick(transfer.Tick{ConnectBudget: 5, Server: endpoint(1)}); len(got) != 0 {
 		t.Fatalf("seed tick: %+v", got)
 	}
 	h.transfer.OnUploaded(1000, start)

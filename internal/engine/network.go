@@ -199,7 +199,7 @@ func (e *Engine) buildServerWanted() []server.Wanted {
 			Size:       uint64(r.file.Size),
 			Name:       r.file.Name,
 			IsComplete: r.share.Parts.IsFull(),
-			IsShared:   r.published.Count() > 0,
+			IsShared:   r.share.Parts.Count() > 0,
 			Sources:    r.progress.Peers,
 		})
 	}
@@ -217,7 +217,7 @@ func (e *Engine) buildKadWanted() kad.Wanted {
 		if r.mode == ModeDownload {
 			wanted.Find = append(wanted.Find, kad.Search{Hash: r.file.Hash, Size: r.file.Size, Sources: r.progress.Peers})
 		}
-		if r.published.Count() > 0 {
+		if r.share.Parts.Count() > 0 {
 			wanted.Publish = append(wanted.Publish, kad.Publish{Hash: r.file.Hash, Size: r.file.Size})
 		}
 	}
