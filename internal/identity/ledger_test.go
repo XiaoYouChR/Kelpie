@@ -179,3 +179,20 @@ func TestHelloRenewsLastSeen(t *testing.T) {
 		t.Fatalf("renewed credit expired: %+v", got)
 	}
 }
+
+func TestTrustByUser(t *testing.T) {
+	ledger := BuildLedger([]Credit{{User: alice, PublicKey: keyA}}, today)
+	if got := ledger.TrustByUser(alice, home); got != TrustUnproven {
+		t.Fatalf("before identification %v", got)
+	}
+	ledger.OnIdentified(alice, home)
+	if got := ledger.TrustByUser(alice, home); got != TrustIdentified {
+		t.Fatalf("identified address %v", got)
+	}
+	if got := ledger.TrustByUser(alice, away); got != TrustImpostor {
+		t.Fatalf("other address %v", got)
+	}
+	if got := ledger.TrustByUser(wire.Hash{9}, home); got != TrustUnproven {
+		t.Fatalf("unknown user %v", got)
+	}
+}

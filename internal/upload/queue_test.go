@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/identity"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
@@ -16,18 +17,30 @@ var (
 )
 
 type world struct {
-	ratios map[wire.Hash]float64
-	banned map[wire.Hash]bool
+	ratios     map[wire.Hash]float64
+	banned     map[wire.Hash]bool
+	identified map[wire.Hash]netip.Addr
 }
 
 func buildWorld() (*world, *Queue) {
-	w := &world{ratios: map[wire.Hash]float64{}, banned: map[wire.Hash]bool{}}
+	w := &world{ratios: map[wire.Hash]float64{}, banned: map[wire.Hash]bool{}, identified: map[wire.Hash]netip.Addr{}}
 	q := BuildQueue(
 		func(user wire.Hash, _ netip.Addr) float64 {
 			if r, ok := w.ratios[user]; ok {
 				return r
 			}
 			return 1
+		},
+		func(user wire.Hash, ip netip.Addr) identity.Trust {
+			at, ok := w.identified[user]
+			switch {
+			case !ok:
+				return identity.TrustUnproven
+			case at == ip:
+				return identity.TrustIdentified
+			default:
+				return identity.TrustImpostor
+			}
 		},
 		func(user wire.Hash, _ netip.Addr) bool { return w.banned[user] },
 	)
@@ -331,4 +344,50 @@ func TestSlotCountFollowsRate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// movePeer is peer n's user hash at peer m's address.
+func movePeer(n, m int) Peer {
+	p := buildPeer(n)
+	p.IP = buildPeer(m).IP
+	return p
+}
+
+func TestSameUserFromTwoAddressesUnproven(t *testing.T) {
+	_, q := buildWorld()
+	startSlots(t, q)
+	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(2)), SendRank{3, 1})
+	matchActions(t, q.OnRequest(4, buildPeer(4), file, toTime(3)), SendRank{4, 2})
+	matchActions(t, q.OnRequest(5, movePeer(3, 9), file, toTime(4)))
+	matchActions(t, q.OnRequest(4, buildPeer(4), file, toTime(5)), SendRank{4, 1})
+	matchActions(t, q.OnRequest(5, movePeer(3, 9), file, toTime(6)), SendRank{5, 2})
+}
+
+func TestSameUserFromTwoAddressesIdentifiedWaiterStays(t *testing.T) {
+	w, q := buildWorld()
+	startSlots(t, q)
+	w.identified[buildPeer(3).User] = buildPeer(3).IP
+	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(2)), SendRank{3, 1})
+	matchActions(t, q.OnRequest(5, movePeer(3, 9), file, toTime(4)))
+	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(5)), SendRank{3, 1})
+}
+
+func TestSameUserFromTwoAddressesIdentifiedNewcomerReplaces(t *testing.T) {
+	w, q := buildWorld()
+	startSlots(t, q)
+	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(2)), SendRank{3, 1})
+	matchActions(t, q.OnRequest(4, buildPeer(4), file, toTime(3)), SendRank{4, 2})
+	w.identified[buildPeer(3).User] = buildPeer(9).IP
+	matchActions(t, q.OnRequest(5, movePeer(3, 9), file, toTime(4)), SendRank{5, 2})
+	matchActions(t, q.OnRequest(4, buildPeer(4), file, toTime(5)), SendRank{4, 1})
+}
+
+func TestImpostorNeverGetsSlot(t *testing.T) {
+	w, q := buildWorld()
+	startSlots(t, q)
+	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(2)), SendRank{3, 1})
+	w.identified[buildPeer(3).User] = buildPeer(9).IP
+	matchActions(t, q.OnRequest(4, buildPeer(4), file, toTime(100)), SendRank{4, 1})
+	q.OnConnectionGone(1)
+	matchActions(t, q.OnTick(toTime(101)), Grant{4, file})
 }

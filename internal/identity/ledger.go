@@ -97,6 +97,29 @@ func (l *Ledger) OnHello(user wire.Hash, now time.Time) {
 	l.accountByUser(user).credit.LastSeen = now
 }
 
+// Trust is how far a user at an address has proven its user hash.
+type Trust byte
+
+const (
+	TrustUnproven Trust = iota
+	TrustIdentified
+	// TrustImpostor: the user hash was proven from another address, so this
+	// address is not that user (aMule's IS_IDBADGUY, ClientCredits.cpp:219).
+	TrustImpostor
+)
+
+func (l *Ledger) TrustByUser(user wire.Hash, ip netip.Addr) Trust {
+	a, ok := l.accounts[user]
+	switch {
+	case !ok || a.state != identVerified:
+		return TrustUnproven
+	case a.verifiedIP == ip:
+		return TrustIdentified
+	default:
+		return TrustImpostor
+	}
+}
+
 // PublicKeyByUser is the key a signature from user must be checked against:
 // the stored key if any, otherwise the key the user offered. Nil when neither
 // is known, in which case the request is StateKeyAndSignatureNeeded.
