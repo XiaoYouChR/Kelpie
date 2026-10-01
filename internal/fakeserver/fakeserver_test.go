@@ -212,6 +212,10 @@ func TestGlobalSourcesOverUDP(t *testing.T) {
 			t.Errorf("sources of %v = %+v", f.Hash, f.Sources)
 		}
 	}
+	found = request(packet.GlobGetSources{Files: []wire.Hash{fileB, {0xCC}}}).(packet.GlobFoundSources)
+	if len(found.Files) != 1 || found.Files[0].Hash != fileB {
+		t.Fatalf("found by hash alone = %+v", found)
+	}
 }
 
 func TestCallbackRelay(t *testing.T) {

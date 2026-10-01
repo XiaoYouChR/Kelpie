@@ -31,6 +31,7 @@ const (
 	opFoundSourcesObfu      byte = 0x44
 
 	opGlobGetSources2  byte = 0x94
+	opGlobGetSources   byte = 0x9A
 	opGlobServStatReq  byte = 0x96
 	opGlobServStatRes  byte = 0x97
 	opGlobFoundSources byte = 0x9B
@@ -98,6 +99,8 @@ func ParseUDP(protocol, opcode byte, body []byte) (wire.Packet, error) {
 	r := &wire.Reader{Rest: body}
 	var p wire.Packet
 	switch opcode {
+	case opGlobGetSources:
+		p = parseGlobGetSources(r)
 	case opGlobGetSources2:
 		p = parseGlobGetSources2(r)
 	case opGlobFoundSources:

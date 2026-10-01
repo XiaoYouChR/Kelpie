@@ -250,3 +250,32 @@ func TestGlobFoundSources(t *testing.T) {
 		t.Fatal("accepted sources from an unknown sender")
 	}
 }
+
+// A server that takes OP_GLOBGETSOURCES but not OP_GLOBGETSOURCES2 is
+// asked by hash alone, 31 files a packet and 35 a series, as aMule does.
+func TestUDPSearchVersionOne(t *testing.T) {
+	entries := []Entry{
+		{Endpoint: ep("1.0.0.1:4661")},
+		{Endpoint: ep("1.0.0.2:4661"), UDPFlags: packet.UDPFlagGetSources},
+	}
+	wanted := append(downloads(40), Wanted{File: fileHash(99), Size: 5 << 30})
+	s, _ := loggedIn(t, entries, highID, 0, wanted)
+	var counts []int
+	asked := map[wire.Hash]bool{}
+	for now := start; now.Before(start.Add(10 * time.Second)); now = now.Add(time.Second) {
+		for _, d := range s.OnTick(now, wanted).SendUDP {
+			if g, ok := d.Packet.(packet.GlobGetSources); ok && d.To == ep("1.0.0.2:4665") {
+				counts = append(counts, len(g.Files))
+				for _, h := range g.Files {
+					asked[h] = true
+				}
+			}
+		}
+	}
+	if !reflect.DeepEqual(counts, []int{maxFilesPerUDPPacket, maxRequestsPerServer - maxFilesPerUDPPacket}) {
+		t.Fatalf("packets of %v files", counts)
+	}
+	if asked[fileHash(99)] {
+		t.Fatal("asked about a large file without large-file support")
+	}
+}

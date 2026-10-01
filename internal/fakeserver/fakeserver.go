@@ -317,16 +317,14 @@ func (s *Server) runUDP(ctx context.Context) {
 		}
 		var reply wire.Packet
 		switch p := p.(type) {
+		case packet.GlobGetSources:
+			reply = s.buildFound(p.Files)
 		case packet.GlobGetSources2:
-			var found packet.GlobFoundSources
+			var files []wire.Hash
 			for _, f := range p.Files {
-				if sources := s.sourcesByFile(f.Hash, nil); len(sources) > 0 {
-					found.Files = append(found.Files, packet.FoundSources{Hash: f.Hash, Sources: sources})
-				}
+				files = append(files, f.Hash)
 			}
-			if len(found.Files) > 0 {
-				reply = found
-			}
+			reply = s.buildFound(files)
 		case packet.GlobServStatReq:
 			status := s.status()
 			reply = packet.GlobServStatRes{
@@ -343,6 +341,20 @@ func (s *Server) runUDP(ctx context.Context) {
 		}
 		s.udp.WriteTo(wire.BuildPacketDatagram(nil, reply), from)
 	}
+}
+
+// buildFound answers a global source query; nil when no file has sources.
+func (s *Server) buildFound(files []wire.Hash) wire.Packet {
+	var found packet.GlobFoundSources
+	for _, f := range files {
+		if sources := s.sourcesByFile(f, nil); len(sources) > 0 {
+			found.Files = append(found.Files, packet.FoundSources{Hash: f, Sources: sources})
+		}
+	}
+	if len(found.Files) == 0 {
+		return nil
+	}
+	return found
 }
 
 // runDelay waits out Config.Delay; it reports false when ctx ended first.

@@ -77,6 +77,7 @@ func TestTCPRoundTrip(t *testing.T) {
 func TestUDPRoundTrip(t *testing.T) {
 	packets := []wire.Packet{
 		GlobGetSources2{Files: []GetSources{{Hash: fileHash, Size: 100}, {Hash: userHash, Size: 5 << 30}}},
+		GlobGetSources{Files: []wire.Hash{fileHash, userHash}},
 		GlobFoundSources{Files: []FoundSources{{Hash: fileHash, Sources: []Source{{ClientID: 1, Port: 2}}}}},
 		GlobFoundSources{Files: []FoundSources{
 			{Hash: fileHash, Sources: []Source{{ClientID: 1, Port: 2}, {ClientID: 3, Port: 4}}},
