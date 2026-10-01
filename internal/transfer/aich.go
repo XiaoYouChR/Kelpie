@@ -40,11 +40,9 @@ func (HashBlocks) isAction()      {}
 // aichState is the file's AICH root and the repairs of parts that failed
 // their MD4 check.
 type aichState struct {
-	root      wire.AICHHash
-	isTrusted bool
-	// isLinked: the root came with the link, aMule's AICH_VERIFIED; votes do
-	// not change it.
-	isLinked bool
+	// linkedRoot came with the link, aMule's AICH_VERIFIED; votes do not
+	// change it.
+	linkedRoot wire.AICHHash
 	// isBroken: a repair found every block good in a part MD4 rejected, so
 	// the root cannot be right (aMule AICH_ERROR, PartFile.cpp:3970-3979).
 	isBroken bool
@@ -64,16 +62,37 @@ type rootVote struct {
 }
 
 func buildAICHState(root wire.AICHHash, random *rand.Rand) aichState {
-	s := aichState{
-		roots:    map[uint64]wire.AICHHash{},
-		asked:    map[int]uint64{},
-		verified: map[int][]wire.AICHHash{},
-		random:   random,
+	return aichState{
+		linkedRoot: root,
+		roots:      map[uint64]wire.AICHHash{},
+		asked:      map[int]uint64{},
+		verified:   map[int][]wire.AICHHash{},
+		random:     random,
 	}
-	if root != (wire.AICHHash{}) {
-		s.root, s.isTrusted, s.isLinked = root, true, true
+}
+
+func (s *aichState) isLinked() bool {
+	return s.linkedRoot != (wire.AICHHash{})
+}
+
+// root is the linked root, or else the one the most prefixes voted for,
+// first come on a tie, and tells whether it is trusted.
+func (s *aichState) root() (wire.AICHHash, bool) {
+	if s.isLinked() {
+		return s.linkedRoot, !s.isBroken
 	}
-	return s
+	if len(s.votes) == 0 {
+		return wire.AICHHash{}, false
+	}
+	total, best := 0, 0
+	for i, v := range s.votes {
+		total += len(v.prefixes)
+		if len(v.prefixes) > len(s.votes[best].prefixes) {
+			best = i
+		}
+	}
+	count := len(s.votes[best].prefixes)
+	return s.votes[best].root, !s.isBroken && count >= minTrustPrefixes && 100*count/total >= minTrustPercent
 }
 
 // OnRoot records the AICH root a connected peer reported for the file and
@@ -85,7 +104,7 @@ func (t *Transfer) OnRoot(peer uint64, root wire.AICHHash) {
 		return
 	}
 	t.aich.roots[peer] = root
-	if t.aich.isLinked || t.aich.isBroken {
+	if t.aich.isLinked() || t.aich.isBroken {
 		return
 	}
 	prefix := toVotePrefix(s.Endpoint.Addr())
@@ -95,17 +114,6 @@ func (t *Transfer) OnRoot(peer uint64, root wire.AICHHash) {
 		i = len(t.aich.votes) - 1
 	}
 	t.aich.votes[i].prefixes[prefix] = true
-
-	total, best := 0, 0
-	for i, v := range t.aich.votes {
-		total += len(v.prefixes)
-		if len(v.prefixes) > len(t.aich.votes[best].prefixes) {
-			best = i
-		}
-	}
-	count := len(t.aich.votes[best].prefixes)
-	t.aich.root = t.aich.votes[best].root
-	t.aich.isTrusted = count >= minTrustPrefixes && 100*count/total >= minTrustPercent
 }
 
 // toVotePrefix counts IPv4 voters per /20, as aMule's AddSigningIP masks
@@ -125,13 +133,14 @@ func toVotePrefix(addr netip.Addr) netip.Prefix {
 // reported the trusted root and has no request pending, HighID first, at
 // random. Without one the part is thrown away whole.
 func (t *Transfer) requestRecovery(part int, now time.Time) []Action {
-	if !t.aich.isTrusted || t.aich.isBroken || piece.BlockCount(t.file.Size, part) == 1 {
+	root, isTrusted := t.aich.root()
+	if !isTrusted || piece.BlockCount(t.file.Size, part) == 1 {
 		return t.removePart(part, now)
 	}
 	var highIDs, lowIDs []uint64
 	for _, peer := range slices.Sorted(maps.Keys(t.aich.roots)) {
 		s := t.peers[peer]
-		if s == nil || t.aich.roots[peer] != t.aich.root || t.isAsked(peer) {
+		if s == nil || t.aich.roots[peer] != root || t.isAsked(peer) {
 			continue
 		}
 		if s.ClientID == 0 {
@@ -149,7 +158,7 @@ func (t *Transfer) requestRecovery(part int, now time.Time) []Action {
 	}
 	peer := candidates[t.aich.random.IntN(len(candidates))]
 	t.aich.asked[part] = peer
-	return []Action{RequestRecovery{Peer: peer, Part: part, Root: t.aich.root}}
+	return []Action{RequestRecovery{Peer: peer, Part: part, Root: root}}
 }
 
 func (t *Transfer) isAsked(peer uint64) bool {
@@ -177,8 +186,9 @@ func (t *Transfer) OnRecovery(peer uint64, part int, root wire.AICHHash, entries
 	if asked, ok := t.aich.asked[part]; !ok || asked != peer || !t.isDownloading() {
 		return nil
 	}
-	hashes, ok := aich.MatchRecovery(t.aich.root, t.file.Size, part, entries)
-	if !ok || root != t.aich.root || !t.aich.isTrusted {
+	trusted, isTrusted := t.aich.root()
+	hashes, ok := aich.MatchRecovery(trusted, t.file.Size, part, entries)
+	if !ok || root != trusted || !isTrusted {
 		return t.OnRecoveryFailed(peer, now)
 	}
 	delete(t.aich.asked, part)
@@ -227,7 +237,7 @@ func (t *Transfer) OnBlocksHashed(part int, hashes []wire.AICHHash, now time.Tim
 		}
 	}
 	if !isCorrupt {
-		t.aich.isBroken, t.aich.isTrusted = true, false
+		t.aich.isBroken = true
 		return t.removePart(part, now)
 	}
 	var actions []Action
