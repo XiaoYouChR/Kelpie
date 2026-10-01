@@ -91,6 +91,9 @@ type Engine struct {
 	closeOnce sync.Once
 	closeErr  error
 
+	// packetLog is nil unless Config.PacketLog is set; leaves write to it.
+	packetLog *log.Logger
+
 	// The limiters are shared memory, safe from any goroutine (ADR-0005).
 	downloadLimiter *transport.Limiter
 	uploadLimiter   *transport.Limiter
@@ -203,6 +206,9 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		sourceUsers:     map[wire.Hash]map[wire.Hash]bool{},
 		sourceLowIDs:    map[lowIDKey]map[wire.Hash]bool{},
 		uploadEndpoints: map[uploadKey]netip.AddrPort{},
+	}
+	if config.PacketLog != nil {
+		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)
 	}
 	e.queue = upload.BuildQueue(e.ledger.Ratio, func(wire.Hash, netip.Addr) bool { return false })
 	e.queue.SetRate(config.RateLimits.Upload)

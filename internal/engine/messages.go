@@ -1,6 +1,10 @@
 package engine
 
-import "github.com/XiaoYouChR/Kelpie/internal/wire"
+import (
+	"io"
+
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
+)
 
 // RunID is chosen by Kelpie and never reused within one Engine Process.
 type RunID uint64
@@ -43,6 +47,9 @@ type Config struct {
 	NodeLists   []string
 	TraceFile   string
 	RateLimits  RateLimitsCommand
+	// PacketLog, when set, gets one line per TCP packet sent or received
+	// and per closed connection, for debugging against real peers.
+	PacketLog io.Writer
 }
 
 type Progress struct {

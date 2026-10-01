@@ -26,6 +26,9 @@ func main() {
 }
 
 func start(config engine.Config, events engine.Events) (gateway.Engine, error) {
+	if os.Getenv("KELPIE_DEBUG") == "1" {
+		config.PacketLog = os.Stderr
+	}
 	e, err := engine.Start(config, events)
 	if err != nil {
 		return nil, err

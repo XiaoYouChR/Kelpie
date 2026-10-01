@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"maps"
 	"net"
@@ -148,8 +149,8 @@ func (e *Engine) startConnLeaves(c *conn) {
 		parse = serverwire.Parse
 		limiterIn, limiterOut = nil, nil
 	}
-	e.startLeaf(func() { e.runReader(c.ctx, c.id, c.net, parse, limiterIn) })
-	e.startLeaf(func() { e.runWriter(c.ctx, c.id, c.net, c.out.items, limiterOut) })
+	e.startLeaf(func() { e.runReader(c.ctx, c.id, c.remote, c.net, parse, limiterIn) })
+	e.startLeaf(func() { e.runWriter(c.ctx, c.id, c.remote, c.net, c.out.items, limiterOut) })
 }
 
 func (e *Engine) buildPeerConfig() peer.Config {
@@ -185,7 +186,7 @@ func (c *countingReader) Read(b []byte) (int, error) {
 
 // runReader is a connection's reader leaf: it decodes frames and posts
 // them, blocking while the hub is busy so that TCP pushes back.
-func (e *Engine) runReader(ctx context.Context, id uint64, netConn net.Conn, parse func(protocol, opcode byte, body []byte) (wire.Packet, error), limiter *transport.Limiter) {
+func (e *Engine) runReader(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, parse func(protocol, opcode byte, body []byte) (wire.Packet, error), limiter *transport.Limiter) {
 	r := &countingReader{r: bufio.NewReaderSize(netConn, 64<<10)}
 	for {
 		frame, err := wire.ParseFrameFrom(r)
@@ -201,6 +202,9 @@ func (e *Engine) runReader(ctx context.Context, id uint64, netConn net.Conn, par
 			e.send(ctx, connClosed{id, err})
 			return
 		}
+		if e.packetLog != nil {
+			e.packetLog.Printf("in  %s %s %d", remote, toPacketName(p), len(frame.Body))
+		}
 		if !e.send(ctx, packetReceived{id, p}) {
 			return
 		}
@@ -209,7 +213,7 @@ func (e *Engine) runReader(ctx context.Context, id uint64, netConn net.Conn, par
 
 // runWriter is a connection's writer leaf. It reports each written packet
 // so the hub can count credit and uploaded bytes.
-func (e *Engine) runWriter(ctx context.Context, id uint64, netConn net.Conn, items <-chan outItem, limiter *transport.Limiter) {
+func (e *Engine) runWriter(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, items <-chan outItem, limiter *transport.Limiter) {
 	var buf []byte
 	for {
 		var item outItem
@@ -229,6 +233,9 @@ func (e *Engine) runWriter(ctx context.Context, id uint64, netConn net.Conn, ite
 		if _, err := netConn.Write(buf); err != nil {
 			netConn.Close()
 			return
+		}
+		if e.packetLog != nil {
+			e.packetLog.Printf("out %s %s %d", remote, toPacketName(item.packet), len(buf)-wire.HeaderSize)
 		}
 		if !e.send(ctx, packetSent{id, item.file, item.payload}) {
 			return
@@ -269,6 +276,9 @@ func (e *Engine) closeConn(c *conn, reason string) {
 		return
 	}
 	c.isClosed = true
+	if e.packetLog != nil {
+		e.packetLog.Printf("close %s %s", c.remote, reason)
+	}
 	delete(e.conns, c.id)
 	c.cancel()
 	if c.net != nil {
@@ -663,4 +673,13 @@ func toKadSources(found []kad.Source) []transfer.Source {
 		sources = append(sources, src)
 	}
 	return sources
+}
+
+// toPacketName is the packet's Go type, which names its opcode, with the
+// protocol and opcode bytes for packets no family decodes.
+func toPacketName(p wire.Packet) string {
+	if u, ok := p.(wire.Unknown); ok {
+		return fmt.Sprintf("unknown(%#02x,%#02x)", u.Proto, u.Op)
+	}
+	return fmt.Sprintf("%T", p)
 }
