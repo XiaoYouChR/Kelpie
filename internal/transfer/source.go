@@ -554,7 +554,7 @@ func (t *Transfer) OnTick(tick Tick) []Action {
 	t.removeNoNeeded(tick.Now)
 	budget := tick.ConnectBudget
 	for _, s := range slices.Clone(t.sources) {
-		actions = append(actions, t.runSource(s, tick, &budget)...)
+		actions = append(actions, t.runSource(s, &budget)...)
 	}
 	return append(actions, t.requestHashSet()...)
 }
@@ -599,8 +599,8 @@ func (t *Transfer) removeNoNeeded(now time.Time) {
 	}
 }
 
-func (t *Transfer) runSource(s *source, tick Tick, budget *int) []Action {
-	now := tick.Now
+func (t *Transfer) runSource(s *source, budget *int) []Action {
+	now := t.tick.Now
 	switch s.state {
 	case stateFailed:
 		if now.Before(s.retryAt) {
@@ -630,7 +630,7 @@ func (t *Transfer) runSource(s *source, tick Tick, budget *int) []Action {
 	if !s.lastAsked.IsZero() {
 		untilReask = max(0, reaskTime-now.Sub(s.lastAsked))
 	}
-	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s, tick) {
+	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s) {
 		s.isUDPPending = true
 		s.udpReasks++
 		return []Action{ReaskUDP{Endpoint: netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort), UserHash: s.UserHash, CanObfuscate: s.CanObfuscate}}
@@ -642,16 +642,16 @@ func (t *Transfer) runSource(s *source, tick Tick, budget *int) []Action {
 		s.isUDPPending = false
 		s.udpFailed++
 	}
-	return t.requestConnect(s, tick, budget)
+	return t.requestConnect(s, budget)
 }
 
-func (t *Transfer) canReaskUDP(s *source, tick Tick) bool {
+func (t *Transfer) canReaskUDP(s *source) bool {
 	isReliable := s.udpReasks <= minUDPReasks || float64(s.udpFailed)/float64(s.udpReasks) <= maxUDPFailedShare
 	return s.canReaskUDP && s.UDPPort != 0 && s.ClientID == 0 && !s.Buddy.IsValid() &&
-		!tick.IsFirewalled && !s.isUDPPending && isReliable
+		!t.tick.IsFirewalled && !s.isUDPPending && isReliable
 }
 
-func (t *Transfer) requestConnect(s *source, tick Tick, budget *int) []Action {
+func (t *Transfer) requestConnect(s *source, budget *int) []Action {
 	if !t.canReach(s) {
 		return nil
 	}
@@ -672,7 +672,7 @@ func (t *Transfer) requestConnect(s *source, tick Tick, budget *int) []Action {
 	s.state = stateConnecting
 	s.callbackTimeout = time.Time{}
 	if _, isConnect := action.(Connect); !isConnect {
-		s.callbackTimeout = tick.Now.Add(callbackTimeout)
+		s.callbackTimeout = t.tick.Now.Add(callbackTimeout)
 	}
 	return []Action{action}
 }
