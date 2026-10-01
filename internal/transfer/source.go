@@ -478,12 +478,7 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 	if s == nil {
 		return nil
 	}
-	delete(t.peers, peer)
-	t.picker.OnPeerGone(peer)
-	if peer == t.hashSetPeer {
-		t.hashSetPeer = 0
-	}
-	actions := append(t.onRecoveryPeerGone(peer, now), t.sendReceived(s, now)...)
+	actions := append(t.removePeer(peer, now), t.sendReceived(s, now)...)
 	switch {
 	case s.state == stateAsking && !s.hasAnswered:
 		return append(actions, t.setFailed(s, reason, now))
@@ -526,12 +521,21 @@ func (t *Transfer) removeCorrupt(peer uint64, now time.Time) []Action {
 	event.Reason = "banned"
 	actions := []Action{event}
 	if t.peers[peer] == s {
-		delete(t.peers, peer)
-		t.picker.OnPeerGone(peer)
 		actions = append(actions, Close{Peer: peer, Reason: "corrupt data"})
-		actions = append(actions, t.onRecoveryPeerGone(peer, now)...)
+		actions = append(actions, t.removePeer(peer, now)...)
 	}
 	return actions
+}
+
+// removePeer detaches a connection from its source and hands what was asked
+// of it to other peers.
+func (t *Transfer) removePeer(peer uint64, now time.Time) []Action {
+	delete(t.peers, peer)
+	t.picker.OnPeerGone(peer)
+	if peer == t.hashSetPeer {
+		t.hashSetPeer = 0
+	}
+	return t.onRecoveryPeerGone(peer, now)
 }
 
 // OnTick runs the timers: source reasks and connections within the budget,
