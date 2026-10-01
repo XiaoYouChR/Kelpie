@@ -1,0 +1,20 @@
+# One link per line: <class> <ed2k link>. Classes: hot, medium, rare.
+#
+# Every file is legal to share (open-source software, Linux distributions).
+# Hashes come from a global server search run on 2026-10-01 through aMule 3.1.0;
+# the sizes match the official downloads, and the eMule installer's MD4 matches
+# the SourceForge file. The class is the search's source count at that time
+# (hot >= 10, medium 4-9, rare <= 3); recalibrate it after the first full run.
+
+# 161 sources, 3.2 MB: finishes within minutes, measures time to first byte and completion.
+hot ed2k://|file|eMule0.50a-Installer.exe|3389035|3D366ED505B977FC61C9A6EE01E96329|/
+# 12 sources, 6.2 GiB.
+hot ed2k://|file|ubuntu-24.04.4-desktop-amd64.iso|6655619072|0031C9CBA65C50DD2015C184B2CA2C88|/
+# 5 sources, 755 MiB.
+medium ed2k://|file|debian-13.6.0-amd64-netinst.iso|791674880|40EE8EF163DFA9C610FD7D46A2FD2504|/
+# 5 sources, 3.1 GiB.
+medium ed2k://|file|Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso|3368683520|D2D2D9FC4927A0614DB22E4EE5571084|/
+# 3 sources, 323 MiB.
+rare ed2k://|file|gimp-2.10.38-setup-1.exe|338740136|33AE8A9F6C0990FF05C85664FBC78155|/
+# 2 sources, 4.4 GiB.
+rare ed2k://|file|KNOPPIX_V9.1DVD-2021-01-25-EN.iso|4694753280|E7E886BC20EB7E6CF01299C493DFAD01|/

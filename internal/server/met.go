@@ -1,0 +1,120 @@
+// Package server holds the eD2k server side of the engine as a pure state
+// machine: the server list, the one TCP server connection eMule keeps, and
+// the UDP global source search across the other servers.
+package server
+
+import (
+	"errors"
+	"fmt"
+	"net/netip"
+
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
+)
+
+// Preference is a server.met priority. The numbering is eMule's
+// (SRV_PR_NORMAL, SRV_PR_HIGH, SRV_PR_LOW), not an order.
+type Preference uint32
+
+const (
+	PreferenceNormal Preference = 0
+	PreferenceHigh   Preference = 1
+	PreferenceLow    Preference = 2
+)
+
+// Entry is one server of a server.met list.
+type Entry struct {
+	Endpoint           netip.AddrPort
+	Name               string
+	Description        string
+	Preference         Preference
+	Failures           uint32
+	Ping               uint32
+	Users              uint32
+	Files              uint32
+	SoftFiles          uint32
+	UDPFlags           uint32
+	TCPObfuscationPort uint16
+	UDPObfuscationPort uint16
+}
+
+// server.met tags (eMule Opcodes.h ST_*).
+const (
+	metName               byte = 0x01
+	metDescription        byte = 0x0B
+	metPing               byte = 0x0C
+	metFail               byte = 0x0D
+	metPreference         byte = 0x0E
+	metSoftFiles          byte = 0x88
+	metUDPFlags           byte = 0x92
+	metTCPPortObfuscation byte = 0x97
+	metUDPPortObfuscation byte = 0x98
+)
+
+var errMetVersion = errors.New("server: not a server.met file")
+
+// ParseMet reads a server.met file. Entries without a usable IPv4 endpoint
+// are dropped: hostname-only (ST_DYNIP) servers would need DNS, which a pure
+// state machine cannot do.
+func ParseMet(data []byte) ([]Entry, error) {
+	r := &wire.Reader{Rest: data}
+	switch r.Uint8() {
+	// 0xE0 is the original eDonkey header, 0x0E MET_HEADER and 0x0F
+	// MET_HEADER_I64TAGS are eMule's.
+	case 0xE0, 0x0E, 0x0F:
+	default:
+		return nil, errMetVersion
+	}
+	count := r.Uint32()
+	if uint64(count)*6 > uint64(r.Len()) {
+		return nil, fmt.Errorf("server: server.met declares %d servers in %d bytes", count, r.Len())
+	}
+	var entries []Entry
+	for range count {
+		e := Entry{Endpoint: r.AddrPort()}
+		for _, t := range r.Tags() {
+			setMetTag(&e, t)
+		}
+		if r.Err() != nil {
+			return nil, fmt.Errorf("server: server.met: %w", r.Err())
+		}
+		if isUsable(e.Endpoint) {
+			entries = append(entries, e)
+		}
+	}
+	return entries, nil
+}
+
+func setMetTag(e *Entry, t wire.Tag) {
+	isUint := t.Type == wire.TagUint8 || t.Type == wire.TagUint16 || t.Type == wire.TagUint32
+	switch {
+	case t.Name == "users" && isUint:
+		e.Users = uint32(t.Uint)
+	case t.Name == "files" && isUint:
+		e.Files = uint32(t.Uint)
+	case t.Name != "":
+	case t.ID == metName && t.Type == wire.TagString:
+		e.Name = t.String
+	case t.ID == metDescription && t.Type == wire.TagString:
+		e.Description = t.String
+	case !isUint:
+	case t.ID == metPing:
+		e.Ping = uint32(t.Uint)
+	case t.ID == metFail:
+		e.Failures = uint32(t.Uint)
+	case t.ID == metPreference:
+		e.Preference = Preference(t.Uint)
+	case t.ID == metSoftFiles:
+		e.SoftFiles = uint32(t.Uint)
+	case t.ID == metUDPFlags:
+		e.UDPFlags = uint32(t.Uint)
+	case t.ID == metTCPPortObfuscation:
+		e.TCPObfuscationPort = uint16(t.Uint)
+	case t.ID == metUDPPortObfuscation:
+		e.UDPObfuscationPort = uint16(t.Uint)
+	}
+}
+
+func isUsable(ep netip.AddrPort) bool {
+	a := ep.Addr()
+	return a.Is4() && ep.Port() != 0 && !a.IsUnspecified() && !a.IsMulticast() && a != netip.AddrFrom4([4]byte{255, 255, 255, 255})
+}

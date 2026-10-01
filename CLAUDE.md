@@ -73,9 +73,10 @@
 
 ## Python
 
-- `kelpie/` 被 Ghost Downloader 原样复制，只依赖标准库
+- `kelpie/` 只依赖标准库
 - 协议的唯一事实来源是 docs/protocol.md；Go 和 Python 两侧都按它实现
 - 链接解析的测试向量在 testdata/links.json，两侧共用
+
 ## 反模式（看到就改）
 
 **违反 Flat is better than nested：**

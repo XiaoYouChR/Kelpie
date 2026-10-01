@@ -1,0 +1,1 @@
+{"type": "hello", "protocol": 1, "dataFolder": "/data/kelpie", "settings": {"port": 4662, "enableKad": false, "enableUpnp": false, "serverLists": [], "nodeLists": [], "traceFile": ""}, "rateLimits": {"download": 0, "upload": 0}}

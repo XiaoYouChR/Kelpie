@@ -1,0 +1,509 @@
+package server
+
+import (
+	"cmp"
+	"net/netip"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
+	packet "github.com/XiaoYouChR/Kelpie/internal/wire/server"
+)
+
+// eMule's timing and limits; names are eMule's (Opcodes.h unless noted).
+const (
+	connectTimeout = 25 * time.Second // CONSERVTIMEOUT, covers connect and login
+	passRetryTime  = 30 * time.Second // CS_RETRYCONNECTTIME (sockets.h)
+	maxFailures    = 10               // MAX_SERVERFAILCOUNT
+
+	sourceReaskTime     = 15 * time.Minute            // SERVERREASKTIME
+	sourceFilesPerFrame = 15                          // iMaxFilesPerTcpFrame (DownloadQueue.cpp)
+	sourceFrameTime     = 15 * (16 + 4) * time.Second // m_dwNextTCPSrcReq (DownloadQueue.cpp)
+	offerTime           = time.Minute                 // ED2KREPUBLISHTIME
+	maxOfferFiles       = 200                         // SendListToServer limit (SharedFileList.cpp)
+	largeFileSize       = 4290048000                  // OLD_MAX_EMULE_FILE_SIZE
+	edonkeyVersion      = 0x3C                        // EDONKEYVERSION
+	loginFlags          = packet.CapZlib | packet.CapNewTags | packet.CapUnicode | packet.CapLargeFiles
+
+	// keepAliveTime stands in for eMule's ServerKeepAliveTimeout, which is
+	// off by default; an idle seeding Engine Process would otherwise lose
+	// the connection to NAT timeouts. 20 minutes is far below eMule's own
+	// source-request traffic on the same connection.
+	keepAliveTime = 20 * time.Minute
+)
+
+// compatibleClient is Kelpie's id in CT_EMULE_VERSION. eMule and aMule
+// assign 0-6, 0x0A, 0x14, 0x28, 0x32-0x36, 0x44, 0x98 and 0xFF (SO_*);
+// 0x4B ('K') is unassigned.
+const compatibleClient = 0x4B
+
+// Config is what the login needs about us.
+type Config struct {
+	UserHash wire.Hash
+	Port     uint16
+	// Version is the Engine Process version, such as "v0.1.0".
+	Version string
+}
+
+// Wanted is one file the engine shares or downloads, passed on every tick.
+// Incomplete files are searched for sources; shared files are offered to
+// the connected server.
+type Wanted struct {
+	File       wire.Hash
+	Size       uint64
+	Name       string
+	IsComplete bool
+	IsShared   bool
+}
+
+// Source is one peer a server named for a file. A LowID source has no
+// Endpoint and is reachable only by RequestCallback through Server.
+type Source struct {
+	Endpoint netip.AddrPort
+	ClientID uint32
+	IsLowID  bool
+	Server   netip.AddrPort
+	UserHash wire.Hash
+}
+
+// Datagram is one UDP packet for a server's UDP port.
+type Datagram struct {
+	To     netip.AddrPort
+	Packet wire.Packet
+}
+
+// Output is what the engine must do, in field order: close the server
+// connection, open a new one, send, and connect to peers that asked for a
+// callback. After Close the engine reports nothing more about the closed
+// connection.
+type Output struct {
+	Close        bool
+	Connect      netip.AddrPort
+	Send         []wire.Packet
+	SendUDP      []Datagram
+	ConnectPeers []netip.AddrPort
+	Events       []Event
+}
+
+type Event interface{ isEvent() }
+
+// SourcesFound comes from the connected server, or from another server
+// over UDP when IsGlobal.
+type SourcesFound struct {
+	File     wire.Hash
+	Sources  []Source
+	IsGlobal bool
+}
+
+// IDChanged reports the id the connected server gave us.
+type IDChanged struct {
+	Server   netip.AddrPort
+	ClientID uint32
+}
+
+type MessageReceived struct{ Text string }
+
+// CallbackFailed says the server could not reach the LowID peer of the
+// last RequestCallback.
+type CallbackFailed struct{}
+
+func (SourcesFound) isEvent()    {}
+func (IDChanged) isEvent()       {}
+func (MessageReceived) isEvent() {}
+func (CallbackFailed) isEvent()  {}
+
+type phase int
+
+const (
+	phaseIdle phase = iota
+	phaseConnecting
+	phaseLoggingIn
+	phaseLoggedIn
+)
+
+// listed is an Entry with what this process learned about it.
+type listed struct {
+	Entry
+	// isDead marks a server that left a status ping unanswered until its
+	// next turn; eMule drops it (DeadServerRetry). It only stops UDP use,
+	// so a blocked UDP port cannot empty the TCP list.
+	isDead    bool
+	challenge uint32
+	pingedAt  time.Time
+}
+
+// Server owns the server list and the one server connection.
+type Server struct {
+	config  Config
+	servers []*listed
+	wanted  []Wanted
+
+	phase    phase
+	current  *listed
+	since    time.Time
+	tried    map[*listed]bool
+	retryAt  time.Time
+	clientID uint32
+	tcpFlags uint32
+	lastSent time.Time
+
+	askedAt         map[wire.Hash]time.Time
+	nextSourceFrame time.Time
+	offered         map[wire.Hash]bool
+	nextOffer       time.Time
+
+	udp udpSearch
+}
+
+// BuildServer takes the entries of every server list; a server listed twice
+// keeps its first entry.
+func BuildServer(config Config, entries []Entry) *Server {
+	s := &Server{
+		config:  config,
+		tried:   map[*listed]bool{},
+		askedAt: map[wire.Hash]time.Time{},
+		offered: map[wire.Hash]bool{},
+	}
+	seen := map[netip.AddrPort]bool{}
+	for _, e := range entries {
+		if seen[e.Endpoint] {
+			continue
+		}
+		seen[e.Endpoint] = true
+		s.servers = append(s.servers, &listed{Entry: e})
+	}
+	return s
+}
+
+func (s *Server) IsServerConnected() bool { return s.phase == phaseLoggedIn }
+
+func (s *Server) IsHighID() bool { return s.IsServerConnected() && !wire.IsLowID(s.clientID) }
+
+// ClientID is the id the connected server gave us; 0 while not logged in.
+func (s *Server) ClientID() uint32 {
+	if !s.IsServerConnected() {
+		return 0
+	}
+	return s.clientID
+}
+
+func (s *Server) OnTick(now time.Time, wanted []Wanted) Output {
+	s.wanted = wanted
+	var out Output
+	if (s.phase == phaseConnecting || s.phase == phaseLoggingIn) && now.Sub(s.since) > connectTimeout {
+		out.Close = true
+		s.setFailed()
+	}
+	s.runConnect(now, &out)
+	if s.phase == phaseLoggedIn {
+		s.runSession(now, &out)
+		s.runStats(now, &out)
+		s.runSearch(now, &out)
+	}
+	return out
+}
+
+func (s *Server) OnConnected(now time.Time) Output {
+	s.phase = phaseLoggingIn
+	login := packet.Login{
+		UserHash:     s.config.UserHash,
+		Port:         s.config.Port,
+		Name:         "Kelpie",
+		Version:      edonkeyVersion,
+		Flags:        loginFlags,
+		EmuleVersion: toEmuleVersion(s.config.Version),
+	}
+	s.lastSent = now
+	return Output{Send: []wire.Packet{login}}
+}
+
+func (s *Server) OnConnectFailed(now time.Time) Output {
+	s.setFailed()
+	var out Output
+	s.runConnect(now, &out)
+	return out
+}
+
+// OnDisconnected handles the end of the server connection at any stage.
+// Losing a server before login counts against it; losing it afterwards
+// moves on to the next server, as eMule's reconnect does.
+func (s *Server) OnDisconnected(now time.Time) Output {
+	if s.phase == phaseLoggedIn {
+		s.tried[s.current] = true
+		s.phase = phaseIdle
+		s.current = nil
+	} else {
+		s.setFailed()
+	}
+	var out Output
+	s.runConnect(now, &out)
+	return out
+}
+
+func (s *Server) OnPacket(p wire.Packet, now time.Time) Output {
+	var out Output
+	switch p := p.(type) {
+	case packet.IDChange:
+		s.onIDChange(p, now, &out)
+	case packet.ServerMessage:
+		out.Events = append(out.Events, MessageReceived{Text: p.Text})
+	case packet.ServerStatus:
+		if s.current != nil {
+			s.current.Users, s.current.Files = p.Users, p.Files
+		}
+	case packet.ServerIdent:
+		if s.current != nil && p.Name != "" {
+			s.current.Name, s.current.Description = p.Name, p.Description
+		}
+	case packet.FoundSources:
+		s.onFoundSources(p.Hash, p.Sources, &out)
+	case packet.FoundSourcesObfu:
+		s.onFoundSources(p.Hash, p.Sources, &out)
+	case packet.CallbackRequested:
+		if s.phase == phaseLoggedIn && p.Addr.IsValid() && p.Addr.Port() != 0 {
+			out.ConnectPeers = append(out.ConnectPeers, p.Addr)
+		}
+	case packet.CallbackRequestedIPv6:
+		if s.phase == phaseLoggedIn && p.Addr.IsValid() && p.Addr.Port() != 0 {
+			out.ConnectPeers = append(out.ConnectPeers, p.Addr)
+		}
+	case packet.CallbackFailed:
+		out.Events = append(out.Events, CallbackFailed{})
+	}
+	return out
+}
+
+// RequestCallback asks the connected server to have a LowID source connect
+// to us. It is possible only when we are HighID and the source came from
+// the server we are connected to.
+func (s *Server) RequestCallback(source Source, now time.Time) (Output, bool) {
+	if !s.IsHighID() || !source.IsLowID || source.Server != s.current.Endpoint {
+		return Output{}, false
+	}
+	s.lastSent = now
+	return Output{Send: []wire.Packet{packet.CallbackRequest{ClientID: source.ClientID}}}, true
+}
+
+func (s *Server) onIDChange(p packet.IDChange, now time.Time, out *Output) {
+	if s.phase != phaseLoggingIn && s.phase != phaseLoggedIn || p.ClientID == 0 {
+		return
+	}
+	if s.phase == phaseLoggingIn {
+		s.phase = phaseLoggedIn
+		s.current.Failures = 0
+		clear(s.tried)
+		clear(s.offered)
+		s.nextSourceFrame = now
+		s.nextOffer = now
+	}
+	s.clientID, s.tcpFlags = p.ClientID, p.Flags
+	out.Events = append(out.Events, IDChanged{Server: s.current.Endpoint, ClientID: p.ClientID})
+	s.runSession(now, out)
+}
+
+func (s *Server) onFoundSources(file wire.Hash, found []packet.Source, out *Output) {
+	if s.phase != phaseLoggedIn || !s.isWanted(file) {
+		return
+	}
+	var sources []Source
+	for _, f := range found {
+		src, ok := s.toSource(f, s.current.Endpoint)
+		if ok && (!src.IsLowID || !wire.IsLowID(s.clientID)) {
+			sources = append(sources, src)
+		}
+	}
+	if len(sources) > 0 {
+		out.Events = append(out.Events, SourcesFound{File: file, Sources: sources})
+	}
+}
+
+func (s *Server) toSource(f packet.Source, server netip.AddrPort) (Source, bool) {
+	src := Source{ClientID: f.ClientID, Server: server, UserHash: f.UserHash}
+	switch {
+	case f.Port == 0 || f.ClientID == 0:
+		return src, false
+	case f.ClientID == wire.IPv6Sentinel:
+		src.Endpoint = netip.AddrPortFrom(f.IPv6, f.Port)
+		return src, f.IPv6.IsValid()
+	case wire.IsLowID(f.ClientID):
+		src.IsLowID = true
+		return src, true
+	case f.ClientID == s.clientID && f.Port == s.config.Port:
+		return src, false
+	}
+	src.Endpoint = netip.AddrPortFrom(wire.ToAddr(f.ClientID), f.Port)
+	return src, true
+}
+
+func (s *Server) isWanted(file wire.Hash) bool {
+	return slices.ContainsFunc(s.wanted, func(w Wanted) bool { return w.File == file && !w.IsComplete })
+}
+
+func (s *Server) setFailed() {
+	if s.current != nil {
+		s.current.Failures++
+	}
+	s.phase = phaseIdle
+	s.current = nil
+}
+
+// runConnect starts the next attempt of the current pass. A pass tries
+// every server once, best first; when it runs out, eMule waits
+// CS_RETRYCONNECTTIME so a short list is not hammered.
+func (s *Server) runConnect(now time.Time, out *Output) {
+	if s.phase != phaseIdle || now.Before(s.retryAt) {
+		return
+	}
+	next := s.nextServer()
+	if next == nil {
+		if len(s.tried) > 0 {
+			clear(s.tried)
+			s.retryAt = now.Add(passRetryTime)
+		}
+		return
+	}
+	s.tried[next] = true
+	s.current, s.phase, s.since = next, phaseConnecting, now
+	out.Connect = next.Endpoint
+}
+
+// nextServer prefers high preference, then fewer failures, then more users.
+func (s *Server) nextServer() *listed {
+	var best *listed
+	for _, l := range s.servers {
+		if s.tried[l] || l.Failures >= maxFailures {
+			continue
+		}
+		if best == nil || isBetter(l, best) {
+			best = l
+		}
+	}
+	return best
+}
+
+func isBetter(a, b *listed) bool {
+	rank := func(p Preference) int {
+		switch p {
+		case PreferenceHigh:
+			return 0
+		case PreferenceLow:
+			return 2
+		}
+		return 1
+	}
+	return cmp.Or(
+		cmp.Compare(rank(a.Preference), rank(b.Preference)),
+		cmp.Compare(a.Failures, b.Failures),
+		cmp.Compare(b.Users, a.Users),
+	) < 0
+}
+
+func (s *Server) runSession(now time.Time, out *Output) {
+	n := len(out.Send)
+	s.runSourceRequests(now, out)
+	s.runOffer(now, out)
+	if len(out.Send) == n && now.Sub(s.lastSent) >= keepAliveTime {
+		// eMule's keep-alive is an empty OP_OFFERFILES.
+		out.Send = append(out.Send, packet.OfferFiles{})
+	}
+	if len(out.Send) > n {
+		s.lastSent = now
+	}
+}
+
+// runSourceRequests sends one frame of up to 15 OP_GETSOURCES, longest
+// waiting file first, and no file more often than SERVERREASKTIME. The
+// per-file times survive reconnects, as in eMule.
+func (s *Server) runSourceRequests(now time.Time, out *Output) {
+	if now.Before(s.nextSourceFrame) {
+		return
+	}
+	var due []Wanted
+	for _, w := range s.wanted {
+		at, isAsked := s.askedAt[w.File]
+		if w.IsComplete || (isAsked && now.Sub(at) < sourceReaskTime) || !s.canTCP(w.Size) {
+			continue
+		}
+		due = append(due, w)
+	}
+	if len(due) == 0 {
+		return
+	}
+	slices.SortStableFunc(due, func(a, b Wanted) int { return s.askedAt[a.File].Compare(s.askedAt[b.File]) })
+	for _, w := range due[:min(len(due), sourceFilesPerFrame)] {
+		out.Send = append(out.Send, packet.GetSources{Hash: w.File, Size: w.Size})
+		s.askedAt[w.File] = now
+	}
+	s.nextSourceFrame = now.Add(sourceFrameTime)
+}
+
+// runOffer publishes shared files the server has not seen in this
+// connection, at most once per ED2KREPUBLISHTIME and capped like eMule's
+// SendListToServer. A file offered while partial is offered again once
+// complete.
+func (s *Server) runOffer(now time.Time, out *Output) {
+	if now.Before(s.nextOffer) {
+		return
+	}
+	limit := maxOfferFiles
+	if soft := int(s.current.SoftFiles); soft > 0 && soft < limit {
+		limit = soft
+	}
+	var files []packet.OfferedFile
+	for _, w := range s.wanted {
+		if len(files) == limit {
+			break
+		}
+		wasComplete, isOffered := s.offered[w.File]
+		if !w.IsShared || (isOffered && wasComplete == w.IsComplete) || !s.canTCP(w.Size) {
+			continue
+		}
+		files = append(files, s.toOffered(w))
+		s.offered[w.File] = w.IsComplete
+	}
+	if len(files) == 0 {
+		return
+	}
+	out.Send = append(out.Send, packet.OfferFiles{Files: files})
+	s.nextOffer = now.Add(offerTime)
+}
+
+func (s *Server) toOffered(w Wanted) packet.OfferedFile {
+	f := packet.OfferedFile{Hash: w.File}
+	switch {
+	case s.tcpFlags&packet.FlagCompression != 0 && w.IsComplete:
+		f.ClientID, f.Port = packet.CompleteID, packet.CompletePort
+	case s.tcpFlags&packet.FlagCompression != 0:
+		f.ClientID, f.Port = packet.IncompleteID, packet.IncompletePort
+	case !wire.IsLowID(s.clientID):
+		f.ClientID, f.Port = s.clientID, s.config.Port
+	}
+	f.Tags = []wire.Tag{
+		{Type: wire.TagString, ID: packet.FileName, String: w.Name},
+		{Type: wire.TagUint32, ID: packet.FileSize, Uint: w.Size & 0xFFFFFFFF},
+	}
+	if w.Size > 0xFFFFFFFF {
+		f.Tags = append(f.Tags, wire.Tag{Type: wire.TagUint32, ID: packet.FileSizeHi, Uint: w.Size >> 32})
+	}
+	return f
+}
+
+func (s *Server) canTCP(size uint64) bool {
+	return size <= largeFileSize || s.tcpFlags&packet.FlagLargeFiles != 0
+}
+
+// toEmuleVersion packs "v1.2.3" into CT_EMULE_VERSION: compatible client,
+// then major, minor and update in 7, 7 and 3 bits.
+func toEmuleVersion(version string) uint32 {
+	var parts [3]uint32
+	for i, part := range strings.SplitN(strings.TrimPrefix(version, "v"), ".", 3) {
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				break
+			}
+			parts[i] = parts[i]*10 + uint32(r-'0')
+		}
+	}
+	return compatibleClient<<24 | (parts[0]&0x7F)<<17 | (parts[1]&0x7F)<<10 | (parts[2]&0x07)<<7
+}
