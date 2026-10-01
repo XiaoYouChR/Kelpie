@@ -457,16 +457,16 @@ func (e *Engine) sortedConns() []*conn {
 	return conns
 }
 
+// connByEndpoint is the oldest peer connection to endpoint.
 func (e *Engine) connByEndpoint(endpoint netip.AddrPort) *conn {
-	for _, c := range e.sortedConns() {
-		if c.isServer {
-			continue
-		}
-		if c.isOutgoing && c.remote == endpoint || c.isHandshaken && c.endpoint() == endpoint {
-			return c
+	var found *conn
+	for _, c := range e.conns {
+		isMatch := !c.isServer && (c.isOutgoing && c.remote == endpoint || c.isHandshaken && c.endpoint() == endpoint)
+		if isMatch && (found == nil || c.id < found.id) {
+			found = c
 		}
 	}
-	return nil
+	return found
 }
 
 // endpoint is the peer's address with its listening port, as its hello said.

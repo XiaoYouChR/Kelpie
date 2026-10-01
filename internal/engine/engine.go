@@ -410,7 +410,7 @@ func (e *Engine) startLeaf(f func()) {
 	}()
 }
 
-// post is how a leaf hands the hub a message. It may block: that is the
+// send is how a leaf hands the hub a message. It may block: that is the
 // backpressure ADR-0005 allows. It gives up once ctx ends.
 func (e *Engine) send(ctx context.Context, m any) bool {
 	select {
@@ -608,16 +608,16 @@ func (e *Engine) onTick() {
 	}
 }
 
+// refreshNetwork reports a changed Network; without Kad, kadStatus stays
+// zero.
 func (e *Engine) refreshNetwork() {
 	network := Network{
 		IsServerConnected: e.server.IsServerConnected(),
 		IsHighID:          e.server.IsHighID(),
+		IsKadFirewalled:   e.kadStatus.IsFirewalled,
+		KadNodes:          e.kadStatus.Nodes,
 	}
 	network.IsBehindCarrierNat = !network.IsHighID && matchCarrierNAT(e.mappedIP, e.publicIP)
-	if e.kad != nil {
-		network.IsKadFirewalled = e.kadStatus.IsFirewalled
-		network.KadNodes = e.kadStatus.Nodes
-	}
 	if e.hasNetwork && network == e.network {
 		return
 	}
