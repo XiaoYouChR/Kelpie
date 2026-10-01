@@ -77,10 +77,10 @@ const (
 	stateFailed
 )
 
-// Source is what a channel says about one source. A HighID source has an
-// Endpoint. A LowID source has ClientID and the Server it is connected to. A
-// firewalled Kad source has its Buddy and BuddyID. UserHash is zero when the
-// channel does not tell it.
+// Source is what a channel, or the source itself in its Hello, says about one
+// source. A HighID source has an Endpoint. A LowID source has ClientID and the
+// Server it is connected to. A firewalled Kad source has its Buddy and
+// BuddyID. UserHash is zero when the channel does not tell it.
 type Source struct {
 	Endpoint netip.AddrPort
 	ClientID uint32
@@ -89,28 +89,16 @@ type Source struct {
 	BuddyID  wire.Hash
 	UserHash wire.Hash
 	UDPPort  uint16
-	// CanObfuscate: the channel says the source supports protocol
-	// obfuscation, which needs its UserHash.
+	// CanObfuscate: the source supports protocol obfuscation, which needs
+	// its UserHash. What its Hello says replaces what a channel said, as
+	// aMule takes it from the Hello (BaseClient.cpp:350, 590).
 	CanObfuscate bool
 	// IsDirectCallback: a firewalled Kad source that takes callback
 	// requests itself, at the UDP endpoint in Buddy.
 	IsDirectCallback bool
-}
-
-// Hello is what a connected peer told us about itself.
-type Hello struct {
-	// Endpoint is the peer's address with its TCP listen port.
-	Endpoint    netip.AddrPort
-	ClientID    uint32
-	Server      netip.AddrPort
-	UserHash    wire.Hash
-	UDPPort     uint16
+	// CanReaskUDP and CanExchange are known only from the Hello.
 	CanReaskUDP bool
 	CanExchange bool
-	// CanObfuscate: the Hello's crypt options say the peer supports
-	// protocol obfuscation; it replaces what the channel said, as aMule
-	// takes it from the Hello (BaseClient.cpp:350, 590).
-	CanObfuscate bool
 }
 
 // Tick carries what OnTick needs to know about the engine.
@@ -134,8 +122,6 @@ type Tick struct {
 type source struct {
 	key string
 	Source
-	canReaskUDP bool
-	canExchange bool
 
 	state sourceState
 	// deadline is when a callback in stateConnecting gives up, zero for a
@@ -332,7 +318,9 @@ func (t *Transfer) setFailed(s *source, reason string, now time.Time) TraceEvent
 
 // OnPeerConnected attaches a connection that is about this file, whether we
 // opened it, a callback made the source connect, or the peer came on its own.
-func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Action {
+// hello is what the peer said about itself; its Endpoint has the peer's TCP
+// listen port.
+func (t *Transfer) OnPeerConnected(peer uint64, hello Source, now time.Time) []Action {
 	if !t.isDownloading() {
 		return nil
 	}
@@ -365,8 +353,8 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Ac
 	s.Endpoint = hello.Endpoint
 	s.UserHash = hello.UserHash
 	s.UDPPort = hello.UDPPort
-	s.canReaskUDP = hello.CanReaskUDP
-	s.canExchange = hello.CanExchange
+	s.CanReaskUDP = hello.CanReaskUDP
+	s.CanExchange = hello.CanExchange
 	s.CanObfuscate = hello.CanObfuscate
 	s.state = stateAsking
 	s.a4afUntil = time.Time{}
@@ -386,7 +374,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Ac
 	return actions
 }
 
-func (t *Transfer) connectedSource(hello Hello) *source {
+func (t *Transfer) connectedSource(hello Source) *source {
 	for _, s := range t.sources {
 		if s.state == stateConnecting && s.Endpoint.IsValid() && s.Endpoint == hello.Endpoint {
 			return s
@@ -408,7 +396,7 @@ func (t *Transfer) connectedSource(hello Hello) *source {
 // SOURCECLIENTREASKF; common files wait MINCOMMONPENALTY times longer.
 func (t *Transfer) isExchangeAllowed(s *source, now time.Time) bool {
 	count := t.validSourceCount()
-	if !s.canExchange || count >= maxSourcesSoft {
+	if !s.CanExchange || count >= maxSourcesSoft {
 		return false
 	}
 	isSourceDue := func(wait time.Duration) bool {
@@ -645,7 +633,7 @@ func (t *Transfer) runSource(s *source, budget *int) []Action {
 
 func (t *Transfer) canReaskUDP(s *source) bool {
 	isReliable := s.udpReasks <= minUDPReasks || float64(s.udpFailed)/float64(s.udpReasks) <= maxUDPFailedShare
-	return s.canReaskUDP && s.UDPPort != 0 && s.ClientID == 0 && !s.Buddy.IsValid() &&
+	return s.CanReaskUDP && s.UDPPort != 0 && s.ClientID == 0 && !s.Buddy.IsValid() &&
 		!t.tick.IsFirewalled && isReliable
 }
 

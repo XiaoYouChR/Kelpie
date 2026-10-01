@@ -20,7 +20,7 @@ func TestSendersAreForgotten(t *testing.T) {
 	tr, _ := Build(Options{File: file, Path: "/f.bin", Mode: ModeDownload, Random: rand.New(rand.NewPCG(1, 1))}, now)
 	for peer := range uint64(1000) {
 		addr := netip.AddrFrom4([4]byte{198, 51, byte(peer >> 8), byte(peer)})
-		tr.OnPeerConnected(peer, Hello{Endpoint: netip.AddrPortFrom(addr, 4662), UserHash: wire.Hash{byte(peer), byte(peer >> 8), 7}}, now)
+		tr.OnPeerConnected(peer, Source{Endpoint: netip.AddrPortFrom(addr, 4662), UserHash: wire.Hash{byte(peer), byte(peer >> 8), 7}}, now)
 		if peer == 0 {
 			tr.OnPeerParts(peer, piece.BuildFullSet(2))
 			tr.OnSlotGranted(peer, now)
