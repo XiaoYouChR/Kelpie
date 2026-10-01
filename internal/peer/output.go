@@ -57,6 +57,11 @@ type HashSetReceived struct {
 // FileRejected: the peer does not share File; the session forgot it.
 type FileRejected struct{ File wire.Hash }
 
+// Queued: the peer put us in its upload queue for File at Rank. Rank is 0
+// when it ended our slot without telling a rank, or the session gave the slot
+// up after DOWNLOADTIMEOUT; every block in flight for File is dropped then.
+// aMule reads OP_OUTOFPARTREQS as a return to the queue
+// (ClientTCPSocket.cpp:693-700).
 type Queued struct {
 	File wire.Hash
 	Rank uint32
@@ -67,10 +72,6 @@ type Queued struct {
 // connection the peer opened to us; the engine then Adds and Starts the file
 // it queued for with this user.
 type SlotGranted struct{ File wire.Hash }
-
-// SlotRevoked: the peer ended our slot, or the session gave up on it after
-// DOWNLOADTIMEOUT. Every block in flight for File is dropped.
-type SlotRevoked struct{ File wire.Hash }
 
 // NoNeededParts: the peer has no part of File we still need, or its slot
 // gave nothing to request, so no slot is asked for or kept (aMule
@@ -118,7 +119,6 @@ func (HashSetReceived) isEvent()    {}
 func (FileRejected) isEvent()       {}
 func (Queued) isEvent()             {}
 func (SlotGranted) isEvent()        {}
-func (SlotRevoked) isEvent()        {}
 func (NoNeededParts) isEvent()      {}
 func (BlocksWanted) isEvent()       {}
 func (BlockReceived) isEvent()      {}

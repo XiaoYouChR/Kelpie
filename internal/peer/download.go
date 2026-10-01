@@ -357,7 +357,7 @@ func (s *Session) stopSlot(out *Output) {
 	s.down.isSlotGranted = false
 	s.down.isStartSent = false
 	s.cancelInFlight(s.down.started, out)
-	out.add(SlotRevoked{File: s.down.started})
+	out.add(Queued{File: s.down.started})
 }
 
 func (s *Session) hasBlocksInFlight() bool {

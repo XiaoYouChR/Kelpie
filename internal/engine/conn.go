@@ -543,10 +543,6 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		}
 	case peer.SlotGranted:
 		e.onSlotGranted(c, ev.File)
-	case peer.SlotRevoked:
-		if r := e.downloadByHash(ev.File); r != nil {
-			e.runTransferActions(r, r.transfer.OnQueued(c.id, 0, now))
-		}
 	case peer.NoNeededParts:
 		e.onNoNeededParts(c, ev.File)
 	case peer.BlocksWanted:

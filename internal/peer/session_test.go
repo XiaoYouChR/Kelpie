@@ -563,8 +563,8 @@ func TestOutOfPartsRevokesSlot(t *testing.T) {
 	l.run(l.b, l.b.s.StartUpload())
 	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: piece.BlockSize}}))
 	l.run(l.b, l.b.s.StopUpload())
-	if lastOf[SlotRevoked](t, l.a).File != file {
-		t.Fatal("slot not revoked")
+	if q := lastOf[Queued](t, l.a); q.File != file || q.Rank != 0 {
+		t.Fatalf("slot not revoked: %+v", q)
 	}
 	if out := l.a.s.Request(file, []piece.Block{{Begin: 0, End: piece.BlockSize}}); len(out.Send) != 0 {
 		t.Fatal("requested without a slot")
@@ -610,8 +610,8 @@ func TestEmptySlotIsCancelled(t *testing.T) {
 	if sentCount[client.CancelTransfer](l) != 1 {
 		t.Fatal("empty slot kept")
 	}
-	if lastOf[SlotRevoked](t, l.a).File != file {
-		t.Fatal("slot not released")
+	if q := lastOf[Queued](t, l.a); q.File != file || q.Rank != 0 {
+		t.Fatalf("slot not released: %+v", q)
 	}
 	if lastOf[NoNeededParts](t, l.a).File != file {
 		t.Fatal("empty slot not reported as no needed parts")
@@ -642,7 +642,7 @@ func TestSlotEndHandsOverReceivedPrefix(t *testing.T) {
 	if got.File != file || got.Block != want || !bytes.Equal(got.Data, data[:want.End]) {
 		t.Fatalf("received %+v (%d bytes)", got.Block, len(got.Data))
 	}
-	if _, ok := l.a.events[len(l.a.events)-1].(SlotRevoked); !ok {
+	if q, ok := l.a.events[len(l.a.events)-1].(Queued); !ok || q.Rank != 0 {
 		t.Fatal("slot revoked before the prefix was handed over")
 	}
 }
@@ -820,7 +820,7 @@ func TestStalledSlotIsGivenUp(t *testing.T) {
 	if out.Close != "" || len(out.Send) != 1 || out.Send[0] != (client.CancelTransfer{}) {
 		t.Fatalf("out %+v", out)
 	}
-	if ev := out.Events[0].(SlotRevoked); ev.File != file {
+	if ev := out.Events[0].(Queued); ev.File != file || ev.Rank != 0 {
 		t.Fatalf("revoked %+v", ev)
 	}
 }
