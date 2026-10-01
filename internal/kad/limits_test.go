@@ -2,6 +2,7 @@ package kad
 
 import (
 	"fmt"
+	"net/netip"
 	"testing"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -27,5 +28,34 @@ func TestSearchResultsAreCapped(t *testing.T) {
 	}
 	if total != fileTotal {
 		t.Fatalf("search reported %d sources, want %d", total, fileTotal)
+	}
+}
+
+// Sources published to us are stored up to maxIndexed over all files, and
+// room comes back as they expire.
+func TestIndexIsBounded(t *testing.T) {
+	h := buildHarness(t)
+	publisher := netip.MustParseAddrPort("10.7.0.1:4672")
+	publish := func(n int) bool {
+		file := selfID
+		file[15] ^= byte(n)
+		file[14] ^= byte(n >> 8)
+		source := kadwire.Entry{ID: wire.Hash{byte(n), byte(n >> 8), byte(n >> 16), 0xAB}, Tags: []wire.Tag{
+			{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: 1},
+		}}
+		_, isStored := h.c.index.onPublishSources(h.c.id, publisher, kadwire.PublishSourcesReq{FileID: file, Source: source}, h.now)
+		return isStored
+	}
+	for n := range maxIndexed {
+		if !publish(n) {
+			t.Fatalf("source %d refused below the cap", n)
+		}
+	}
+	if publish(maxIndexed) {
+		t.Fatal("stored a source beyond maxIndexed")
+	}
+	h.c.index.clearExpired(h.now.Add(republishSources))
+	if !publish(maxIndexed) || h.c.index.count != 1 {
+		t.Fatalf("count %d after expiry, want room again", h.c.index.count)
 	}
 }

@@ -13,7 +13,10 @@ import (
 const (
 	republishSources = 5 * time.Hour // KADEMLIAREPUBLISHTIMES: also how long a stored source lives
 	maxSourcesByFile = 1000          // KADEMLIAMAXSOUCEPERFILE
-	maxIndexedFiles  = 50000         // KADEMLIAMAXINDEX
+	// maxIndexed bounds the sources stored over all files. aMule bounds
+	// only each file, so a node publishing to many file IDs near ours fills
+	// it without end; KADEMLIAMAXINDEX, its keyword index size, serves here.
+	maxIndexed = 50000
 	// One SearchRes carries at most this many entries, keeping it well
 	// under the UDP size eMule reads.
 	entriesByPacket = 50
@@ -28,6 +31,7 @@ type indexed struct {
 // near a file's hash is expected to.
 type index struct {
 	files map[wire.Hash]map[wire.Hash]indexed
+	count int
 }
 
 // onPublishSources stores a source and returns whether it was accepted.
@@ -41,15 +45,16 @@ func (x *index) onPublishSources(self wire.Hash, from netip.AddrPort, req kadwir
 		return 0, false
 	}
 	sources := x.files[req.FileID]
+	_, isKnown := sources[req.Source.ID]
+	if !isKnown && (len(sources) >= maxSourcesByFile || x.count >= maxIndexed) {
+		return 0, false
+	}
 	if sources == nil {
-		if len(x.files) >= maxIndexedFiles {
-			return 0, false
-		}
 		sources = map[wire.Hash]indexed{}
 		x.files[req.FileID] = sources
 	}
-	if _, ok := sources[req.Source.ID]; !ok && len(sources) >= maxSourcesByFile {
-		return 0, false
+	if !isKnown {
+		x.count++
 	}
 	tags := []wire.Tag{{Type: wire.TagUint32, ID: kadwire.TagSourceIP, Uint: uint64(kadwire.ToUint32(from.Addr()))}}
 	hasUDPPort := false
@@ -87,6 +92,7 @@ func (x *index) clearExpired(now time.Time) {
 		for id, s := range sources {
 			if !now.Before(s.expires) {
 				delete(sources, id)
+				x.count--
 			}
 		}
 		if len(sources) == 0 {
