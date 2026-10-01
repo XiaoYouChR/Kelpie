@@ -413,16 +413,37 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 		}
 	case kadwire.HelloReq:
 		// A hello that carries our verify key proves its sender's IP
-		// (KademliaUDPListener.cpp:525).
-		c.addHello(from, kadwire.Hello(p), c.reply.hasVerifyKey, now)
-		d := datagram{to: from, packet: kadwire.HelloRes(c.buildHello(p.Version, false)), receiverKey: c.reply.key}
+		// (KademliaUDPListener.cpp:525); a version 8 node that we added
+		// without it is asked to prove it with a HelloResAck (:536).
+		ct := c.addHello(from, kadwire.Hello(p), c.reply.hasVerifyKey, now)
+		isAckWanted := ct != nil && ct.Addr == from && !c.reply.hasVerifyKey && p.Version >= versionMiscOptions
+		if isAckWanted && !c.rpcs.hasPending(from, rpcHelloAck) {
+			c.rpcs.add(&rpc{kind: rpcHelloAck, node: ct.Node, sent: now})
+		}
+		d := datagram{to: from, packet: kadwire.HelloRes(c.buildHello(p.Version, isAckWanted)), receiverKey: c.reply.key}
 		if p.Version >= versionObfuscation {
 			d.nodeID = p.ID
 		}
 		c.sendKeyed(d)
 	case kadwire.HelloRes:
-		if c.rpcs.match(from, rpcHello, wire.Hash{}) != nil {
-			c.addHello(from, kadwire.Hello(p), true, now)
+		if c.rpcs.match(from, rpcHello, wire.Hash{}) == nil {
+			return
+		}
+		c.addHello(from, kadwire.Hello(p), true, now)
+		// Only a version 8 node may ask (KademliaUDPListener.cpp:406);
+		// without its sender key our ACK could not carry its verify key
+		// back (:608).
+		if p.Version >= versionMiscOptions && parseMiscOptions(kadwire.Hello(p))&kadwire.MiscRequestsAck != 0 && c.reply.key != 0 {
+			c.send(from, kadwire.HelloResAck{ID: c.id})
+		}
+	case kadwire.HelloResAck:
+		// RoutingZone::VerifyContact (RoutingZone.cpp:871): the ACK must
+		// carry our verify key and come from the IP its ID is at.
+		if c.rpcs.match(from, rpcHelloAck, wire.Hash{}) == nil || !c.reply.hasVerifyKey {
+			return
+		}
+		if ct := c.table.byID[p.ID]; ct != nil && ct.Addr.Addr() == from.Addr() {
+			c.table.add(ct.Node, true, now)
 		}
 	case kadwire.Req:
 		// The receiver ID guards against answering for an ID we no longer

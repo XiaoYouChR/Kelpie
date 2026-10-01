@@ -21,6 +21,8 @@ const (
 	rpcFirewall
 	rpcPing
 	rpcFindBuddy
+	// rpcHelloAck is a HelloRes that asked for a HelloResAck.
+	rpcHelloAck
 )
 
 // responseTimeout is how long a contact has to answer before it counts as

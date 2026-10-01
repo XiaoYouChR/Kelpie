@@ -570,3 +570,47 @@ func TestHelloKeysAndMiscOptions(t *testing.T) {
 		t.Fatalf("answer to a version 7 hello %+v, want no tags", res)
 	}
 }
+
+// TestHelloResAck is the three-way hello of Kad version 8: a node we added
+// on its word is asked for a HelloResAck, which verifies it only when it
+// carries our verify key; we answer such a request when the asker is a
+// version 8 node that gave us its key.
+func TestHelloResAck(t *testing.T) {
+	h := buildHarness(t)
+	n := buildNear(fileHash, 1)
+	n.Version = 8
+	verifyKey := obfuscation.BuildKadVerifyKey(h.c.udpKey, n.Addr.Addr())
+	h.c.onPacket(n.Addr, kadwire.HelloResAck{ID: n.ID}, keys{receiver: verifyKey}, h.now)
+	h.receive(n.Addr, kadwire.HelloReq{ID: n.ID, TCPPort: 4662, Version: 8})
+	if h.c.table.byID[n.ID].isVerified {
+		t.Fatal("an unasked ACK verified a node")
+	}
+	res := packetsOf[kadwire.HelloRes](h)
+	if misc, _ := miscOptionsOf(kadwire.Hello(res[0].packet)); misc&kadwire.MiscRequestsAck == 0 {
+		t.Fatalf("hello answer %+v does not ask for an ACK", res)
+	}
+	h.c.onPacket(n.Addr, kadwire.HelloResAck{ID: n.ID}, keys{receiver: 0x1234}, h.now)
+	if h.c.table.byID[n.ID].isVerified {
+		t.Fatal("an ACK without our verify key verified a node")
+	}
+	h.receive(n.Addr, kadwire.HelloReq{ID: n.ID, TCPPort: 4662, Version: 8})
+	h.c.onPacket(n.Addr, kadwire.HelloResAck{ID: n.ID}, keys{receiver: verifyKey}, h.now)
+	if !h.c.table.byID[n.ID].isVerified {
+		t.Fatal("the ACK did not verify the node")
+	}
+
+	askAck := []wire.Tag{{Type: wire.TagUint8, ID: kadwire.TagKadMiscOptions, Uint: uint64(kadwire.MiscRequestsAck)}}
+	for _, tc := range []struct {
+		version   byte
+		senderKey uint32
+		isAcked   bool
+	}{{8, 0x55, true}, {7, 0x55, false}, {8, 0, false}} {
+		h.clearSent()
+		h.c.rpcs.add(&rpc{kind: rpcHello, node: n, sent: h.now})
+		h.record(h.c.onPacket(n.Addr, kadwire.HelloRes{ID: n.ID, TCPPort: 4662, Version: tc.version, Tags: askAck}, keys{sender: tc.senderKey}, h.now))
+		acks := packetsOf[kadwire.HelloResAck](h)
+		if tc.isAcked != (len(acks) == 1) || tc.isAcked && (acks[0].packet.ID != selfID || h.sent[0].receiverKey != tc.senderKey || h.sent[0].nodeID != (wire.Hash{})) {
+			t.Fatalf("version %d, sender key %#x: sent %+v", tc.version, tc.senderKey, h.sent)
+		}
+	}
+}
