@@ -48,9 +48,8 @@ type Progress struct {
 	ActivePeers  int
 }
 
-// State is the Transfer's Durable State. It has the fields of store.Transfer,
-// so the engine converts one to the other. WrittenBlocks are those of parts
-// not yet verified, each a whole block or the leading bytes of one.
+// State is the Transfer's Durable State, field for field store.Transfer
+// (which describes them), so the engine converts one to the other.
 type State struct {
 	Size          int64
 	File          string
