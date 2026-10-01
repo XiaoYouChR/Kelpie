@@ -133,7 +133,7 @@ func buildSession(cfg Config, remote netip.AddrPort, now time.Time) *Session {
 
 func (s *Session) Capabilities() Capabilities { return s.caps }
 func (s *Session) UserHash() wire.Hash        { return s.userHash }
-func (s *Session) IsIdentified() bool         { return s.ident.isIdentified }
+func (s *Session) isIdentified() bool         { return s.ident.isIdentified }
 
 // OnPacket reacts to one packet from the peer. shares tells which of our
 // files we offer, for the packets that ask about them.

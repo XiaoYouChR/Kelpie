@@ -232,11 +232,9 @@ func TestBitfieldDropsTrailingBits(t *testing.T) {
 	}
 }
 
-func TestBitfieldSetClear(t *testing.T) {
+func TestBitfieldSet(t *testing.T) {
 	f := ToBitfield(make([]bool, 12))
 	f.Set(11)
-	f.Set(0)
-	f.Clear(0)
 	if !f.Has(11) || f.Has(0) || f.Has(12) || f.Has(-1) || f.Count() != 1 {
 		t.Fatalf("bitfield = %v", f.Bools())
 	}
