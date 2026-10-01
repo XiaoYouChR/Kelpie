@@ -22,3 +22,18 @@ func TestSourceAnswerIsCapped(t *testing.T) {
 		t.Fatalf("found %d sources, want %d", got, maxSources)
 	}
 }
+
+func TestOversizedCompressedPartCloses(t *testing.T) {
+	l := buildLink(t)
+	size := piece.BlockSize
+	file, _ := addShare(l.b, 1, size, true)
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
+	l.run(l.a, l.a.s.Start(file))
+	l.run(l.b, l.b.s.StartUpload())
+	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: size}}))
+	part := client.CompressedPart{Hash: file, PackedSize: 1 << 30, Data: make([]byte, 10240)}
+	l.run(l.b, Output{Send: []wire.Packet{part}})
+	if l.a.closed != CloseProtocol {
+		t.Fatalf("closed %q, want %q", l.a.closed, CloseProtocol)
+	}
+}

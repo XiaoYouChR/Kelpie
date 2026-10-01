@@ -430,11 +430,18 @@ func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint3
 	}
 	s.down.lastData = now
 	f := d.inFlight[i]
+	size := f.block.End - f.block.Begin
+	// zlib's compressBound: no sender packs a block larger than this, so
+	// the stream we hold stays within it.
+	maxPacked := size + size>>12 + size>>14 + size>>25 + 13
+	if int64(packedSize) > maxPacked || len(f.packed)+len(data) > int(packedSize) {
+		out.Close = CloseProtocol
+		return
+	}
 	f.packed = append(f.packed, data...)
 	if len(f.packed) < int(packedSize) {
 		return
 	}
-	size := f.block.End - f.block.Begin
 	plain, err := toInflated(f.packed, size)
 	if err != nil || int64(len(plain)) != size {
 		out.Close = CloseProtocol
