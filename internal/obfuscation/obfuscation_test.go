@@ -87,7 +87,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := <-incoming
-	if _, ok := in.(*Conn); !ok {
+	if _, ok := in.(*cipherConn); !ok {
 		t.Fatalf("incoming is %T", in)
 	}
 	hello := wire.BuildFrame(nil, wire.ProtocolEDonkey, 0x01, []byte("hello"))
@@ -207,7 +207,7 @@ func TestServerHandshake(t *testing.T) {
 	secret := [16]byte{0x9A, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0xFF}
 	b := big.NewInt(0x1234567890ABCDEF)
 	clientSide, serverSide := buildPair(t)
-	opened := make(chan *Conn)
+	opened := make(chan net.Conn)
 	go func() {
 		c, err := OpenServer(clientSide, secret, wire.ProtocolEDonkey)
 		if err != nil {
