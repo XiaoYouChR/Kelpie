@@ -271,11 +271,9 @@ func (s *Session) onSignature(p client.Signature, out *Output) {
 	}
 	challenge := identity.Challenge{Value: s.ident.challenge, IPKind: identity.IPKind(p.IPKind), SignerIP: s.remote.Addr(), VerifierIP: s.toPublicIP()}
 	s.ident.challenge = 0
-	if s.ident.peerKey == nil || !identity.MatchSignature(s.ident.peerKey, p.Signature, s.cfg.Self.PublicKey(), challenge) {
-		out.add(IdentityFailed{UserHash: s.userHash})
-		return
+	if s.ident.peerKey != nil && identity.MatchSignature(s.ident.peerKey, p.Signature, s.cfg.Self.PublicKey(), challenge) {
+		out.add(Identified{UserHash: s.userHash, PublicKey: s.ident.peerKey})
 	}
-	out.add(Identified{UserHash: s.userHash, PublicKey: s.ident.peerKey})
 }
 
 func (s *Session) toPublicIP() netip.Addr {

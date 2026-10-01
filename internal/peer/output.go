@@ -40,8 +40,6 @@ type Identified struct {
 	PublicKey []byte
 }
 
-type IdentityFailed struct{ UserHash wire.Hash }
-
 // StatusReceived carries which parts of File the peer has.
 type StatusReceived struct {
 	File  wire.Hash
@@ -113,7 +111,6 @@ type SourcesFound struct {
 
 func (HandshakeCompleted) isEvent() {}
 func (Identified) isEvent()         {}
-func (IdentityFailed) isEvent()     {}
 func (StatusReceived) isEvent()     {}
 func (HashSetReceived) isEvent()    {}
 func (FileRejected) isEvent()       {}

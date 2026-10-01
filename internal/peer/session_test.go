@@ -240,14 +240,13 @@ func TestIdentityFailsForForgedKey(t *testing.T) {
 		return p
 	}
 	l.open(ca, cb)
-	if failed := lastOf[IdentityFailed](t, l.a); failed.UserHash != cb.Self.UserHash {
-		t.Fatalf("failed %+v", failed)
-	}
-	if len(eventsOf[Identified](l.a)) != 0 {
-		t.Fatal("forged key identified")
+	if sentCount[client.Signature](l) != 2 {
+		t.Fatalf("%d signatures exchanged, want both", sentCount[client.Signature](l))
 	}
 	// a signed over the key it was given, so b rejects a too.
-	lastOf[IdentityFailed](t, l.b)
+	if len(eventsOf[Identified](l.a)) != 0 || len(eventsOf[Identified](l.b)) != 0 {
+		t.Fatal("forged key identified")
+	}
 }
 
 func TestPacketBeforeHelloCloses(t *testing.T) {
