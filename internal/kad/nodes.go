@@ -81,9 +81,7 @@ func toStoreNode(n Node) store.KadNode {
 
 // matchGoodAddr rejects endpoints no Kad node can listen on.
 func matchGoodAddr(addr netip.AddrPort) bool {
-	ip := addr.Addr()
-	return ip.Is4() && addr.Port() != 0 && !ip.IsUnspecified() && !ip.IsLoopback() &&
-		!ip.IsMulticast() && ip != netip.AddrFrom4([4]byte{255, 255, 255, 255})
+	return wire.IsDialable(addr) && !addr.Addr().IsLoopback()
 }
 
 // Kad writes a 128-bit value as four little-endian uint32 words, so each

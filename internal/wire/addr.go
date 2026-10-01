@@ -31,3 +31,25 @@ func ToAddr(id uint32) netip.Addr {
 	binary.LittleEndian.PutUint32(a[:], id)
 	return netip.AddrFrom4(a)
 }
+
+// IsPublic follows aMule's IsGoodIP with FilterLanIPs on
+// (NetworkFunctions.cpp:99-151): no "this network" 0/8, loopback, link-local,
+// multicast, 240/4 (which holds 255.255.255.255) or private LAN address.
+// aMule's other reserved ranges are left out: several, like 39/8, have since
+// been allocated.
+func IsPublic(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if addr.Is4() && (addr.As4()[0] == 0 || addr.As4()[0] >= 240) {
+		return false
+	}
+	return addr.IsGlobalUnicast() && !addr.IsPrivate()
+}
+
+// IsDialable reports whether an IPv4 endpoint can be reached at all: it has
+// a port and its address is not unspecified, multicast or broadcast. LAN and
+// loopback addresses pass.
+func IsDialable(endpoint netip.AddrPort) bool {
+	addr := endpoint.Addr()
+	return addr.Is4() && endpoint.Port() != 0 && !addr.IsUnspecified() && !addr.IsMulticast() &&
+		addr != netip.AddrFrom4([4]byte{255, 255, 255, 255})
+}

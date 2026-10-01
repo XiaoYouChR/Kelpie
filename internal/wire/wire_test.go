@@ -307,3 +307,23 @@ func TestTagListCap(t *testing.T) {
 		t.Fatalf("%d tags: got %d, want an error", maxTags+1, len(tags))
 	}
 }
+
+func TestAddressFilters(t *testing.T) {
+	for addr, want := range map[string]bool{
+		"198.51.100.7": true, "2001:db8::1": true, "::ffff:198.51.100.7": true,
+		"10.0.0.1": false, "192.168.1.1": false, "127.0.0.1": false, "169.254.1.1": false,
+		"0.1.2.3": false, "224.0.0.1": false, "240.0.0.1": false, "255.255.255.255": false, "fe80::1": false, "fd00::1": false,
+	} {
+		if got := IsPublic(netip.MustParseAddr(addr)); got != want {
+			t.Errorf("IsPublic(%s) = %v, want %v", addr, got, want)
+		}
+	}
+	for endpoint, want := range map[string]bool{
+		"198.51.100.7:4661": true, "192.168.1.1:4661": true, "127.0.0.1:4661": true,
+		"198.51.100.7:0": false, "0.0.0.0:4661": false, "224.0.0.1:4661": false, "255.255.255.255:4661": false, "[2001:db8::1]:4661": false,
+	} {
+		if got := IsDialable(netip.MustParseAddrPort(endpoint)); got != want {
+			t.Errorf("IsDialable(%s) = %v, want %v", endpoint, got, want)
+		}
+	}
+}

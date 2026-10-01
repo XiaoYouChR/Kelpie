@@ -211,25 +211,12 @@ func (t *Transfer) isBanned(found Source, now time.Time) bool {
 func (t *Transfer) isUsable(found Source) bool {
 	switch {
 	case found.Buddy.IsValid():
-		return found.UserHash != (wire.Hash{}) && isPublic(found.Buddy.Addr())
+		return found.UserHash != (wire.Hash{}) && wire.IsPublic(found.Buddy.Addr())
 	case found.ClientID != 0:
 		return wire.IsLowID(found.ClientID) && found.Server.IsValid()
 	default:
-		return found.Endpoint.IsValid() && found.Endpoint.Port() != 0 && isPublic(found.Endpoint.Addr()) && !t.isSelf(found.Endpoint)
+		return found.Endpoint.IsValid() && found.Endpoint.Port() != 0 && wire.IsPublic(found.Endpoint.Addr()) && !t.isSelf(found.Endpoint)
 	}
-}
-
-// isPublic follows aMule's IsGoodIP with FilterLanIPs on
-// (NetworkFunctions.cpp:99-151): no "this network" 0/8, loopback, link-local,
-// multicast, 240/4 (which holds 255.255.255.255) or private LAN address.
-// aMule's other reserved ranges are left out: several, like 39/8, have since
-// been allocated.
-func isPublic(addr netip.Addr) bool {
-	addr = addr.Unmap()
-	if addr.Is4() && (addr.As4()[0] == 0 || addr.As4()[0] >= 240) {
-		return false
-	}
-	return addr.IsGlobalUnicast() && !addr.IsPrivate()
 }
 
 // isSelf follows aMule CPartFile::CanAddSource (PartFile.cpp:1745-1766):

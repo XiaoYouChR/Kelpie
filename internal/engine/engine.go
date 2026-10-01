@@ -683,8 +683,7 @@ func matchCarrierNAT(mapped, public netip.Addr) bool {
 }
 
 func isPublicIPv4(addr netip.Addr) bool {
-	return addr.Is4() && addr.IsGlobalUnicast() && !addr.IsPrivate() &&
-		!sharedAddressSpace.Contains(addr) && addr.As4()[0] != 0 && addr.As4()[0] < 240
+	return addr.Is4() && wire.IsPublic(addr) && !sharedAddressSpace.Contains(addr)
 }
 
 func (e *Engine) closeNAT(unmap func(context.Context) error) {
