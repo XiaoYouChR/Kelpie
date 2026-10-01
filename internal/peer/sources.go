@@ -14,7 +14,9 @@ const (
 	// requests, at most this often. The per-file SOURCECLIENTREASKF and the
 	// rarity rules belong to the transfer.
 	sourceInterval = 40 * time.Minute
-	// CPartFile::CreateSrcInfoPacket stops at 500 sources.
+	// CPartFile::CreateSrcInfoPacket stops at 500 sources; an answer is
+	// read no further, as aMule stops adding at its per-file cap
+	// (PartFile.cpp:3040).
 	maxSources = 500
 )
 
@@ -134,6 +136,9 @@ func (s *Session) onSourcesAnswer(p client.AnswerSources2, out *Output) {
 	delete(s.sx.asked, p.Hash)
 	var sources []Source
 	for _, record := range p.Sources {
+		if len(sources) == maxSources {
+			break
+		}
 		src := toSource(record, p.Version)
 		if src.Port != 0 && (src.IPv4.IsValid() || src.IPv6.IsValid() || src.LowID != 0) {
 			sources = append(sources, src)
