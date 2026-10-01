@@ -18,6 +18,8 @@ const (
 // Network is an in-memory internet. Hosts added to it dial, listen and send
 // datagrams to each other by address.
 type Network struct {
+	// mu guards every host: the leaves of all engines under test dial and
+	// send through them at once.
 	mu    sync.Mutex
 	hosts map[netip.Addr]*Host
 	names map[string]netip.Addr

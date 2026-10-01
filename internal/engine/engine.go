@@ -85,12 +85,16 @@ type Engine struct {
 	events Events
 	caps   capacities
 
-	inbox   chan any
-	ctx     context.Context
-	cancel  context.CancelFunc
+	inbox  chan any
+	ctx    context.Context
+	cancel context.CancelFunc
+	// leaves counts the leaf goroutines, so Close returns once all are gone.
 	leaves  sync.WaitGroup
 	hubDone chan struct{}
 
+	// closeOnce makes a second Close return the first one's result: once the
+	// hub has stopped, its buffered inbox would still take a closeRequested
+	// that nobody answers.
 	closeOnce sync.Once
 	closeErr  error
 
@@ -682,8 +686,8 @@ func (e *Engine) stop() error {
 	for _, r := range append([]*run(nil), e.runList...) {
 		e.stopRun(r, nil)
 	}
-	if e.unmapNAT != nil {
-		e.closeNAT(e.unmapNAT)
+	if unmap := e.unmapNAT; unmap != nil {
+		e.startLeaf(func() { e.closeNAT(unmap) })
 	}
 	for _, c := range e.sortedConns() {
 		e.closeConn(c, "engine closed")

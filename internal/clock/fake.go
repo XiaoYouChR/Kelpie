@@ -7,6 +7,7 @@ import (
 
 // Fake is a Clock that moves only when Advance is called.
 type Fake struct {
+	// mu guards time and the waits: the test advances while leaves wait.
 	mu    sync.Mutex
 	now   time.Time
 	waits []*fakeWait

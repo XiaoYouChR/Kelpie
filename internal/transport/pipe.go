@@ -18,6 +18,7 @@ const pipeBufferSize = 256 << 10
 
 // stream is one direction of a fake connection.
 type stream struct {
+	// mu guards the buffer between the reading and the writing goroutine.
 	mu             sync.Mutex
 	buf            []byte
 	changed        chan struct{}

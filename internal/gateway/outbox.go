@@ -15,6 +15,8 @@ import (
 // A single writer drains it; a slow consumer only ever sees the newest
 // progress.
 type outbox struct {
+	// mu guards the slots between the engine hub, which fills them without
+	// blocking, and the writer goroutine, which empties them.
 	mu              sync.Mutex
 	network         *engine.Network
 	progress        map[engine.RunID]engine.Progress

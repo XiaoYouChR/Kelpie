@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
-	"sync"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/clock"
@@ -31,24 +30,28 @@ func (t udpLogTransport) OpenUDP(port int) (transport.PacketConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &udpLogConn{PacketConn: conn, log: t.log, clock: t.clock, loggedAt: t.clock.Now()}, nil
+	now := t.clock.Now()
+	return &udpLogConn{PacketConn: conn, log: t.log, clock: t.clock, kadIn: kadCount{since: now}, kadOut: kadCount{since: now}}, nil
 }
 
+// udpLogConn counts Kad datagrams per direction: only the socket's reader
+// leaf reads and only its owning hub writes, so neither count is shared.
 type udpLogConn struct {
 	transport.PacketConn
-	log   *log.Logger
-	clock clock.Clock
+	log           *log.Logger
+	clock         clock.Clock
+	kadIn, kadOut kadCount
+}
 
-	mu                      sync.Mutex
-	loggedAt                time.Time
-	kadIn, kadOut           int
-	kadBytesIn, kadBytesOut int
+type kadCount struct {
+	datagrams, bytes int
+	since            time.Time
 }
 
 func (c *udpLogConn) ReadFrom(b []byte) (int, netip.AddrPort, error) {
 	n, from, err := c.PacketConn.ReadFrom(b)
 	if err == nil {
-		c.send("in ", from, b[:n])
+		c.send(&c.kadIn, "in ", from, b[:n])
 	}
 	return n, from, err
 }
@@ -56,33 +59,23 @@ func (c *udpLogConn) ReadFrom(b []byte) (int, netip.AddrPort, error) {
 func (c *udpLogConn) WriteTo(b []byte, addr netip.AddrPort) (int, error) {
 	n, err := c.PacketConn.WriteTo(b, addr)
 	if err == nil {
-		c.send("out", addr, b)
+		c.send(&c.kadOut, "out", addr, b)
 	}
 	return n, err
 }
 
-func (c *udpLogConn) send(direction string, addr netip.AddrPort, data []byte) {
-	if len(data) > 0 && (data[0] == wire.ProtocolKad || data[0] == wire.ProtocolKadPacked) {
-		c.addKad(direction == "in ", len(data))
+func (c *udpLogConn) send(kad *kadCount, direction string, addr netip.AddrPort, data []byte) {
+	if len(data) == 0 || data[0] != wire.ProtocolKad && data[0] != wire.ProtocolKadPacked {
+		c.log.Printf("udp %s %s %s %d", direction, addr, toDatagramName(data), len(data))
 		return
 	}
-	c.log.Printf("udp %s %s %s %d", direction, addr, toDatagramName(data), len(data))
-}
-
-func (c *udpLogConn) addKad(isIn bool, size int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if isIn {
-		c.kadIn, c.kadBytesIn = c.kadIn+1, c.kadBytesIn+size
-	} else {
-		c.kadOut, c.kadBytesOut = c.kadOut+1, c.kadBytesOut+size
-	}
+	kad.datagrams, kad.bytes = kad.datagrams+1, kad.bytes+len(data)
 	now := c.clock.Now()
-	if now.Sub(c.loggedAt) < kadLogTime {
+	if now.Sub(kad.since) < kadLogTime {
 		return
 	}
-	c.log.Printf("udp kad in %d (%d B) out %d (%d B) in %s", c.kadIn, c.kadBytesIn, c.kadOut, c.kadBytesOut, now.Sub(c.loggedAt).Round(time.Second))
-	c.loggedAt, c.kadIn, c.kadOut, c.kadBytesIn, c.kadBytesOut = now, 0, 0, 0, 0
+	c.log.Printf("udp kad %s %d (%d B) in %s", direction, kad.datagrams, kad.bytes, now.Sub(kad.since).Round(time.Second))
+	*kad = kadCount{since: now}
 }
 
 // toDatagramName names an eD2k datagram like toPacketName, adding the

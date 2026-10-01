@@ -11,6 +11,7 @@ import (
 
 // Fake is an in-memory Disk whose operations can be made to fail.
 type Fake struct {
+	// mu guards the files: disk workers and the test touch them at once.
 	mu     sync.Mutex
 	files  map[string]*fakeData
 	faults []*fault

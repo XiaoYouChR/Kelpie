@@ -19,7 +19,9 @@ import (
 // order, any n is paced exactly, and a rate change applies to callers already
 // waiting.
 type Limiter struct {
-	clock    clock.Clock
+	clock clock.Clock
+	// mu guards the bucket, which ADR-0005 keeps as shared memory: every
+	// connection's reader and writer leaf calls WaitN, the hub SetRate.
 	mu       sync.Mutex
 	rate     float64
 	reserved float64

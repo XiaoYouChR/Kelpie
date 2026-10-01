@@ -98,6 +98,7 @@ func probeLocations(ctx context.Context) []string {
 	}
 
 	results := make(chan string)
+	// wg closes results once every interface's search is done.
 	var wg sync.WaitGroup
 	for _, intf := range interfaces {
 		// Interface flags seem to always be 0 on Windows
