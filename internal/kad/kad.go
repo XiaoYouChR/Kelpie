@@ -290,12 +290,9 @@ func (c *core) buildDatagram(d datagram) []byte {
 // does not decode.
 func (c *core) parseDatagram(d Datagram) (p wire.Packet, k keys, isKad bool) {
 	data := d.Data
-	if len(data) == 0 {
-		return nil, keys{}, false
-	}
-	if data[0] != wire.ProtocolKad && data[0] != wire.ProtocolKadPacked {
+	if !kadwire.IsDatagram(data) {
 		kd, ok := obfuscation.ParseKadDatagram(data, kadwire.BuildID(nil, c.id), obfuscation.BuildKadVerifyKey(c.udpKey, d.Addr.Addr()))
-		if !ok || (kd.Packet[0] != wire.ProtocolKad && kd.Packet[0] != wire.ProtocolKadPacked) {
+		if !ok || !kadwire.IsDatagram(kd.Packet) {
 			return nil, keys{}, false
 		}
 		data, k = kd.Packet, keys{sender: kd.SenderKey, receiver: kd.ReceiverKey}
