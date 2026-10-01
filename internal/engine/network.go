@@ -9,6 +9,7 @@ import (
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
 	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
+	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/server"
 	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
@@ -56,11 +57,8 @@ func (e *Engine) runServer(out server.Output) {
 	}
 	for _, callback := range out.ConnectPeers {
 		if e.connByEndpoint(callback.Endpoint) == nil && len(e.conns) < maxConnections {
-			var obfuscateFor wire.Hash
-			if callback.CanObfuscate && !e.hasOtherUser(callback.Endpoint, callback.UserHash) {
-				obfuscateFor = callback.UserHash
-			}
-			e.openConn(callback.Endpoint, false, obfuscateFor, 0)
+			canObfuscate := callback.CanObfuscate && !e.hasOtherUser(callback.Endpoint, callback.UserHash)
+			e.openPeerConn(callback.Endpoint, callback.UserHash, canObfuscate)
 		}
 	}
 	for _, host := range out.Resolve {
@@ -311,7 +309,7 @@ func (e *Engine) onReask(from netip.AddrPort, ping client.ReaskFilePing) {
 	case upload.ReaskAck:
 		ack := client.ReaskAck{Rank: uint16(min(a.Rank, 0xFFFF))}
 		if r := e.runByHash[ping.Hash]; ping.HasParts && r != nil {
-			ack.HasParts, ack.Parts = true, toStatus(r.share)
+			ack.HasParts, ack.Parts = true, peer.ToStatus(r.share)
 		}
 		reply, user = ack, a.User
 	case upload.FileNotFound:

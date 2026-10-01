@@ -51,16 +51,14 @@ type Config struct {
 
 // Capabilities is what the peer told us about itself in the handshake.
 type Capabilities struct {
-	Name         string
-	ClientID     uint32
-	Port         uint16
-	Server       netip.AddrPort
-	UDPPort      uint16
-	KadPort      uint16
-	UDPVersion   byte
-	KadVersion   byte
-	IPv6         netip.Addr
-	EmuleVersion uint32
+	ClientID   uint32
+	Port       uint16
+	Server     netip.AddrPort
+	UDPPort    uint16
+	KadPort    uint16
+	UDPVersion byte
+	KadVersion byte
+	IPv6       netip.Addr
 	// IsEmule: the peer speaks the eMule extended protocol (CT_EMULE_VERSION
 	// in Hello or OP_EMULEINFO).
 	IsEmule bool
@@ -133,11 +131,13 @@ func buildSession(cfg Config, remote netip.AddrPort, now time.Time) *Session {
 
 func (s *Session) Capabilities() Capabilities { return s.caps }
 func (s *Session) UserHash() wire.Hash        { return s.userHash }
-func (s *Session) IsIdentified() bool         { return s.ident.isIdentified }
+
+// IsUploading tells whether the peer holds an upload slot with us.
+func (s *Session) IsUploading() bool { return s.up.isUploading }
 
 // OnPacket reacts to one packet from the peer. shares tells which of our
 // files we offer, for the packets that ask about them.
-func (s *Session) OnPacket(p wire.Packet, shares Shares, now time.Time) Output {
+func (s *Session) OnPacket(p wire.Packet, shares shareByHash, now time.Time) Output {
 	s.lastActive = now
 	var out Output
 	if !s.isHandshaken {
@@ -146,7 +146,7 @@ func (s *Session) OnPacket(p wire.Packet, shares Shares, now time.Time) Output {
 	}
 	switch p := p.(type) {
 	case client.Hello, client.HelloAnswer:
-		out.Close = CloseProtocol
+		out.Close = closeProtocol
 	case client.EmuleInfo:
 		s.onEmuleInfo(p, &out)
 	case client.IPv6Changed:
@@ -250,7 +250,7 @@ func (s *Session) SetIdleTimeout(d time.Duration) {
 func (s *Session) OnTick(now time.Time) Output {
 	var out Output
 	if now.Sub(s.lastActive) > s.timeout {
-		out.Close = CloseTimeout
+		out.Close = closeTimeout
 		return out
 	}
 	if s.down.isSlotGranted && s.hasBlocksInFlight() && now.Sub(s.down.lastData) > downloadTimeout {

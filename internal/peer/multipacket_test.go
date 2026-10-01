@@ -110,7 +110,7 @@ func TestIdentifierAnswerWithWrongSizeCloses(t *testing.T) {
 		return p
 	}
 	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false}))
-	if l.a.closed != CloseProtocol || len(eventsOf[StatusReceived](l.a)) != 0 {
+	if l.a.closed != closeProtocol || len(eventsOf[StatusReceived](l.a)) != 0 {
 		t.Fatalf("closed %q, events %#v", l.a.closed, l.a.events)
 	}
 }
@@ -139,7 +139,7 @@ func TestHashSetRequest2(t *testing.T) {
 	}
 
 	l.run(l.a, Output{Send: []wire.Packet{client.HashSetRequest2{File: client.FileIdentifier{Hash: hashOf(7)}, IsMD4Wanted: true}}})
-	if l.b.closed != CloseProtocol {
+	if l.b.closed != closeProtocol {
 		t.Fatalf("closed %q on an unknown file", l.b.closed)
 	}
 }

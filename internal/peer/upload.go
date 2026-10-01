@@ -35,8 +35,8 @@ type Share struct {
 	Tree       *aich.Tree
 }
 
-// Shares looks up a file we offer.
-type Shares func(file wire.Hash) (Share, bool)
+// shareByHash looks up a file we offer.
+type shareByHash func(file wire.Hash) (Share, bool)
 
 type uploadBlock struct {
 	file  wire.Hash
@@ -140,7 +140,7 @@ func toDeflated(data []byte) []byte {
 	return packed.Bytes()
 }
 
-func (s *Session) onFileRequest(p client.FileRequest, shares Shares, out *Output) {
+func (s *Session) onFileRequest(p client.FileRequest, shares shareByHash, out *Output) {
 	share, ok := shares(p.Hash)
 	if !ok {
 		out.send(client.NoFile{Hash: p.Hash})
@@ -160,18 +160,19 @@ func (s *Session) setRequestedParts(p client.FileRequest, share Share) {
 	}
 }
 
-func (s *Session) onStatusRequest(file wire.Hash, shares Shares, out *Output) {
+func (s *Session) onStatusRequest(file wire.Hash, shares shareByHash, out *Output) {
 	share, ok := shares(file)
 	if !ok {
 		out.send(client.NoFile{Hash: file})
 		return
 	}
 	s.up.file = file
-	out.send(client.FileStatus{Hash: file, Parts: toStatus(share)})
+	out.send(client.FileStatus{Hash: file, Parts: ToStatus(share)})
 }
 
-// toStatus sends no parts for a complete file, as eMule does.
-func toStatus(share Share) wire.Bitfield {
+// ToStatus is our part status of share for OP_FILESTATUS and the UDP reask:
+// no parts for a complete file, as eMule sends.
+func ToStatus(share Share) wire.Bitfield {
 	if share.Parts.IsFull() {
 		return wire.Bitfield{}
 	}
@@ -181,7 +182,7 @@ func toStatus(share Share) wire.Bitfield {
 // onMultiPacket answers the bundled requests in one OP_MULTIPACKETANSWER,
 // or OP_MULTIPACKETANSWER_EXT2 led by our identifier when isExt2
 // (ListenSocket.cpp:1072-1297). OP_MULTIPACKET carries no size.
-func (s *Session) onMultiPacket(id client.FileIdentifier, requests []wire.Packet, isExt2 bool, shares Shares, now time.Time, out *Output) {
+func (s *Session) onMultiPacket(id client.FileIdentifier, requests []wire.Packet, isExt2 bool, shares shareByHash, now time.Time, out *Output) {
 	file := id.Hash
 	share, ok := shares(file)
 	if !ok || !matchFile(id, share) {
@@ -197,7 +198,7 @@ func (s *Session) onMultiPacket(id client.FileIdentifier, requests []wire.Packet
 			s.setRequestedParts(r, share)
 			answers = append(answers, client.FileNameAnswer{Hash: file, Name: share.Name})
 		case client.SetRequestFileID:
-			answers = append(answers, client.FileStatus{Hash: file, Parts: toStatus(share)})
+			answers = append(answers, client.FileStatus{Hash: file, Parts: ToStatus(share)})
 		case client.RequestSources2:
 			sourcesRequest = &r
 		case client.AICHFileHashRequest:
@@ -227,7 +228,7 @@ func (s *Session) onMultiPacket(id client.FileIdentifier, requests []wire.Packet
 	}
 }
 
-func (s *Session) onHashSetRequest(file wire.Hash, shares Shares, out *Output) {
+func (s *Session) onHashSetRequest(file wire.Hash, shares shareByHash, out *Output) {
 	if share, ok := shares(file); ok && len(share.PartHashes) > 0 {
 		out.send(client.HashSetAnswer{Hash: file, Parts: share.PartHashes})
 	}
@@ -235,10 +236,10 @@ func (s *Session) onHashSetRequest(file wire.Hash, shares Shares, out *Output) {
 
 // onHashSetRequest2 answers with the MD4 part hashes only; eMule closes on
 // a file it does not share (UploadClient.cpp:572-605).
-func (s *Session) onHashSetRequest2(p client.HashSetRequest2, shares Shares, out *Output) {
+func (s *Session) onHashSetRequest2(p client.HashSetRequest2, shares shareByHash, out *Output) {
 	share, ok := shares(p.File.Hash)
 	if !ok || !matchFile(p.File, share) {
-		out.Close = CloseProtocol
+		out.Close = closeProtocol
 		return
 	}
 	if !p.IsMD4Wanted && !p.IsAICHWanted {
@@ -268,7 +269,7 @@ func toIdentifier(file wire.Hash, share Share) client.FileIdentifier {
 	return id
 }
 
-func (s *Session) onUploadRequest(file wire.Hash, shares Shares, out *Output) {
+func (s *Session) onUploadRequest(file wire.Hash, shares shareByHash, out *Output) {
 	if file == (wire.Hash{}) {
 		file = s.up.file
 	}
@@ -279,7 +280,7 @@ func (s *Session) onUploadRequest(file wire.Hash, shares Shares, out *Output) {
 	out.add(UploadRequested{File: file, Parts: s.up.parts[file]})
 }
 
-func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, shares Shares, out *Output) {
+func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, shares shareByHash, out *Output) {
 	share, ok := shares(file)
 	if !s.up.isUploading || !ok {
 		return

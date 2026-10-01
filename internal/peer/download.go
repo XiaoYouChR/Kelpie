@@ -17,11 +17,10 @@ const largeFileSize = 4_290_048_000
 
 // downloadState is the download role. Every added file is probed for the
 // peer's parts, but the upload slot, which eD2k grants per client and not per
-// file, is asked for one started file at a time.
+// file, is asked for one started file at a time; started is zero until then.
 type downloadState struct {
 	files         map[wire.Hash]*download
 	started       wire.Hash
-	isStarted     bool
 	isStartSent   bool
 	isSlotGranted bool
 	lastData      time.Time
@@ -30,7 +29,6 @@ type downloadState struct {
 type download struct {
 	size               int64
 	parts              piece.Set
-	isRequested        bool
 	isHashSetWanted    bool
 	isHashSetRequested bool
 	peerParts          piece.Set
@@ -66,7 +64,7 @@ func (s *Session) Add(file wire.Hash, size int64, parts piece.Set) Output {
 // releases the blocks it had requested.
 func (s *Session) Remove(file wire.Hash) Output {
 	var out Output
-	if s.down.isStarted && s.down.started == file && s.down.isSlotGranted {
+	if s.down.started == file && s.down.isSlotGranted {
 		out.send(client.CancelTransfer{})
 	}
 	s.removeFile(file, &out)
@@ -77,10 +75,10 @@ func (s *Session) Remove(file wire.Hash) Output {
 // the previous one.
 func (s *Session) Start(file wire.Hash) Output {
 	var out Output
-	if s.down.files[file] == nil || s.down.isStarted && s.down.started == file {
+	if s.down.files[file] == nil || s.down.started == file {
 		return out
 	}
-	if s.down.isStarted {
+	if s.down.started != (wire.Hash{}) {
 		if s.down.isSlotGranted {
 			out.send(client.CancelTransfer{})
 			s.down.isSlotGranted = false
@@ -88,7 +86,7 @@ func (s *Session) Start(file wire.Hash) Output {
 		s.cancelInFlight(s.down.started, &out)
 		s.down.isStartSent = false
 	}
-	s.down.started, s.down.isStarted = file, true
+	s.down.started = file
 	s.runStarted(&out)
 	return out
 }
@@ -154,9 +152,7 @@ func (s *Session) Request(file wire.Hash, blocks []piece.Block) Output {
 // Stop gives up every block in flight on a closing connection.
 func (s *Session) Stop() Output {
 	var out Output
-	if s.down.isStarted {
-		s.cancelInFlight(s.down.started, &out)
-	}
+	s.cancelInFlight(s.down.started, &out)
 	return out
 }
 
@@ -164,7 +160,7 @@ func (s *Session) removeFile(file wire.Hash, out *Output) {
 	s.cancelInFlight(file, out)
 	delete(s.down.files, file)
 	delete(s.sx.asked, file)
-	if s.down.isStarted && s.down.started == file {
+	if s.down.started == file {
 		s.down = downloadState{files: s.down.files}
 	}
 }
@@ -186,7 +182,6 @@ func (s *Session) sendFileRequest(file wire.Hash, d *download, out *Output) {
 		out.add(FileRejected{File: file})
 		return
 	}
-	d.isRequested = true
 	request := client.FileRequest{Hash: file}
 	// eMule reads these extensions by the version the sender advertised,
 	// which for us is client.ExtendedRequestsVersion.
@@ -231,7 +226,7 @@ func (s *Session) onMultiPacketAnswerExt2(p client.MultiPacketAnswerExt2, out *O
 		return
 	}
 	if p.File.Size != 0 && p.File.Size != uint64(d.size) {
-		out.Close = CloseProtocol
+		out.Close = closeProtocol
 		return
 	}
 	if p.File.HasRoot {
@@ -268,7 +263,7 @@ func (s *Session) onFileStatus(p client.FileStatus, out *Output) {
 	}
 	parts, ok := toPartSet(p.Parts, d.size)
 	if !ok {
-		out.Close = CloseProtocol
+		out.Close = closeProtocol
 		return
 	}
 	s.setPeerParts(p.Hash, d, parts, out)
@@ -289,7 +284,7 @@ func (s *Session) onHashSet(p client.HashSetAnswer, out *Output) {
 	d.isHashSetWanted = false
 	// aMule drops a client that sends a wrong hash set (DownloadClient.cpp:584-585).
 	if len(p.Parts) != piece.HashCount(d.size) || piece.BuildFileHash(p.Parts) != p.Hash {
-		out.Close = CloseProtocol
+		out.Close = closeProtocol
 		return
 	}
 	out.add(HashSetReceived{File: p.Hash, Hashes: p.Parts})
@@ -308,11 +303,8 @@ func (s *Session) onNoFile(file wire.Hash, out *Output) {
 // still need is not asked for a slot (aMule DS_NONEEDEDPARTS,
 // DownloadClient.cpp:459-466).
 func (s *Session) runStarted(out *Output) {
-	if !s.down.isStarted {
-		return
-	}
 	d := s.down.files[s.down.started]
-	if d.peerParts == nil {
+	if d == nil || d.peerParts == nil {
 		return
 	}
 	switch {
@@ -343,7 +335,7 @@ func (s *Session) requestBlocks(d *download, out *Output) {
 
 func (s *Session) onQueueRank(rank uint32, out *Output) {
 	s.stopSlot(out)
-	if s.down.isStarted {
+	if s.down.started != (wire.Hash{}) {
 		out.add(Queued{File: s.down.started, Rank: rank})
 	}
 }
@@ -354,11 +346,7 @@ func (s *Session) onSlotGranted(now time.Time, out *Output) {
 	}
 	s.down.isSlotGranted = true
 	s.down.lastData = now
-	var file wire.Hash
-	if s.down.isStarted {
-		file = s.down.started
-	}
-	out.add(SlotGranted{File: file})
+	out.add(SlotGranted{File: s.down.started})
 	s.runStarted(out)
 }
 
@@ -368,16 +356,13 @@ func (s *Session) stopSlot(out *Output) {
 	}
 	s.down.isSlotGranted = false
 	s.down.isStartSent = false
-	var file wire.Hash
-	if s.down.isStarted {
-		file = s.down.started
-		s.cancelInFlight(file, out)
-	}
-	out.add(SlotRevoked{File: file})
+	s.cancelInFlight(s.down.started, out)
+	out.add(SlotRevoked{File: s.down.started})
 }
 
 func (s *Session) hasBlocksInFlight() bool {
-	return s.down.isStarted && len(s.down.files[s.down.started].inFlight) > 0
+	d := s.down.files[s.down.started]
+	return d != nil && len(d.inFlight) > 0
 }
 
 func (s *Session) onPart(file wire.Hash, start int64, data []byte, now time.Time, out *Output) {
@@ -462,7 +447,7 @@ func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint3
 	// eMule packs into a buffer 300 bytes larger than the block and sends
 	// the block plain unless packing shrinks it (UploadDiskIOThread.cpp:581-583).
 	if int64(packedSize) > size+300 || len(f.packed)+len(data) > int(packedSize) {
-		out.Close = CloseProtocol
+		out.Close = closeProtocol
 		return
 	}
 	f.packed = append(f.packed, data...)
@@ -471,7 +456,7 @@ func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint3
 	}
 	plain, err := toInflated(f.packed, size)
 	if err != nil || int64(len(plain)) != size {
-		out.Close = CloseProtocol
+		out.Close = closeProtocol
 		return
 	}
 	f.data = plain

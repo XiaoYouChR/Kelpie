@@ -54,11 +54,7 @@ func (e *Engine) startFirewallCheck(r kad.FirewallCheck) {
 	if len(e.conns) >= maxConnections {
 		return
 	}
-	var obfuscateFor wire.Hash
-	if r.CryptOptions&peer.CryptSupported != 0 {
-		obfuscateFor = r.UserHash
-	}
-	c := e.openConn(r.Addr, false, obfuscateFor, 0)
+	c := e.openPeerConn(r.Addr, r.UserHash, peer.CanObfuscate(r.CryptOptions, r.UserHash))
 	e.kadChecks[c.id] = kadCheck{kadPort: r.KadPort}
 }
 
@@ -83,7 +79,7 @@ func (e *Engine) startUDPCheck(r kad.UDPCheck) {
 		e.kad.SendUDPCheckEnded(kad.UDPCheckEnded{IP: r.Addr.Addr(), IsCancelled: true})
 		return
 	}
-	c := e.openConn(r.Addr, false, wire.Hash{}, 0)
+	c := e.openPeerConn(r.Addr, wire.Hash{}, false)
 	e.kadChecks[c.id] = kadCheck{udp: &r}
 }
 
@@ -135,7 +131,7 @@ func (e *Engine) onKadPacket(c *conn, p wire.Packet) {
 		if e.kad != nil {
 			e.kad.RequestFirewallUDP(kad.FirewallUDP{
 				IP: c.remote.Addr(), InternPort: p.InternPort, ExternPort: p.ExternPort, Key: p.Key,
-				IsKnown: len(c.files) > 0 || c.isUploading,
+				IsKnown: len(c.files) > 0 || c.session.IsUploading(),
 			})
 		}
 	case client.BuddyPing:

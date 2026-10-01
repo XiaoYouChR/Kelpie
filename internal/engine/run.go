@@ -311,11 +311,7 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			}
 			c := e.connByEndpoint(a.Endpoint)
 			if c == nil {
-				var obfuscateFor wire.Hash
-				if a.CanObfuscate {
-					obfuscateFor = a.UserHash
-				}
-				c = e.openConn(a.Endpoint, false, obfuscateFor, 0)
+				c = e.openPeerConn(a.Endpoint, a.UserHash, a.CanObfuscate)
 			}
 			e.addFile(c, r)
 		case transfer.ReaskUDP:
@@ -325,7 +321,7 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			e.sendPeerDatagram(a.Endpoint, client.ReaskFilePing{
 				Hash:               r.file.Hash,
 				HasParts:           true,
-				Parts:              toStatus(r.share),
+				Parts:              peer.ToStatus(r.share),
 				HasCompleteSources: true,
 			}, a.UserHash, a.CanObfuscate)
 		case transfer.RequestServerCallback:
@@ -446,15 +442,4 @@ func (e *Engine) matchKnownSource(user wire.Hash, caps peer.Capabilities) []wire
 		}
 	}
 	return files
-}
-
-// toStatus is our part status for a reask: no parts for a complete file,
-// as eMule sends.
-func toStatus(share peer.Share) wire.Bitfield {
-	if share.Parts.IsFull() {
-		return wire.Bitfield{}
-	}
-	have := make([]bool, share.Size/piece.PartSize+1)
-	copy(have, share.Parts)
-	return wire.ToBitfield(have)
 }

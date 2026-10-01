@@ -85,7 +85,7 @@ func TestOneRecoveryRequestAtATime(t *testing.T) {
 func TestUnrequestedRecoveryCloses(t *testing.T) {
 	l := buildLink(t)
 	l.run(l.b, Output{Send: []wire.Packet{client.AICHAnswer{Hash: hashOf(1)}}})
-	if l.a.closed != CloseProtocol {
+	if l.a.closed != closeProtocol {
 		t.Fatalf("closed = %q", l.a.closed)
 	}
 }

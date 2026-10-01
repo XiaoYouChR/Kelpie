@@ -31,23 +31,23 @@ type Source struct {
 	Server   netip.AddrPort
 	UserHash wire.Hash
 	// CryptOptions is the source's obfuscation setting, laid out as in
-	// Source Exchange v4 and the servers' answers: CryptSupported,
-	// CryptRequested, CryptRequired.
+	// Source Exchange v4, the servers' answers, Kad and the Hello:
+	// cryptSupported, cryptRequested, cryptRequired.
 	CryptOptions byte
 }
 
 const (
-	CryptSupported byte = 0x01
-	CryptRequested byte = 0x02
-	CryptRequired  byte = 0x04
+	cryptSupported byte = 0x01
+	cryptRequested byte = 0x02
+	cryptRequired  byte = 0x04
 )
 
-// CanObfuscate tells whether a connection to the source may be obfuscated:
-// it supports obfuscation and we know the user hash that keys it. Kelpie
-// requests obfuscation, so a supporting peer is always obfuscated, as aMule
-// does (CUpDownClient::Connect).
-func (s Source) CanObfuscate() bool {
-	return s.CryptOptions&CryptSupported != 0 && s.UserHash != wire.Hash{}
+// CanObfuscate tells whether a connection to a client with these crypt
+// options may be obfuscated: it supports obfuscation and we know the user
+// hash that keys it. Kelpie requests obfuscation, so a supporting client is
+// always obfuscated, as aMule does (CUpDownClient::Connect).
+func CanObfuscate(cryptOptions byte, user wire.Hash) bool {
+	return cryptOptions&cryptSupported != 0 && user != wire.Hash{}
 }
 
 type sourceState struct {
@@ -110,7 +110,7 @@ func (s *Session) SendSources(file wire.Hash, sources []Source) Output {
 	return out
 }
 
-func (s *Session) onSourcesRequest(p client.RequestSources2, shares Shares, now time.Time, out *Output) {
+func (s *Session) onSourcesRequest(p client.RequestSources2, shares shareByHash, now time.Time, out *Output) {
 	if _, ok := shares(p.Hash); !ok {
 		return
 	}

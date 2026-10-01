@@ -8,24 +8,20 @@ import (
 )
 
 // Output is what the engine must do after a call: write Send to the
-// connection in order, handle Events, then close the connection if Close is
-// set.
+// connection in order, handle Events, then close the connection if Close,
+// the reason, is set.
 type Output struct {
 	Send   []wire.Packet
 	Events []Event
-	Close  CloseReason
+	Close  string
 }
 
 func (o *Output) send(p ...wire.Packet) { o.Send = append(o.Send, p...) }
 func (o *Output) add(e Event)           { o.Events = append(o.Events, e) }
 
-// CloseReason says why the session wants its connection closed; empty means
-// keep it open.
-type CloseReason string
-
 const (
-	CloseTimeout  CloseReason = "timeout"
-	CloseProtocol CloseReason = "protocol violation"
+	closeTimeout  = "timeout"
+	closeProtocol = "protocol violation"
 )
 
 type Event interface{ isEvent() }

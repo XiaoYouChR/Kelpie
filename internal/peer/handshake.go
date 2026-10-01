@@ -93,19 +93,19 @@ func (s *Session) onGreeting(p wire.Packet, out *Output) {
 		return
 	case client.Hello:
 		if s.isOutgoing {
-			out.Close = CloseProtocol
+			out.Close = closeProtocol
 			return
 		}
 		hello = p
 		out.send(client.HelloAnswer(s.buildHello()))
 	case client.HelloAnswer:
 		if !s.isOutgoing {
-			out.Close = CloseProtocol
+			out.Close = closeProtocol
 			return
 		}
 		hello = client.Hello(p)
 	default:
-		out.Close = CloseProtocol
+		out.Close = closeProtocol
 		return
 	}
 	s.setHello(hello)
@@ -122,7 +122,6 @@ func (s *Session) onGreeting(p wire.Packet, out *Output) {
 func (s *Session) setHello(h client.Hello) {
 	s.userHash = h.UserHash
 	s.caps = Capabilities{
-		Name:                       h.Name,
 		ClientID:                   h.ClientID,
 		Port:                       h.Port,
 		Server:                     h.Server,
@@ -131,7 +130,6 @@ func (s *Session) setHello(h client.Hello) {
 		UDPVersion:                 h.Misc1.UDPVersion,
 		KadVersion:                 h.Misc2.KadVersion,
 		IPv6:                       h.IPv6,
-		EmuleVersion:               h.EmuleVersion,
 		IsEmule:                    h.EmuleVersion != 0,
 		MuleVersion:                toMuleVersion(h.EmuleVersion),
 		CanCompress:                h.Misc1.DataCompressionVersion > 0,
@@ -161,11 +159,11 @@ func toMuleVersion(emuleVersion uint32) byte {
 func toCryptOptions(m client.MiscOptions2) byte {
 	var options byte
 	if m.CanCrypt {
-		options |= CryptSupported
+		options |= cryptSupported
 		if m.IsCryptRequested {
-			options |= CryptRequested
+			options |= cryptRequested
 			if m.IsCryptRequired {
-				options |= CryptRequired
+				options |= cryptRequired
 			}
 		}
 	}
@@ -226,7 +224,6 @@ type identState struct {
 	isSignaturePending bool
 	pendingChallenge   uint32
 	pendingKind        identity.IPKind
-	isIdentified       bool
 }
 
 // sendIdentState always asks for the key too: the engine compares the key
@@ -283,7 +280,6 @@ func (s *Session) onSignature(p client.Signature, out *Output) {
 		out.add(IdentityFailed{UserHash: s.userHash})
 		return
 	}
-	s.ident.isIdentified = true
 	out.add(Identified{UserHash: s.userHash, PublicKey: s.ident.peerKey})
 }
 

@@ -65,9 +65,11 @@ type conn struct {
 	// the upload bytes being read or waiting to be written.
 	uploadBlocks   []diskJob
 	uploadBuffered int64
-	isHandshaken   bool
-	isUploading    bool
-	isClosed       bool
+	// isHandshaken is set once the engine has acted on the handshake, which
+	// is later than the session completes it: within the Output that carries
+	// HandshakeCompleted the transfers do not know the peer yet.
+	isHandshaken bool
+	isClosed     bool
 }
 
 // outItem is one packet for a writer. Payload counts upload data, for the
@@ -135,6 +137,15 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 		}
 	})
 	return c
+}
+
+// openPeerConn dials a client, obfuscated with its user hash when it can
+// be.
+func (e *Engine) openPeerConn(endpoint netip.AddrPort, user wire.Hash, canObfuscate bool) *conn {
+	if !canObfuscate {
+		user = wire.Hash{}
+	}
+	return e.openConn(endpoint, false, user, 0)
 }
 
 // openObfuscated runs an obfuscation handshake on a leaf. It closes the
@@ -497,7 +508,7 @@ func (e *Engine) runSession(c *conn, out peer.Output) {
 		e.onPeerEvent(c, event)
 	}
 	if out.Close != "" {
-		e.closeConn(c, string(out.Close))
+		e.closeConn(c, out.Close)
 	}
 }
 
@@ -552,7 +563,6 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 	case peer.BlocksRequested:
 		e.onBlocksRequested(c, ev)
 	case peer.UploadCancelled:
-		c.isUploading = false
 		c.uploadFile = wire.Hash{}
 		c.uploadBlocks = nil
 		e.queue.OnConnectionGone(c.id)
@@ -597,7 +607,7 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 		e.publicIP = ev.YourIP
 	}
 	if caps.Port != 0 {
-		e.uploadEndpoints[uploadKey{ev.UserHash, c.remote.Addr()}] = uploadTarget{c.endpoint(), caps.CryptOptions&peer.CryptSupported != 0}
+		e.uploadEndpoints[uploadKey{ev.UserHash, c.remote.Addr()}] = uploadTarget{c.endpoint(), peer.CanObfuscate(caps.CryptOptions, ev.UserHash)}
 	}
 	for _, h := range slices.Clone(c.files) {
 		if r := e.downloadByHash(h); r != nil && !c.isClosed {
@@ -645,7 +655,7 @@ func (e *Engine) addTransferPeer(c *conn, r *run) {
 		UDPPort:      caps.UDPPort,
 		CanReaskUDP:  caps.UDPVersion > 0 && caps.UDPPort != 0,
 		CanExchange:  caps.HasSourceExchange2,
-		CanObfuscate: caps.CryptOptions&peer.CryptSupported != 0,
+		CanObfuscate: peer.CanObfuscate(caps.CryptOptions, user),
 	}
 	e.runTransferActions(r, r.transfer.OnPeerConnected(c.id, hello, e.now()))
 }
@@ -808,12 +818,10 @@ func (e *Engine) runQueueActions(actions []upload.Action) {
 		switch a := action.(type) {
 		case upload.Grant:
 			if c := e.conns[a.Conn]; c != nil && c.session != nil {
-				c.isUploading = true
 				e.runSession(c, c.session.StartUpload())
 			}
 		case upload.Revoke:
 			if c := e.conns[a.Conn]; c != nil && c.session != nil {
-				c.isUploading = false
 				c.uploadBlocks = nil
 				e.runSession(c, c.session.StopUpload())
 			}
@@ -824,11 +832,7 @@ func (e *Engine) runQueueActions(actions []upload.Action) {
 		case upload.Connect:
 			target, ok := e.uploadEndpoints[uploadKey{a.Peer.User, a.Peer.IP}]
 			if ok && e.connByEndpoint(target.endpoint) == nil && len(e.conns) < maxConnections {
-				var obfuscateFor wire.Hash
-				if target.canObfuscate {
-					obfuscateFor = a.Peer.User
-				}
-				e.openConn(target.endpoint, false, obfuscateFor, 0)
+				e.openPeerConn(target.endpoint, a.Peer.User, target.canObfuscate)
 			}
 		}
 	}
@@ -885,7 +889,7 @@ func matchNeededSource(source, asker piece.Set) bool {
 func toExchangeSources(found []peer.Source) []transfer.Source {
 	var sources []transfer.Source
 	for _, f := range found {
-		src := transfer.Source{UserHash: f.UserHash, CanObfuscate: f.CanObfuscate()}
+		src := transfer.Source{UserHash: f.UserHash, CanObfuscate: peer.CanObfuscate(f.CryptOptions, f.UserHash)}
 		switch {
 		case f.LowID != 0:
 			src.ClientID, src.Server = f.LowID, f.Server

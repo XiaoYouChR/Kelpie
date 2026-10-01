@@ -71,11 +71,7 @@ func (e *Engine) startBuddyLink() {
 			if len(e.conns) >= maxConnections {
 				return
 			}
-			var obfuscateFor wire.Hash
-			if f.CryptOptions&peer.CryptSupported != 0 {
-				obfuscateFor = f.UserHash
-			}
-			c = e.openConn(f.Addr, false, obfuscateFor, 0)
+			c = e.openPeerConn(f.Addr, f.UserHash, peer.CanObfuscate(f.CryptOptions, f.UserHash))
 		}
 		e.buddy.conn, e.buddy.isServing = c, false
 		e.kad.SetBuddy(kad.Buddy{IsConnecting: true})
@@ -207,7 +203,7 @@ func (e *Engine) onCallback(p client.Callback) {
 		return
 	}
 	if e.connByEndpoint(p.Endpoint) == nil && len(e.conns) < maxConnections {
-		e.openConn(p.Endpoint, false, wire.Hash{}, 0)
+		e.openPeerConn(p.Endpoint, wire.Hash{}, false)
 	}
 }
 
@@ -264,9 +260,5 @@ func (e *Engine) onDirectCallbackReq(from netip.AddrPort, p client.DirectCallbac
 	if e.connByEndpoint(endpoint) != nil || len(e.conns) >= maxConnections {
 		return
 	}
-	var obfuscateFor wire.Hash
-	if p.ConnectOptions&peer.CryptSupported != 0 {
-		obfuscateFor = p.UserHash
-	}
-	e.openConn(endpoint, false, obfuscateFor, 0)
+	e.openPeerConn(endpoint, p.UserHash, peer.CanObfuscate(p.ConnectOptions, p.UserHash))
 }

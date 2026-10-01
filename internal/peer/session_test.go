@@ -21,7 +21,7 @@ type side struct {
 	s      *Session
 	shares map[wire.Hash]Share
 	events []Event
-	closed CloseReason
+	closed string
 }
 
 func (e *side) shareByHash(file wire.Hash) (Share, bool) {
@@ -182,14 +182,15 @@ func TestHandshakeBothDirections(t *testing.T) {
 		t.Fatalf("YourIP votes %v %v", ha.YourIP, hb.YourIP)
 	}
 	caps := l.a.s.Capabilities()
-	if caps.Name != "Kelpie" || !caps.IsEmule || !caps.CanCompress || !caps.HasSourceExchange2 ||
+	if !caps.IsEmule || !caps.CanCompress || !caps.HasSourceExchange2 ||
 		!caps.HasExtMultiPacket || !caps.HasLargeFiles || !caps.HasExtendedSources || caps.UDPVersion != 4 ||
 		caps.SecureIdent != identity.Support || caps.IPv6 != l.b.s.cfg.IPv6 || caps.UDPPort != 4672 ||
-		caps.CryptOptions != CryptSupported|CryptRequested {
+		caps.CryptOptions != cryptSupported|cryptRequested {
 		t.Fatalf("capabilities %+v", caps)
 	}
-	if caps.EmuleVersion != 0x4B<<24|1<<17|2<<10|3<<7 || caps.MuleVersion != 0x99 {
-		t.Fatalf("emule version %#x", caps.EmuleVersion)
+	hello := l.sent[0].(client.Hello)
+	if hello.Name != "Kelpie" || hello.EmuleVersion != 0x4B<<24|1<<17|2<<10|3<<7 || caps.MuleVersion != 0x99 {
+		t.Fatalf("hello name %q, emule version %#x", hello.Name, hello.EmuleVersion)
 	}
 	if l.b.s.Capabilities().ClientID != l.a.s.cfg.ClientID {
 		t.Fatal("incoming side lost the peer's client id")
@@ -202,9 +203,6 @@ func TestIdentityBothWays(t *testing.T) {
 		t.Fatalf("a identified %+v", id)
 	}
 	lastOf[Identified](t, l.b)
-	if !l.a.s.IsIdentified() || !l.b.s.IsIdentified() {
-		t.Fatal("not identified")
-	}
 }
 
 func TestIdentityFailsForForgedKey(t *testing.T) {
@@ -224,7 +222,7 @@ func TestIdentityFailsForForgedKey(t *testing.T) {
 	if failed := lastOf[IdentityFailed](t, l.a); failed.UserHash != cb.Self.UserHash {
 		t.Fatalf("failed %+v", failed)
 	}
-	if len(eventsOf[Identified](l.a)) != 0 || l.a.s.IsIdentified() {
+	if len(eventsOf[Identified](l.a)) != 0 {
 		t.Fatal("forged key identified")
 	}
 	// a signed over the key it was given, so b rejects a too.
@@ -233,7 +231,7 @@ func TestIdentityFailsForForgedKey(t *testing.T) {
 
 func TestPacketBeforeHelloCloses(t *testing.T) {
 	s := BuildIncoming(buildConfig(t, 1), netip.MustParseAddrPort("10.0.0.9:1"), start)
-	if out := s.OnPacket(client.AcceptUploadRequest{}, nil, start); out.Close != CloseProtocol {
+	if out := s.OnPacket(client.AcceptUploadRequest{}, nil, start); out.Close != closeProtocol {
 		t.Fatalf("close %q", out.Close)
 	}
 }
@@ -505,7 +503,7 @@ func TestWrongHashSetCloses(t *testing.T) {
 	l.b.shares[file] = share
 	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false}))
 	l.run(l.a, l.a.s.RequestHashSet(file))
-	if l.a.closed != CloseProtocol {
+	if l.a.closed != closeProtocol {
 		t.Fatalf("closed %q", l.a.closed)
 	}
 }
@@ -682,7 +680,7 @@ func TestSourceExchange(t *testing.T) {
 	}
 	server := netip.MustParseAddrPort("1.2.3.4:4661")
 	sources := []Source{
-		{IPv4: netip.MustParseAddr("5.6.7.8"), IPv6: netip.MustParseAddr("2001:db8::7"), Port: 4662, UserHash: hashOf(9), CryptOptions: CryptSupported | CryptRequested},
+		{IPv4: netip.MustParseAddr("5.6.7.8"), IPv6: netip.MustParseAddr("2001:db8::7"), Port: 4662, UserHash: hashOf(9), CryptOptions: cryptSupported | cryptRequested},
 		{LowID: 42, Port: 4663, Server: server},
 		{IPv6: netip.MustParseAddr("2001:db8::8"), Port: 4664},
 	}
@@ -732,7 +730,7 @@ func TestSourceExchangeWithEmule(t *testing.T) {
 	out = s.OnPacket(answer, shares, start)
 	found := out.Events[0].(SourcesFound).Sources
 	if found[0].IPv4 != netip.MustParseAddr("5.6.7.0") || found[1].LowID != 42 ||
-		found[0].CryptOptions != 0x07 || !found[0].CanObfuscate() || found[1].CanObfuscate() {
+		found[0].CryptOptions != 0x07 || !CanObfuscate(found[0].CryptOptions, found[0].UserHash) || CanObfuscate(found[1].CryptOptions, found[1].UserHash) {
 		t.Fatalf("found %+v", found)
 	}
 
@@ -741,12 +739,12 @@ func TestSourceExchangeWithEmule(t *testing.T) {
 		t.Fatal("request not seen")
 	}
 	out = s.SendSources(file, []Source{
-		{IPv4: netip.MustParseAddr("5.6.7.0"), Port: 4662, UserHash: hashOf(3), CryptOptions: CryptSupported},
+		{IPv4: netip.MustParseAddr("5.6.7.0"), Port: 4662, UserHash: hashOf(3), CryptOptions: cryptSupported},
 		{IPv6: netip.MustParseAddr("2001:db8::8"), Port: 4664},
 	})
 	sent := out.Send[0].(client.AnswerSources2)
 	if sent.Version != 4 || len(sent.Sources) != 1 || sent.Sources[0].ClientID != 0x05060700 ||
-		sent.Sources[0].UserHash != hashOf(3) || sent.Sources[0].CryptOptions != CryptSupported {
+		sent.Sources[0].UserHash != hashOf(3) || sent.Sources[0].CryptOptions != cryptSupported {
 		t.Fatalf("answer %+v", sent)
 	}
 	if out := s.OnPacket(client.RequestSources2{Version: 4, Hash: file}, shares, start.Add(time.Minute)); len(out.Events) != 0 {
@@ -762,11 +760,11 @@ func TestIdleConnectionTimesOut(t *testing.T) {
 	if out := l.a.s.OnTick(start.Add(39 * time.Second)); out.Close != "" {
 		t.Fatal("closed early")
 	}
-	if out := l.a.s.OnTick(start.Add(41 * time.Second)); out.Close != CloseTimeout {
+	if out := l.a.s.OnTick(start.Add(41 * time.Second)); out.Close != closeTimeout {
 		t.Fatalf("close %q", out.Close)
 	}
 	s := BuildIncoming(buildConfig(t, 3), netip.MustParseAddrPort("10.0.0.9:1"), start)
-	if out := s.OnTick(start.Add(41 * time.Second)); out.Close != CloseTimeout {
+	if out := s.OnTick(start.Add(41 * time.Second)); out.Close != closeTimeout {
 		t.Fatal("silent incoming connection kept")
 	}
 }
@@ -777,7 +775,7 @@ func TestSendingKeepsConnectionAlive(t *testing.T) {
 	if out := l.a.s.OnTick(start.Add(60 * time.Second)); out.Close != "" {
 		t.Fatal("closed a connection we sent on 30 s ago")
 	}
-	if out := l.a.s.OnTick(start.Add(71 * time.Second)); out.Close != CloseTimeout {
+	if out := l.a.s.OnTick(start.Add(71 * time.Second)); out.Close != closeTimeout {
 		t.Fatalf("close %q", out.Close)
 	}
 }
@@ -852,8 +850,8 @@ func TestCryptOptionsReadAsEmuleDoes(t *testing.T) {
 		want  byte
 	}{
 		{client.MiscOptions2{IsCryptRequested: true, IsCryptRequired: true}, 0},
-		{client.MiscOptions2{CanCrypt: true, IsCryptRequired: true}, CryptSupported},
-		{client.MiscOptions2{CanCrypt: true, IsCryptRequested: true, IsCryptRequired: true}, CryptSupported | CryptRequested | CryptRequired},
+		{client.MiscOptions2{CanCrypt: true, IsCryptRequired: true}, cryptSupported},
+		{client.MiscOptions2{CanCrypt: true, IsCryptRequested: true, IsCryptRequired: true}, cryptSupported | cryptRequested | cryptRequired},
 	} {
 		s, _ := BuildOutgoing(buildConfig(t, 1), netip.MustParseAddrPort("10.0.0.2:4662"), start)
 		s.OnPacket(client.HelloAnswer{UserHash: hashOf(2), Misc2: c.misc2}, nil, start)
@@ -869,7 +867,7 @@ func TestBuddyLinkTimesOutLater(t *testing.T) {
 	if out := l.a.s.OnTick(start.Add(14 * time.Minute)); out.Close != "" {
 		t.Fatal("closed a buddy link within its timeout")
 	}
-	if out := l.a.s.OnTick(start.Add(16 * time.Minute)); out.Close != CloseTimeout {
+	if out := l.a.s.OnTick(start.Add(16 * time.Minute)); out.Close != closeTimeout {
 		t.Fatalf("close %q", out.Close)
 	}
 }
@@ -899,7 +897,7 @@ func TestCompressedPartLargerThanBlockCloses(t *testing.T) {
 	l.run(l.b, l.b.s.StartUpload())
 	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: size}}))
 	l.run(l.b, Output{Send: []wire.Packet{client.CompressedPart{Hash: file, Start: 0, PackedSize: 1 << 30, Data: make([]byte, 10)}}})
-	if l.a.closed != CloseProtocol {
+	if l.a.closed != closeProtocol {
 		t.Fatalf("closed = %q, want protocol", l.a.closed)
 	}
 }

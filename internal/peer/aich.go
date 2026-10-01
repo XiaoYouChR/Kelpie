@@ -67,7 +67,7 @@ func (s *Session) onRoot(file wire.Hash, root wire.AICHHash, out *Output) {
 func (s *Session) onRecoveryAnswer(p client.AICHAnswer, out *Output) {
 	request := s.recovery
 	if request == nil {
-		out.Close = CloseProtocol
+		out.Close = closeProtocol
 		return
 	}
 	s.recovery = nil
@@ -101,7 +101,7 @@ func (s *Session) requestTree(file wire.Hash, share Share, out *Output) {
 // onRecoveryRequest follows ProcessAICHRequest (DownloadClient.cpp:1666-1716):
 // the data for a part longer than one block under the root we have, or the
 // bare hash to say no.
-func (s *Session) onRecoveryRequest(p client.AICHRequest, shares Shares, out *Output) {
+func (s *Session) onRecoveryRequest(p client.AICHRequest, shares shareByHash, out *Output) {
 	answer := client.AICHAnswer{Hash: p.Hash}
 	share, ok := shares(p.Hash)
 	part := int(p.Part)
