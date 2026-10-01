@@ -28,8 +28,24 @@ type Source struct {
 	LowID    uint32
 	Server   netip.AddrPort
 	UserHash wire.Hash
-	// CanObfuscate is the "supports" bit of the record's crypt options.
-	CanObfuscate bool
+	// CryptOptions is the source's obfuscation setting, laid out as in
+	// Source Exchange v4 and the servers' answers: CryptSupported,
+	// CryptRequested, CryptRequired.
+	CryptOptions byte
+}
+
+const (
+	CryptSupported byte = 0x01
+	CryptRequested byte = 0x02
+	CryptRequired  byte = 0x04
+)
+
+// CanObfuscate tells whether a connection to the source may be obfuscated:
+// it supports obfuscation and we know the user hash that keys it. Kelpie
+// requests obfuscation, so a supporting peer is always obfuscated, as aMule
+// does (CUpDownClient::Connect).
+func (s Source) CanObfuscate() bool {
+	return s.CryptOptions&CryptSupported != 0 && s.UserHash != wire.Hash{}
 }
 
 type sourceState struct {
@@ -134,7 +150,7 @@ func (s *Session) onSourcesAnswer(p client.AnswerSources2, out *Output) {
 // read big-endian, so that an address ending in .0 is not mistaken for a
 // LowID. LowIDs are the same in both.
 func toSource(record client.Source, version byte) Source {
-	src := Source{Port: record.Port, Server: record.Server, UserHash: record.UserHash, CanObfuscate: record.CryptOptions&0x01 != 0}
+	src := Source{Port: record.Port, Server: record.Server, UserHash: record.UserHash, CryptOptions: record.CryptOptions}
 	if record.IPv6.Is6() && !record.IPv6.Is4In6() {
 		src.IPv6 = record.IPv6
 	}
@@ -154,7 +170,7 @@ func toSource(record client.Source, version byte) Source {
 }
 
 func toClassicSource(src Source, version byte) (client.Source, bool) {
-	record := client.Source{Port: src.Port, Server: src.Server, UserHash: src.UserHash}
+	record := client.Source{Port: src.Port, Server: src.Server, UserHash: src.UserHash, CryptOptions: src.CryptOptions}
 	switch {
 	case src.IPv4.IsValid() && version >= 3:
 		a := src.IPv4.As4()
@@ -169,7 +185,7 @@ func toClassicSource(src Source, version byte) (client.Source, bool) {
 	return record, true
 }
 
-// toExtendedSource withholds the user hash from peers that cannot skip
+// toExtendedSource withholds the user hash and crypt options from peers that cannot skip
 // tags they do not know (ipv6-spec §3.3.6).
 func (s *Session) toExtendedSource(src Source) client.Source {
 	record := client.Source{Port: src.Port, Server: src.Server, IPv6: src.IPv6}
@@ -182,7 +198,7 @@ func (s *Session) toExtendedSource(src Source) client.Source {
 		record.ClientID = wire.IPv6Sentinel
 	}
 	if s.caps.HasExtendedSourcesSkipTags {
-		record.UserHash = src.UserHash
+		record.UserHash, record.CryptOptions = src.UserHash, src.CryptOptions
 	}
 	return record
 }

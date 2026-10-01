@@ -183,7 +183,8 @@ func TestHandshakeBothDirections(t *testing.T) {
 	caps := l.a.s.Capabilities()
 	if caps.Name != "Kelpie" || !caps.IsEmule || !caps.CanCompress || !caps.HasSourceExchange2 ||
 		!caps.HasExtMultiPacket || !caps.HasLargeFiles || !caps.HasExtendedSources || caps.UDPVersion != 4 ||
-		caps.SecureIdent != identity.Support || caps.IPv6 != l.b.s.cfg.IPv6 || caps.UDPPort != 4672 {
+		caps.SecureIdent != identity.Support || caps.IPv6 != l.b.s.cfg.IPv6 || caps.UDPPort != 4672 ||
+		caps.CryptOptions != CryptSupported|CryptRequested {
 		t.Fatalf("capabilities %+v", caps)
 	}
 	if caps.EmuleVersion != 0x4B<<24|1<<17|2<<10|3<<7 {
@@ -548,7 +549,7 @@ func TestSourceExchange(t *testing.T) {
 	}
 	server := netip.MustParseAddrPort("1.2.3.4:4661")
 	sources := []Source{
-		{IPv4: netip.MustParseAddr("5.6.7.8"), IPv6: netip.MustParseAddr("2001:db8::7"), Port: 4662, UserHash: hashOf(9)},
+		{IPv4: netip.MustParseAddr("5.6.7.8"), IPv6: netip.MustParseAddr("2001:db8::7"), Port: 4662, UserHash: hashOf(9), CryptOptions: CryptSupported | CryptRequested},
 		{LowID: 42, Port: 4663, Server: server},
 		{IPv6: netip.MustParseAddr("2001:db8::8"), Port: 4664},
 	}
@@ -592,12 +593,13 @@ func TestSourceExchangeWithEmule(t *testing.T) {
 		t.Fatalf("version %d", r.Version)
 	}
 	answer := client.AnswerSources2{Version: 4, Hash: file, Sources: []client.Source{
-		{ClientID: 0x05060700, Port: 4662},
+		{ClientID: 0x05060700, Port: 4662, UserHash: hashOf(3), CryptOptions: 0x07},
 		{ClientID: 42, Port: 4663},
 	}}
 	out = s.OnPacket(answer, shares, start)
 	found := out.Events[0].(SourcesFound).Sources
-	if found[0].IPv4 != netip.MustParseAddr("5.6.7.0") || found[1].LowID != 42 {
+	if found[0].IPv4 != netip.MustParseAddr("5.6.7.0") || found[1].LowID != 42 ||
+		found[0].CryptOptions != 0x07 || !found[0].CanObfuscate() || found[1].CanObfuscate() {
 		t.Fatalf("found %+v", found)
 	}
 
@@ -606,11 +608,12 @@ func TestSourceExchangeWithEmule(t *testing.T) {
 		t.Fatal("request not seen")
 	}
 	out = s.SendSources(file, []Source{
-		{IPv4: netip.MustParseAddr("5.6.7.0"), Port: 4662},
+		{IPv4: netip.MustParseAddr("5.6.7.0"), Port: 4662, UserHash: hashOf(3), CryptOptions: CryptSupported},
 		{IPv6: netip.MustParseAddr("2001:db8::8"), Port: 4664},
 	})
 	sent := out.Send[0].(client.AnswerSources2)
-	if sent.Version != 4 || len(sent.Sources) != 1 || sent.Sources[0].ClientID != 0x05060700 {
+	if sent.Version != 4 || len(sent.Sources) != 1 || sent.Sources[0].ClientID != 0x05060700 ||
+		sent.Sources[0].UserHash != hashOf(3) || sent.Sources[0].CryptOptions != CryptSupported {
 		t.Fatalf("answer %+v", sent)
 	}
 	if out := s.OnPacket(client.RequestSources2{Version: 4, Hash: file}, shares, start.Add(time.Minute)); len(out.Events) != 0 {
@@ -684,5 +687,34 @@ func TestEmuleInfoBeforeHelloAnswer(t *testing.T) {
 	}
 	if caps := s.Capabilities(); !caps.IsEmule || !caps.CanCompress || caps.UDPPort != 4672 || caps.Port != 6346 {
 		t.Fatalf("capabilities %+v", caps)
+	}
+}
+
+// Our Hello says what aMule's default says: obfuscation supported and
+// requested, not required.
+func TestHelloAdvertisesObfuscation(t *testing.T) {
+	_, out := BuildOutgoing(buildConfig(t, 1), netip.MustParseAddrPort("10.0.0.2:4662"), start)
+	m := out.Send[0].(client.Hello).Misc2
+	if !m.CanCrypt || !m.IsCryptRequested || m.IsCryptRequired {
+		t.Fatalf("misc2 %+v", m)
+	}
+}
+
+// eMule ignores a request without support and a requirement without
+// request.
+func TestCryptOptionsReadAsEmuleDoes(t *testing.T) {
+	for _, c := range []struct {
+		misc2 client.MiscOptions2
+		want  byte
+	}{
+		{client.MiscOptions2{IsCryptRequested: true, IsCryptRequired: true}, 0},
+		{client.MiscOptions2{CanCrypt: true, IsCryptRequired: true}, CryptSupported},
+		{client.MiscOptions2{CanCrypt: true, IsCryptRequested: true, IsCryptRequired: true}, CryptSupported | CryptRequested | CryptRequired},
+	} {
+		s, _ := BuildOutgoing(buildConfig(t, 1), netip.MustParseAddrPort("10.0.0.2:4662"), start)
+		s.OnPacket(client.HelloAnswer{UserHash: hashOf(2), Misc2: c.misc2}, nil, start)
+		if got := s.Capabilities().CryptOptions; got != c.want {
+			t.Errorf("%+v: got %#x, want %#x", c.misc2, got, c.want)
+		}
 	}
 }

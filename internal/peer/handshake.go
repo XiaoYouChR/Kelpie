@@ -137,7 +137,24 @@ func (s *Session) setHello(h client.Hello) {
 		HasSourceExchange2:         h.Misc2.HasSourceExchange2,
 		HasExtendedSources:         h.ModMisc&client.ModMiscExtendedSources != 0,
 		HasExtendedSourcesSkipTags: h.ModMisc&client.ModMiscExtendedSourcesSkipTags != 0,
+		CryptOptions:               toCryptOptions(h.Misc2),
 	}
+}
+
+// toCryptOptions drops a request without support and a requirement
+// without request, as eMule reads the Hello.
+func toCryptOptions(m client.MiscOptions2) byte {
+	var options byte
+	if m.CanCrypt {
+		options |= CryptSupported
+		if m.IsCryptRequested {
+			options |= CryptRequested
+			if m.IsCryptRequired {
+				options |= CryptRequired
+			}
+		}
+	}
+	return options
 }
 
 // onEmuleInfo serves clients older than the Hello capability tags; a peer

@@ -66,6 +66,9 @@ type Capabilities struct {
 	HasSourceExchange2         bool
 	HasExtendedSources         bool
 	HasExtendedSourcesSkipTags bool
+	// CryptOptions is the peer's obfuscation setting from its Hello, in
+	// Source's layout.
+	CryptOptions byte
 }
 
 type Session struct {
