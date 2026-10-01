@@ -154,6 +154,24 @@
   "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
  },
  {
+  "link": "ed2k://%7Cfile%7Cencoded.iso%7C1048576%7C31D6CFE0D16AE931B73C59D7E0C089C0%7C/",
+  "valid": true,
+  "name": "encoded.iso",
+  "size": 1048576,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://%7cfile%7cencoded%20lower.iso%7c10%7c31d6cfe0d16ae931b73c59d7e0c089c0%7c/",
+  "valid": true,
+  "name": "encoded lower.iso",
+  "size": 10,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://%7Cfile%7Cno-size%7C31D6CFE0D16AE931B73C59D7E0C089C0%7C/",
+  "valid": false
+ },
+ {
   "link": "ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/",
   "valid": false
  },
