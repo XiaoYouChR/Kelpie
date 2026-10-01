@@ -29,19 +29,13 @@ const (
 	StatusFailed
 )
 
-type Code string
-
-const (
-	CodeDiskFull  Code = "DISK_FULL"
-	CodeFileError Code = "FILE_ERROR"
-)
-
-// Outcome is the Transfer's state as its Run sees it. Code and Message are
-// set only for StatusFailed.
+// Outcome is the Transfer's state as its Run sees it. IsDiskFull and
+// Message are set only for StatusFailed; a failure that is not a full disk
+// is a file error.
 type Outcome struct {
-	Status  Status
-	Code    Code
-	Message string
+	Status     Status
+	IsDiskFull bool
+	Message    string
 }
 
 type Progress struct {
@@ -126,7 +120,7 @@ type Transfer struct {
 
 // Build creates the Transfer for options.File. Persisted state that does not
 // fit the file is dropped and the download starts over; a seed whose state is
-// not complete fails at once with FILE_ERROR.
+// not complete fails at once with a file error.
 func Build(options Options, now time.Time) *Transfer {
 	t := &Transfer{
 		file:              options.File,
@@ -163,7 +157,7 @@ func Build(options Options, now time.Time) *Transfer {
 			t.outcome = Outcome{Status: StatusRunning}
 		}
 	case t.mode == ModeSeed:
-		t.outcome = Outcome{Status: StatusFailed, Code: CodeFileError, Message: "the file is not complete"}
+		t.outcome = Outcome{Status: StatusFailed, Message: "the file is not complete"}
 	default:
 		for _, part := range t.picker.WrittenParts() {
 			t.pending = append(t.pending, t.requestPartHash(part)...)
@@ -279,11 +273,7 @@ func (t *Transfer) OnDiskFailed(isDiskFull bool, message string) {
 	if !t.isRunning() {
 		return
 	}
-	code := CodeFileError
-	if isDiskFull {
-		code = CodeDiskFull
-	}
-	t.outcome = Outcome{Status: StatusFailed, Code: code, Message: message}
+	t.outcome = Outcome{Status: StatusFailed, IsDiskFull: isDiskFull, Message: message}
 }
 
 func (t *Transfer) requestPartHash(part int) []Action {

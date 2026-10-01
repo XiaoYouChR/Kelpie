@@ -232,7 +232,11 @@ func (e *Engine) refreshRuns() {
 		}
 		switch outcome := r.transfer.Outcome(); outcome.Status {
 		case transfer.StatusFailed:
-			e.stopRun(r, &Error{Code: Code(outcome.Code), Message: outcome.Message})
+			code := CodeFileError
+			if outcome.IsDiskFull {
+				code = CodeDiskFull
+			}
+			e.stopRun(r, &Error{Code: code, Message: outcome.Message})
 		case transfer.StatusComplete:
 			if r.mode == ModeDownload && !r.isSyncing {
 				r.isSyncing = true

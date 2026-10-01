@@ -294,10 +294,7 @@ func TestCorruptPartBansSenderAndIsDownloadedAgain(t *testing.T) {
 }
 
 func TestDiskFailure(t *testing.T) {
-	for _, test := range []struct {
-		isDiskFull bool
-		want       transfer.Code
-	}{{true, transfer.CodeDiskFull}, {false, transfer.CodeFileError}} {
+	for _, isDiskFull := range []bool{true, false} {
 		data := buildData(1000)
 		h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
 		h.connect(1, 1, piece.Set{true})
@@ -306,10 +303,10 @@ func TestDiskFailure(t *testing.T) {
 		if countActions[transfer.Write](actions) != 1 {
 			t.Fatalf("no Write for a received block: %+v", actions)
 		}
-		h.transfer.OnDiskFailed(test.isDiskFull, "no space left on device")
+		h.transfer.OnDiskFailed(isDiskFull, "no space left on device")
 		got := h.transfer.Outcome()
-		if got.Status != transfer.StatusFailed || got.Code != test.want {
-			t.Fatalf("isDiskFull=%v: outcome = %+v, want %s", test.isDiskFull, got, test.want)
+		if got.Status != transfer.StatusFailed || got.IsDiskFull != isDiskFull {
+			t.Fatalf("isDiskFull=%v: outcome = %+v", isDiskFull, got)
 		}
 		if h.transfer.Request(1, 1) != nil {
 			t.Fatal("failed transfer still hands out requests")
@@ -472,7 +469,7 @@ func TestSeedMode(t *testing.T) {
 	data := buildData(piece.PartSize + 100)
 	file := buildFile(data)
 	incomplete := buildHarness(t, data, transfer.Options{File: file, Mode: transfer.ModeSeed})
-	if got := incomplete.transfer.Outcome(); got.Status != transfer.StatusFailed || got.Code != transfer.CodeFileError {
+	if got := incomplete.transfer.Outcome(); got.Status != transfer.StatusFailed || got.IsDiskFull {
 		t.Fatalf("seed of an incomplete file: %+v", got)
 	}
 
