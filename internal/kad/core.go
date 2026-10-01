@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
 )
@@ -36,14 +37,24 @@ const (
 	versionFirewalled2 = 7
 )
 
+// datagram is a packet to send. It is obfuscated with nodeID when that is
+// set, else with receiverKey when that is set, and sent plain otherwise.
 type datagram struct {
-	to     netip.AddrPort
-	packet wire.Packet
+	to          netip.AddrPort
+	packet      wire.Packet
+	nodeID      wire.Hash
+	receiverKey uint32
+	senderKey   uint32
 }
+
+// Kad version 6 is the first that reads obfuscated datagrams
+// (KademliaUDPListener.cpp:205).
+const versionObfuscation = 6
 
 type output struct {
 	datagrams []datagram
 	found     []SourcesFound
+	requests  []Request
 }
 
 type find struct {
@@ -92,7 +103,9 @@ type coreConfig struct {
 	UserHash wire.Hash
 	TCPPort  uint16
 	UDPPort  uint16
-	Rand     *rand.Rand
+	// UDPKey is the secret behind our verify keys.
+	UDPKey uint32
+	Rand   *rand.Rand
 }
 
 // core is Kad's protocol state: the routing table, requests in flight,
@@ -102,17 +115,29 @@ type coreConfig struct {
 type core struct {
 	id, userHash     wire.Hash
 	tcpPort, udpPort uint16
+	udpKey           uint32
 	rng              *rand.Rand
-	table            *table
-	rpcs             rpcs
-	lookups          []*lookup
-	index            index
-	firewall         firewall
-	seeds            []netip.AddrPort
-	isConnected      bool
-	canPublish       bool
-	finds            []*find
-	publishes        []*publish
+	// reply is the sender of the packet being handled and the key it asked
+	// us to answer with.
+	reply struct {
+		from netip.AddrPort
+		key  uint32
+	}
+	table       *table
+	rpcs        rpcs
+	lookups     []*lookup
+	index       index
+	firewall    firewall
+	udp         udpCheck
+	buddy       Buddy
+	buddySearch buddySearch
+	// publicIP is our address as the last KADEMLIA_FIREWALLED_RES said.
+	publicIP    netip.Addr
+	seeds       []netip.AddrPort
+	isConnected bool
+	canPublish  bool
+	finds       []*find
+	publishes   []*publish
 
 	nextBootstrap    time.Time
 	nextSelfLookup   time.Time
@@ -126,10 +151,12 @@ type core struct {
 
 func buildCore(cfg coreConfig, now time.Time) *core {
 	return &core{
-		id: cfg.ID, userHash: cfg.UserHash, tcpPort: cfg.TCPPort, udpPort: cfg.UDPPort, rng: cfg.Rand,
-		table:    buildTable(cfg.ID, now),
-		index:    index{files: map[wire.Hash]map[wire.Hash]indexed{}},
-		firewall: firewall{isLastFirewalled: true, asked: map[netip.Addr]bool{}},
+		id: cfg.ID, userHash: cfg.UserHash, tcpPort: cfg.TCPPort, udpPort: cfg.UDPPort, udpKey: cfg.UDPKey, rng: cfg.Rand,
+		table:       buildTable(cfg.ID, now),
+		index:       index{files: map[wire.Hash]map[wire.Hash]indexed{}},
+		firewall:    firewall{isLastFirewalled: true, asked: map[netip.Addr]bool{}},
+		udp:         buildUDPCheck(),
+		buddySearch: buddySearch{next: now.Add(firstBuddySearch)},
 	}
 }
 
@@ -197,7 +224,9 @@ func (c *core) cancelLookup(l *lookup) {
 // connect to our TCP port.
 func (c *core) requestCallback(cb Callback) output {
 	if cb.Buddy.Addr().Is4() {
-		c.send(cb.Buddy, callbackReq{BuddyID: cb.BuddyID, Hash: cb.Hash, TCPPort: c.tcpPort})
+		// Plain, as aMule sends it: we do not know the buddy's Kad version
+		// (BaseClient.cpp:1568).
+		c.sendPlain(cb.Buddy, kadwire.CallbackReq{BuddyID: cb.BuddyID, Hash: cb.Hash, TCPPort: c.tcpPort})
 	}
 	out := c.out
 	c.out = output{}
@@ -214,17 +243,109 @@ func (c *core) onFirewallAck(from netip.Addr) {
 	}
 }
 
-func (c *core) status() Status {
-	return Status{Nodes: c.table.verifiedCount(), IsFirewalled: c.firewall.isFirewalled()}
+// onMessage reacts to what the engine sends Kad besides wanted files.
+func (c *core) onMessage(m any) output {
+	switch m := m.(type) {
+	case firewallAck:
+		if m.to.Addr().Is4() {
+			c.sendPlain(m.to, firewalledAck{})
+		}
+	case FirewallUDP:
+		c.onFirewallUDP(m)
+	case UDPCheckEnded:
+		c.onUDPCheckEnded(m)
+	}
+	out := c.out
+	c.out = output{}
+	return out
 }
 
+// buildHello is SendMyDetails (KademliaUDPListener.cpp:114): our UDP port
+// is named only once a UDP test chose it over the one our NAT shows.
+func (c *core) buildHello() kadwire.Hello {
+	h := kadwire.Hello{ID: c.id, TCPPort: c.tcpPort, Version: kadwire.Version}
+	if !c.udp.useExternPort {
+		h.Tags = []wire.Tag{{Type: wire.TagUint16, ID: kadwire.TagSourceUPort, Uint: uint64(c.udpPort)}}
+	}
+	return h
+}
+
+func (c *core) status() Status {
+	return Status{
+		Nodes:           c.table.verifiedCount(),
+		IsFirewalled:    c.firewall.isFirewalled(),
+		IsUDPFirewalled: c.udp.isFirewalledNow(),
+		IsUDPVerified:   c.udp.isVerified,
+	}
+}
+
+// isReachable: other clients can connect to us, or have us connect to
+// them by a direct callback or through our buddy.
+func (c *core) isReachable() bool {
+	return !c.firewall.isFirewalled() || c.canDirectCallback() || c.buddy.Addr.IsValid()
+}
+
+// canDirectCallback: nobody reaches our TCP port, but a UDP test showed
+// that anybody reaches our Kad port (Prefs.cpp:226).
+func (c *core) canDirectCallback() bool {
+	return c.firewall.isFirewalled() && c.udp.isOpen()
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+// send obfuscates with the key to's node gave us: the one on the packet we
+// answer, or the one its contact last sent. aMule answers with the
+// request's sender key and never with the node ID.
 func (c *core) send(to netip.AddrPort, p wire.Packet) {
+	key := c.reply.key
+	if to != c.reply.from {
+		key = 0
+		if ct := c.table.byAddr[to]; ct != nil {
+			key = ct.udpKey
+		}
+	}
+	c.sendKeyed(datagram{to: to, packet: p, receiverKey: key})
+}
+
+// sendTo obfuscates with the node's ID when its version reads obfuscation,
+// as aMule's requests to contacts do.
+func (c *core) sendTo(n Node, p wire.Packet) {
+	d := datagram{to: n.Addr, packet: p}
+	if ct := c.table.byAddr[n.Addr]; ct != nil {
+		d.receiverKey = ct.udpKey
+	}
+	if n.Version >= versionObfuscation {
+		d.nodeID = n.ID
+	}
+	c.sendKeyed(d)
+}
+
+func (c *core) sendKeyed(d datagram) {
+	if d.nodeID != (wire.Hash{}) || d.receiverKey != 0 {
+		d.senderKey = obfuscation.BuildKadVerifyKey(c.udpKey, d.to.Addr())
+	}
+	c.out.datagrams = append(c.out.datagrams, d)
+}
+
+func (c *core) sendPlain(to netip.AddrPort, p wire.Packet) {
 	c.out.datagrams = append(c.out.datagrams, datagram{to: to, packet: p})
 }
 
-func (c *core) onPacket(from netip.AddrPort, p wire.Packet, now time.Time) output {
+// onPacket handles a packet from from; senderKey is the key from wants
+// answers obfuscated with, 0 for a plain datagram.
+func (c *core) onPacket(from netip.AddrPort, p wire.Packet, senderKey uint32, now time.Time) output {
 	if from.Addr().Is4() {
+		c.reply.from, c.reply.key = from, senderKey
 		c.runPacket(from, p, now)
+		c.reply.from, c.reply.key = netip.AddrPort{}, 0
+		if ct := c.table.byAddr[from]; ct != nil && senderKey != 0 {
+			ct.udpKey = senderKey
+		}
 	}
 	out := c.out
 	c.out = output{}
@@ -244,8 +365,13 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 			c.table.add(Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}, false, now)
 		}
 	case kadwire.HelloReq:
-		c.table.add(Node{ID: p.ID, Addr: from, TCPPort: p.TCPPort, Version: p.Version}, false, now)
-		c.send(from, kadwire.HelloRes{ID: c.id, TCPPort: c.tcpPort, Version: kadwire.Version})
+		n := Node{ID: p.ID, Addr: from, TCPPort: p.TCPPort, Version: p.Version}
+		c.table.add(n, false, now)
+		d := datagram{to: from, packet: kadwire.HelloRes(c.buildHello()), receiverKey: c.reply.key}
+		if n.Version >= versionObfuscation {
+			d.nodeID = n.ID
+		}
+		c.sendKeyed(d)
 	case kadwire.HelloRes:
 		if c.rpcs.match(from, rpcHello, wire.Hash{}) != nil {
 			c.table.add(Node{ID: p.ID, Addr: from, TCPPort: p.TCPPort, Version: p.Version}, true, now)
@@ -271,19 +397,45 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 		}
 	case kadwire.PublishRes:
 		c.onPublishRes(from, p)
+	case kadwire.FirewalledReq:
+		c.onFirewallCheck(from, p.TCPPort, p.ID, p.Options)
+	case kadwire.LegacyFirewalledReq:
+		c.onFirewallCheck(from, p.TCPPort, wire.Hash{}, 0)
 	case kadwire.FirewalledRes:
 		if c.rpcs.match(from, rpcFirewall, wire.Hash{}) != nil {
 			c.firewall.responses++
+			c.publicIP = p.Addr
 		}
 	case kadwire.Ping:
 		c.send(from, kadwire.Pong{UDPPort: from.Port()})
+	case kadwire.Pong:
+		c.onPong(from, p)
+	case kadwire.FirewalledUDP:
+		c.onFirewalledUDP(from, p)
+	case kadwire.FindBuddyReq:
+		c.onFindBuddyReq(from, p)
+	case kadwire.FindBuddyRes:
+		c.onFindBuddyRes(from, p)
+	case kadwire.CallbackReq:
+		c.onCallbackReq(from, p)
 	case wire.Unknown:
 		if p.Op == opFirewalledAck && len(p.Body) == 0 {
 			c.onFirewallAck(from.Addr())
 		}
 	}
-	// FirewalledReq and LegacyFirewalledReq go unanswered: eMule answers
-	// only after it starts the TCP check, which is the engine's to run.
+}
+
+// onFirewallCheck is ProcessFirewalledRequest and
+// ProcessFirewalled2Request (KademliaUDPListener.cpp:1363-1430): we tell
+// the node its address at once and have the engine connect to its TCP port.
+func (c *core) onFirewallCheck(from netip.AddrPort, tcpPort uint16, user wire.Hash, options byte) {
+	if from.Addr() == c.publicIP && tcpPort == c.tcpPort {
+		return
+	}
+	c.send(from, kadwire.FirewalledRes{Addr: from.Addr()})
+	c.out.requests = append(c.out.requests, FirewallCheck{
+		Addr: netip.AddrPortFrom(from.Addr(), tcpPort), KadPort: from.Port(), UserHash: user, CryptOptions: options,
+	})
 }
 
 // buildContacts answers a routing query with verified contacts only, so we
@@ -374,7 +526,7 @@ func (c *core) runBucketChecks(now time.Time) {
 				continue
 			}
 			ct.isHelloed = true
-			c.send(ct.Addr, kadwire.HelloReq{ID: c.id, TCPPort: c.tcpPort, Version: kadwire.Version})
+			c.sendTo(ct.Node, kadwire.HelloReq(c.buildHello()))
 			c.rpcs.add(&rpc{kind: rpcHello, node: ct.Node, sent: now})
 		}
 	}
@@ -386,6 +538,8 @@ func (c *core) runMaintenance(now time.Time) {
 	}
 	c.runRandomLookups(now)
 	c.runFirewallCheck(now)
+	c.runUDPCheck(now)
+	c.runBuddySearch(now)
 }
 
 // runRandomLookups is CKademlia::Process's big timer: every
@@ -425,6 +579,9 @@ func (c *core) runFirewallCheck(now time.Time) {
 	f := &c.firewall
 	if !now.Before(f.next) {
 		f.start(now)
+		c.recheckUDP(now)
+		c.buddySearch.isDue = false
+		c.buddySearch.next = later(c.buddySearch.next, now.Add(buddyRecheckDelay))
 	}
 	if f.responses+c.rpcs.count(rpcFirewall) >= firewallChecks {
 		return
@@ -446,8 +603,8 @@ func (c *core) runFirewallCheck(now time.Time) {
 
 // runWanted starts at most one source search and one publish a tick, at
 // eMule's pace. A publish waits for the first self lookup to finish
-// (CSearchManager sets the publish flag then) and for an open firewall
-// verdict: a firewalled source needs a buddy, which Kelpie does not have.
+// (CSearchManager sets the publish flag then) and for a way in: an open
+// firewall verdict or a buddy (CKnownFile::PublishSrc).
 func (c *core) runWanted(now time.Time) {
 	if !now.Before(c.nextFileSearch) && c.lookupCount(sourceSearch) < maxFileSearches {
 		for _, f := range c.finds {
@@ -465,7 +622,7 @@ func (c *core) runWanted(now time.Time) {
 			break
 		}
 	}
-	if !c.canPublish || c.firewall.isFirewalled() || now.Before(c.nextPublish) || c.lookupCount(sourcePublish) >= maxPublishes {
+	if !c.canPublish || !c.isReachable() || now.Before(c.nextPublish) || c.lookupCount(sourcePublish) >= maxPublishes {
 		return
 	}
 	c.nextPublish = now.Add(publishGap)

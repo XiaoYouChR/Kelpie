@@ -103,7 +103,7 @@ func TestKadSharesItsSocketWithTheEngine(t *testing.T) {
 	}
 
 	k.RequestCallback(Callback{Buddy: netip.MustParseAddrPort("10.0.0.2:4672"), BuddyID: fileHash, Hash: fileHash})
-	if _, data := readFrom(t, peer); len(data) != 36 || data[0] != wire.ProtocolKad || data[1] != opCallbackReq {
+	if _, data := readFrom(t, peer); len(data) != 36 || data[0] != wire.ProtocolKad || data[1] != (kadwire.CallbackReq{}).Opcode() {
 		t.Fatalf("callback request %x", data)
 	}
 }
@@ -142,7 +142,7 @@ func TestKadNetworkFindsPublishedSource(t *testing.T) {
 
 	publisher, searcher := kads[1], kads[count-1]
 	publisher.SetWanted(Wanted{Publish: []Publish{{Hash: fileHash, Size: 1000}}})
-	want := Source{Type: SourceOpen, UserHash: publisher.cfg.UserHash, Addr: netip.AddrPortFrom(addrs[1], 4662), UDPPort: 4672}
+	want := Source{Type: SourceOpen, UserHash: publisher.cfg.UserHash, Addr: netip.AddrPortFrom(addrs[1], 4662), UDPPort: 4672, CryptOptions: connectOptions}
 	for step := 0; ; step++ {
 		// A search finding nothing waits an hour to ask again, so search
 		// only once the publisher has had time to publish.

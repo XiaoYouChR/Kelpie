@@ -27,14 +27,20 @@ const (
 	opPublishNotesRes     byte = 0x4A
 	opPublishRes          byte = 0x4B
 	opLegacyFirewalledReq byte = 0x50
+	opFindBuddyReq        byte = 0x51
+	opCallbackReq         byte = 0x52
 	opFirewalledReq       byte = 0x53
 	opFirewalledRes       byte = 0x58
+	opFindBuddyRes        byte = 0x5A
 	opPing                byte = 0x60
 	opPong                byte = 0x61
 	opFirewalledUDP       byte = 0x62
 )
 
-const Version byte = 0x05
+// Version is the Kad version we announce: 6 brought obfuscation and the UDP
+// firewall test, 7 KADEMLIA_FIREWALLED2_REQ and the TCP firewall
+// acknowledgement. Version 8 (HELLO_RES_ACK) is not spoken.
+const Version byte = 0x07
 
 // Req.SearchType values: how many contacts the asker wants back.
 const (
@@ -58,8 +64,7 @@ const (
 
 // Parse decodes a Kad packet body; wire.ParseDatagram has already inflated
 // packed (0xE5) packets to 0xE4. Opcodes not listed here, including the
-// buddy and notes packets Kelpie does not use yet, come back as
-// wire.Unknown.
+// notes packets Kelpie does not use, come back as wire.Unknown.
 func Parse(protocol, opcode byte, body []byte) (wire.Packet, error) {
 	if protocol != wire.ProtocolKad {
 		return wire.Unknown{Proto: protocol, Op: opcode, Body: body}, nil
@@ -70,43 +75,49 @@ func Parse(protocol, opcode byte, body []byte) (wire.Packet, error) {
 	case opBootstrapReq:
 		p = BootstrapReq{}
 	case opBootstrapRes:
-		p = BootstrapRes{ID: parseID(r), TCPPort: r.Uint16(), Version: r.Uint8(), Contacts: parseContacts(r, int(r.Uint16()))}
+		p = BootstrapRes{ID: ParseID(r), TCPPort: r.Uint16(), Version: r.Uint8(), Contacts: parseContacts(r, int(r.Uint16()))}
 	case opHelloReq:
 		p = HelloReq(parseHello(r))
 	case opHelloRes:
 		p = HelloRes(parseHello(r))
 	case opReq:
-		p = Req{SearchType: r.Uint8(), Target: parseID(r), Receiver: parseID(r)}
+		p = Req{SearchType: r.Uint8(), Target: ParseID(r), Receiver: ParseID(r)}
 	case opRes:
-		p = Res{Target: parseID(r), Contacts: parseContacts(r, int(r.Uint8()))}
+		p = Res{Target: ParseID(r), Contacts: parseContacts(r, int(r.Uint8()))}
 	case opSearchKeysReq:
-		p = SearchKeysReq{Target: parseID(r), StartPos: r.Uint16()}
+		p = SearchKeysReq{Target: ParseID(r), StartPos: r.Uint16()}
 	case opSearchSourcesReq:
-		p = SearchSourcesReq{Target: parseID(r), StartPos: r.Uint16(), Size: r.Uint64()}
+		p = SearchSourcesReq{Target: ParseID(r), StartPos: r.Uint16(), Size: r.Uint64()}
 	case opSearchNotesReq:
-		p = SearchNotesReq{Target: parseID(r), Size: r.Uint64()}
+		p = SearchNotesReq{Target: ParseID(r), Size: r.Uint64()}
 	case opSearchRes:
-		p = SearchRes{Source: parseID(r), Target: parseID(r), Results: parseEntries(r, int(r.Uint16()))}
+		p = SearchRes{Source: ParseID(r), Target: ParseID(r), Results: parseEntries(r, int(r.Uint16()))}
 	case opPublishKeysReq:
-		p = PublishKeysReq{KeywordID: parseID(r), Sources: parseEntries(r, int(r.Uint16()))}
+		p = PublishKeysReq{KeywordID: ParseID(r), Sources: parseEntries(r, int(r.Uint16()))}
 	case opPublishSourcesReq:
-		p = PublishSourcesReq{FileID: parseID(r), Source: parseEntry(r)}
+		p = PublishSourcesReq{FileID: ParseID(r), Source: parseEntry(r)}
 	case opPublishRes:
-		p = PublishRes{FileID: parseID(r), Load: r.Uint8()}
+		p = PublishRes{FileID: ParseID(r), Load: r.Uint8()}
 	case opPublishNotesRes:
-		p = PublishNotesRes{FileID: parseID(r), Load: r.Uint8()}
+		p = PublishNotesRes{FileID: ParseID(r), Load: r.Uint8()}
 	case opLegacyFirewalledReq:
 		p = LegacyFirewalledReq{TCPPort: r.Uint16()}
 	case opFirewalledReq:
-		p = FirewalledReq{TCPPort: r.Uint16(), ID: parseID(r), Options: r.Uint8()}
+		p = FirewalledReq{TCPPort: r.Uint16(), ID: ParseID(r), Options: r.Uint8()}
 	case opFirewalledRes:
 		p = FirewalledRes{Addr: parseAddr(r)}
 	case opPing:
 		p = Ping{}
 	case opPong:
 		p = Pong{UDPPort: r.Uint16()}
+	case opFindBuddyReq:
+		p = FindBuddyReq{Target: ParseID(r), UserHash: ParseID(r), TCPPort: r.Uint16()}
+	case opFindBuddyRes:
+		p = parseFindBuddyRes(r)
+	case opCallbackReq:
+		p = CallbackReq{BuddyID: ParseID(r), Hash: ParseID(r), TCPPort: r.Uint16()}
 	case opFirewalledUDP:
-		p = FirewalledUDP{ErrorCode: r.Uint8(), TCPPort: r.Uint16()}
+		p = FirewalledUDP{ErrorCode: r.Uint8(), Port: r.Uint16()}
 	default:
 		return wire.Unknown{Proto: protocol, Op: opcode, Body: body}, nil
 	}
@@ -116,9 +127,10 @@ func Parse(protocol, opcode byte, body []byte) (wire.Packet, error) {
 	return p, nil
 }
 
-// Kad writes a 128-bit ID as four little-endian uint32 words, so each group
-// of four bytes is reversed against the ID's big-endian byte form.
-func parseID(r *wire.Reader) wire.Hash {
+// ParseID reads a 128-bit ID. Kad writes one as four little-endian uint32
+// words, so each group of four bytes is reversed against the ID's
+// big-endian byte form.
+func ParseID(r *wire.Reader) wire.Hash {
 	var id wire.Hash
 	raw := r.Bytes(16)
 	for i := range raw {
@@ -127,7 +139,8 @@ func parseID(r *wire.Reader) wire.Hash {
 	return id
 }
 
-func buildID(b []byte, id wire.Hash) []byte {
+// BuildID writes id in Kad's wire form.
+func BuildID(b []byte, id wire.Hash) []byte {
 	for i := range id {
 		b = append(b, id[i/4*4+3-i%4])
 	}
@@ -177,7 +190,7 @@ type Contact struct {
 }
 
 func buildContact(b []byte, c Contact) []byte {
-	b = buildAddr(buildID(b, c.ID), c.Addr)
+	b = buildAddr(BuildID(b, c.ID), c.Addr)
 	b = binary.LittleEndian.AppendUint16(b, c.UDPPort)
 	b = binary.LittleEndian.AppendUint16(b, c.TCPPort)
 	return append(b, c.Version)
@@ -193,7 +206,7 @@ func parseContacts(r *wire.Reader, count int) []Contact {
 	}
 	out := make([]Contact, count)
 	for i := range out {
-		out[i] = Contact{ID: parseID(r), Addr: parseAddr(r), UDPPort: r.Uint16(), TCPPort: r.Uint16(), Version: r.Uint8()}
+		out[i] = Contact{ID: ParseID(r), Addr: parseAddr(r), UDPPort: r.Uint16(), TCPPort: r.Uint16(), Version: r.Uint8()}
 	}
 	return out
 }
@@ -228,7 +241,7 @@ func (e Entry) SourceAddrPort() (netip.AddrPort, bool) {
 // Kad tags always use the classic form with a uint16 name length; eMule's
 // Kad reader rejects the compact eD2k form.
 func buildEntry(b []byte, e Entry) []byte {
-	b = append(buildID(b, e.ID), byte(len(e.Tags)))
+	b = append(BuildID(b, e.ID), byte(len(e.Tags)))
 	for _, t := range e.Tags {
 		b = wire.BuildTag(b, t)
 	}
@@ -236,7 +249,7 @@ func buildEntry(b []byte, e Entry) []byte {
 }
 
 func parseEntry(r *wire.Reader) Entry {
-	e := Entry{ID: parseID(r)}
+	e := Entry{ID: ParseID(r)}
 	e.Tags = parseTags(r, int(r.Uint8()))
 	return e
 }
@@ -278,7 +291,7 @@ func (BootstrapRes) Protocol() byte { return wire.ProtocolKad }
 func (BootstrapRes) Opcode() byte   { return opBootstrapRes }
 
 func (p BootstrapRes) Build(b []byte) []byte {
-	b = binary.LittleEndian.AppendUint16(buildID(b, p.ID), p.TCPPort)
+	b = binary.LittleEndian.AppendUint16(BuildID(b, p.ID), p.TCPPort)
 	b = binary.LittleEndian.AppendUint16(append(b, p.Version), uint16(len(p.Contacts)))
 	for _, c := range p.Contacts {
 		b = buildContact(b, c)
@@ -306,7 +319,7 @@ func (HelloRes) Opcode() byte            { return opHelloRes }
 func (h HelloRes) Build(b []byte) []byte { return buildHello(b, Hello(h)) }
 
 func buildHello(b []byte, h Hello) []byte {
-	b = binary.LittleEndian.AppendUint16(buildID(b, h.ID), h.TCPPort)
+	b = binary.LittleEndian.AppendUint16(BuildID(b, h.ID), h.TCPPort)
 	b = append(b, h.Version, byte(len(h.Tags)))
 	for _, t := range h.Tags {
 		b = wire.BuildTag(b, t)
@@ -315,7 +328,7 @@ func buildHello(b []byte, h Hello) []byte {
 }
 
 func parseHello(r *wire.Reader) Hello {
-	h := Hello{ID: parseID(r), TCPPort: r.Uint16(), Version: r.Uint8()}
+	h := Hello{ID: ParseID(r), TCPPort: r.Uint16(), Version: r.Uint8()}
 	h.Tags = parseTags(r, int(r.Uint8()))
 	return h
 }
@@ -329,7 +342,7 @@ type Req struct {
 func (Req) Protocol() byte { return wire.ProtocolKad }
 func (Req) Opcode() byte   { return opReq }
 func (p Req) Build(b []byte) []byte {
-	return buildID(buildID(append(b, p.SearchType), p.Target), p.Receiver)
+	return BuildID(BuildID(append(b, p.SearchType), p.Target), p.Receiver)
 }
 
 type Res struct {
@@ -340,7 +353,7 @@ type Res struct {
 func (Res) Protocol() byte { return wire.ProtocolKad }
 func (Res) Opcode() byte   { return opRes }
 func (p Res) Build(b []byte) []byte {
-	b = append(buildID(b, p.Target), byte(len(p.Contacts)))
+	b = append(BuildID(b, p.Target), byte(len(p.Contacts)))
 	for _, c := range p.Contacts {
 		b = buildContact(b, c)
 	}
@@ -357,7 +370,7 @@ type SearchKeysReq struct {
 func (SearchKeysReq) Protocol() byte { return wire.ProtocolKad }
 func (SearchKeysReq) Opcode() byte   { return opSearchKeysReq }
 func (p SearchKeysReq) Build(b []byte) []byte {
-	return binary.LittleEndian.AppendUint16(buildID(b, p.Target), p.StartPos)
+	return binary.LittleEndian.AppendUint16(BuildID(b, p.Target), p.StartPos)
 }
 
 type SearchSourcesReq struct {
@@ -369,7 +382,7 @@ type SearchSourcesReq struct {
 func (SearchSourcesReq) Protocol() byte { return wire.ProtocolKad }
 func (SearchSourcesReq) Opcode() byte   { return opSearchSourcesReq }
 func (p SearchSourcesReq) Build(b []byte) []byte {
-	b = binary.LittleEndian.AppendUint16(buildID(b, p.Target), p.StartPos)
+	b = binary.LittleEndian.AppendUint16(BuildID(b, p.Target), p.StartPos)
 	return binary.LittleEndian.AppendUint64(b, p.Size)
 }
 
@@ -381,7 +394,7 @@ type SearchNotesReq struct {
 func (SearchNotesReq) Protocol() byte { return wire.ProtocolKad }
 func (SearchNotesReq) Opcode() byte   { return opSearchNotesReq }
 func (p SearchNotesReq) Build(b []byte) []byte {
-	return binary.LittleEndian.AppendUint64(buildID(b, p.Target), p.Size)
+	return binary.LittleEndian.AppendUint64(BuildID(b, p.Target), p.Size)
 }
 
 type SearchRes struct {
@@ -393,7 +406,7 @@ type SearchRes struct {
 func (SearchRes) Protocol() byte { return wire.ProtocolKad }
 func (SearchRes) Opcode() byte   { return opSearchRes }
 func (p SearchRes) Build(b []byte) []byte {
-	b = buildID(buildID(b, p.Source), p.Target)
+	b = BuildID(BuildID(b, p.Source), p.Target)
 	b = binary.LittleEndian.AppendUint16(b, uint16(len(p.Results)))
 	for _, e := range p.Results {
 		b = buildEntry(b, e)
@@ -409,7 +422,7 @@ type PublishKeysReq struct {
 func (PublishKeysReq) Protocol() byte { return wire.ProtocolKad }
 func (PublishKeysReq) Opcode() byte   { return opPublishKeysReq }
 func (p PublishKeysReq) Build(b []byte) []byte {
-	b = binary.LittleEndian.AppendUint16(buildID(b, p.KeywordID), uint16(len(p.Sources)))
+	b = binary.LittleEndian.AppendUint16(BuildID(b, p.KeywordID), uint16(len(p.Sources)))
 	for _, e := range p.Sources {
 		b = buildEntry(b, e)
 	}
@@ -424,7 +437,7 @@ type PublishSourcesReq struct {
 func (PublishSourcesReq) Protocol() byte { return wire.ProtocolKad }
 func (PublishSourcesReq) Opcode() byte   { return opPublishSourcesReq }
 func (p PublishSourcesReq) Build(b []byte) []byte {
-	return buildEntry(buildID(b, p.FileID), p.Source)
+	return buildEntry(BuildID(b, p.FileID), p.Source)
 }
 
 // PublishRes acknowledges a publish; Load is the node's fill level in
@@ -436,13 +449,13 @@ type PublishRes struct {
 
 func (PublishRes) Protocol() byte          { return wire.ProtocolKad }
 func (PublishRes) Opcode() byte            { return opPublishRes }
-func (p PublishRes) Build(b []byte) []byte { return append(buildID(b, p.FileID), p.Load) }
+func (p PublishRes) Build(b []byte) []byte { return append(BuildID(b, p.FileID), p.Load) }
 
 type PublishNotesRes PublishRes
 
 func (PublishNotesRes) Protocol() byte          { return wire.ProtocolKad }
 func (PublishNotesRes) Opcode() byte            { return opPublishNotesRes }
-func (p PublishNotesRes) Build(b []byte) []byte { return append(buildID(b, p.FileID), p.Load) }
+func (p PublishNotesRes) Build(b []byte) []byte { return append(BuildID(b, p.FileID), p.Load) }
 
 // LegacyFirewalledReq is the Kad 1 firewall check, still sent by old nodes.
 type LegacyFirewalledReq struct{ TCPPort uint16 }
@@ -464,7 +477,7 @@ type FirewalledReq struct {
 func (FirewalledReq) Protocol() byte { return wire.ProtocolKad }
 func (FirewalledReq) Opcode() byte   { return opFirewalledReq }
 func (p FirewalledReq) Build(b []byte) []byte {
-	return append(buildID(binary.LittleEndian.AppendUint16(b, p.TCPPort), p.ID), p.Options)
+	return append(BuildID(binary.LittleEndian.AppendUint16(b, p.TCPPort), p.ID), p.Options)
 }
 
 // FirewalledRes tells us the address the node sees us at.
@@ -474,15 +487,18 @@ func (FirewalledRes) Protocol() byte          { return wire.ProtocolKad }
 func (FirewalledRes) Opcode() byte            { return opFirewalledRes }
 func (p FirewalledRes) Build(b []byte) []byte { return buildAddr(b, p.Addr) }
 
+// FirewalledUDP is the answer to a UDP firewall test: Port is the UDP port
+// it was sent to; a non-zero ErrorCode says the tester knew us already, so
+// the result proves nothing.
 type FirewalledUDP struct {
 	ErrorCode byte
-	TCPPort   uint16
+	Port      uint16
 }
 
 func (FirewalledUDP) Protocol() byte { return wire.ProtocolKad }
 func (FirewalledUDP) Opcode() byte   { return opFirewalledUDP }
 func (p FirewalledUDP) Build(b []byte) []byte {
-	return binary.LittleEndian.AppendUint16(append(b, p.ErrorCode), p.TCPPort)
+	return binary.LittleEndian.AppendUint16(append(b, p.ErrorCode), p.Port)
 }
 
 type Ping struct{}
@@ -497,3 +513,60 @@ type Pong struct{ UDPPort uint16 }
 func (Pong) Protocol() byte          { return wire.ProtocolKad }
 func (Pong) Opcode() byte            { return opPong }
 func (p Pong) Build(b []byte) []byte { return binary.LittleEndian.AppendUint16(b, p.UDPPort) }
+
+// FindBuddyReq asks an open node to be our buddy. Target is the ID our
+// lookup looked for, our Kad ID inverted, which callbacks will carry.
+type FindBuddyReq struct {
+	Target   wire.Hash
+	UserHash wire.Hash
+	TCPPort  uint16
+}
+
+func (FindBuddyReq) Protocol() byte { return wire.ProtocolKad }
+func (FindBuddyReq) Opcode() byte   { return opFindBuddyReq }
+func (p FindBuddyReq) Build(b []byte) []byte {
+	return binary.LittleEndian.AppendUint16(BuildID(BuildID(b, p.Target), p.UserHash), p.TCPPort)
+}
+
+// FindBuddyRes accepts a FindBuddyReq. Nodes since Kad version 7 add their
+// obfuscation options when the request was obfuscated.
+type FindBuddyRes struct {
+	Target     wire.Hash
+	UserHash   wire.Hash
+	TCPPort    uint16
+	HasOptions bool
+	Options    byte
+}
+
+func (FindBuddyRes) Protocol() byte { return wire.ProtocolKad }
+func (FindBuddyRes) Opcode() byte   { return opFindBuddyRes }
+func (p FindBuddyRes) Build(b []byte) []byte {
+	b = binary.LittleEndian.AppendUint16(BuildID(BuildID(b, p.Target), p.UserHash), p.TCPPort)
+	if p.HasOptions {
+		b = append(b, p.Options)
+	}
+	return b
+}
+
+func parseFindBuddyRes(r *wire.Reader) FindBuddyRes {
+	p := FindBuddyRes{Target: ParseID(r), UserHash: ParseID(r), TCPPort: r.Uint16()}
+	if r.Len() > 0 {
+		p.HasOptions, p.Options = true, r.Uint8()
+	}
+	return p
+}
+
+// CallbackReq is what a downloader sends a firewalled source's buddy: the
+// buddy ID, the file and the downloader's TCP port. The buddy forwards it
+// as OP_CALLBACK over its TCP link to the source.
+type CallbackReq struct {
+	BuddyID wire.Hash
+	Hash    wire.Hash
+	TCPPort uint16
+}
+
+func (CallbackReq) Protocol() byte { return wire.ProtocolKad }
+func (CallbackReq) Opcode() byte   { return opCallbackReq }
+func (p CallbackReq) Build(b []byte) []byte {
+	return binary.LittleEndian.AppendUint16(BuildID(BuildID(b, p.BuddyID), p.Hash), p.TCPPort)
+}

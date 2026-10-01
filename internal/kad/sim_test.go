@@ -16,6 +16,16 @@ type simNode struct {
 	c     *core
 	addr  netip.AddrPort
 	found []SourcesFound
+	// isFirewalled nodes take no TCP connections; isUDPFirewalled nodes
+	// only hear datagrams from IPs they sent to, as behind a NAT.
+	isFirewalled    bool
+	isUDPFirewalled bool
+	sentTo          map[netip.Addr]bool
+}
+
+type simEnded struct {
+	asker *simNode
+	ip    netip.Addr
 }
 
 type simDatagram struct {
@@ -24,15 +34,24 @@ type simDatagram struct {
 }
 
 // sim is a lossless in-process Kad network: every datagram goes through
-// its wire form and arrives before the clock moves again. A
-// firewall request stands for the TCP check the asked node's engine runs: it
-// always reaches the asker, which hears an OP_KAD_FWTCPCHECK_ACK.
+// its wire form and arrives before the clock moves again. The sim also
+// plays each node's engine: a TCP connection succeeds unless it goes to a
+// firewalled node, so a FirewallCheck makes the asker hear an
+// OP_KAD_FWTCPCHECK_ACK, a UDPCheck reaches the tester as its
+// OP_FWCHECKUDPREQ, and a node that finds a buddy links to it at once.
 type sim struct {
 	t      *testing.T
 	now    time.Time
 	nodes  []*simNode
 	byAddr map[netip.AddrPort]*simNode
 	queue  []simDatagram
+	// ended are UDP checks whose connection closes after the test packets
+	// had their chance to arrive.
+	ended []simEnded
+	// callbacks are the OP_CALLBACKs buddies passed on.
+	callbacks []CallbackRequested
+	// isObfuscated: some datagram went out obfuscated.
+	isObfuscated bool
 }
 
 // buildSim makes a node for each ID; every node but the first knows only
@@ -43,8 +62,8 @@ func buildSim(t *testing.T, ids []wire.Hash) *sim {
 		var user wire.Hash
 		user[0], user[14], user[15] = 0xEE, byte(i>>8), byte(i)
 		addr := netip.MustParseAddrPort(fmt.Sprintf("10.0.%d.%d:4672", i/250, i%250+1))
-		n := &simNode{addr: addr, c: buildCore(coreConfig{
-			ID: id, UserHash: user, TCPPort: 4662, UDPPort: 4672, Rand: rand.New(rand.NewPCG(uint64(i), 3)),
+		n := &simNode{addr: addr, sentTo: map[netip.Addr]bool{}, c: buildCore(coreConfig{
+			ID: id, UserHash: user, TCPPort: 4662, UDPPort: 4672, UDPKey: uint32(i)*7919 + 1, Rand: rand.New(rand.NewPCG(uint64(i), 3)),
 		}, s.now)}
 		s.nodes = append(s.nodes, n)
 		s.byAddr[addr] = n
@@ -78,8 +97,38 @@ func buildIDs(count int, isNearFile bool) []wire.Hash {
 func (s *sim) record(n *simNode, out output) {
 	n.found = append(n.found, out.found...)
 	for _, d := range out.datagrams {
-		s.queue = append(s.queue, simDatagram{from: n.addr, to: d.to, data: wire.BuildPacketDatagram(nil, d.packet)})
+		n.sentTo[d.to.Addr()] = true
+		s.queue = append(s.queue, simDatagram{from: n.addr, to: d.to, data: n.c.buildDatagram(d)})
 	}
+	for _, r := range out.requests {
+		switch r := r.(type) {
+		case FirewallCheck:
+			if asker := s.byAddr[netip.AddrPortFrom(r.Addr.Addr(), r.KadPort)]; asker != nil && !asker.isFirewalled {
+				asker.c.onFirewallAck(n.addr.Addr())
+			}
+		case BuddyFound:
+			if buddy := s.nodeByIP(r.Addr.Addr()); buddy != nil && !n.c.buddy.IsConnected {
+				n.c.setBuddy(Buddy{IsConnected: true, Addr: buddy.addr})
+				buddy.c.setBuddy(Buddy{IsConnected: true})
+			}
+		case CallbackRequested:
+			s.callbacks = append(s.callbacks, r)
+		case UDPCheck:
+			if tester := s.nodeByIP(r.Addr.Addr()); tester != nil {
+				s.record(tester, tester.c.onMessage(FirewallUDP{IP: n.addr.Addr(), InternPort: r.InternPort, ExternPort: r.ExternPort, Key: r.Key}))
+			}
+			s.ended = append(s.ended, simEnded{n, r.Addr.Addr()})
+		}
+	}
+}
+
+func (s *sim) nodeByIP(ip netip.Addr) *simNode {
+	for _, n := range s.nodes {
+		if n.addr.Addr() == ip {
+			return n
+		}
+	}
+	return nil
 }
 
 func (s *sim) drain() {
@@ -87,18 +136,15 @@ func (s *sim) drain() {
 		d := s.queue[0]
 		s.queue = s.queue[1:]
 		to := s.byAddr[d.to]
-		if to == nil {
+		if to == nil || to.isUDPFirewalled && !to.sentTo[d.from.Addr()] {
 			continue
 		}
-		p, ok := parsePacket(d.data)
-		if !ok {
+		p, senderKey, isKad := to.c.parseDatagram(Datagram{Addr: d.from, Data: d.data})
+		if !isKad || p == nil {
 			s.t.Fatalf("undecodable datagram %x", d.data)
 		}
-		switch p.(type) {
-		case kadwire.FirewalledReq, kadwire.LegacyFirewalledReq:
-			s.byAddr[d.from].c.onFirewallAck(d.to.Addr())
-		}
-		s.record(to, to.c.onPacket(d.from, p, s.now))
+		s.isObfuscated = s.isObfuscated || d.data[0] != wire.ProtocolKad
+		s.record(to, to.c.onPacket(d.from, p, senderKey, s.now))
 	}
 }
 
@@ -109,12 +155,21 @@ func (s *sim) run(d time.Duration) {
 			s.record(n, n.c.onTick(s.now))
 			s.drain()
 		}
+		for len(s.ended) > 0 {
+			e := s.ended[0]
+			s.ended = s.ended[1:]
+			s.record(e.asker, e.asker.c.onMessage(UDPCheckEnded{IP: e.ip}))
+			s.drain()
+		}
 	}
 }
 
 func TestSimulatedNetwork(t *testing.T) {
 	s := buildSim(t, buildIDs(12, true))
 	s.run(10 * time.Minute)
+	if !s.isObfuscated {
+		t.Fatal("no datagram was obfuscated")
+	}
 
 	for i, n := range s.nodes {
 		if got := n.c.status(); got.Nodes < 6 || got.IsFirewalled {
@@ -153,7 +208,7 @@ func TestSimulatedNetwork(t *testing.T) {
 
 	searcher.c.setWanted(Wanted{Find: []Search{{Hash: fileHash, Size: 123456}}}, s.now)
 	s.run(time.Minute)
-	want := Source{Type: SourceOpen, UserHash: publisher.c.userHash, Addr: netip.AddrPortFrom(publisher.addr.Addr(), 4662), UDPPort: 4672}
+	want := Source{Type: SourceOpen, UserHash: publisher.c.userHash, Addr: netip.AddrPortFrom(publisher.addr.Addr(), 4662), UDPPort: 4672, CryptOptions: connectOptions}
 	var got []Source
 	for _, f := range searcher.found {
 		if f.Hash == fileHash {
@@ -172,8 +227,8 @@ func TestNewcomerFillsItsTable(t *testing.T) {
 	ids := buildIDs(400, false)
 	s := buildSim(t, ids[:len(ids)-1])
 	s.run(15 * time.Minute)
-	newcomer := &simNode{addr: netip.MustParseAddrPort("10.9.9.9:4672"), c: buildCore(coreConfig{
-		ID: ids[len(ids)-1], UserHash: wire.Hash{0xEF}, TCPPort: 4662, UDPPort: 4672, Rand: rand.New(rand.NewPCG(9, 9)),
+	newcomer := &simNode{addr: netip.MustParseAddrPort("10.9.9.9:4672"), sentTo: map[netip.Addr]bool{}, c: buildCore(coreConfig{
+		ID: ids[len(ids)-1], UserHash: wire.Hash{0xEF}, TCPPort: 4662, UDPPort: 4672, UDPKey: 99, Rand: rand.New(rand.NewPCG(9, 9)),
 	}, s.now)}
 	s.nodes = append(s.nodes, newcomer)
 	s.byAddr[newcomer.addr] = newcomer
@@ -189,5 +244,72 @@ func TestNewcomerFillsItsTable(t *testing.T) {
 	}
 	if contacts < 150 || verified < 50 {
 		t.Fatalf("newcomer knows %d contacts, %d verified, after 3 minutes", contacts, verified)
+	}
+}
+
+// TestSimulatedUDPCheck: nodes find test clients among strangers; a test
+// confirms the open nodes and never one behind a NAT.
+func TestSimulatedUDPCheck(t *testing.T) {
+	s := buildSim(t, buildIDs(120, false))
+	for i, n := range s.nodes {
+		n.isUDPFirewalled = i%10 == 5
+	}
+	s.run(10 * time.Minute)
+	open, closed := 0, 0
+	for i, n := range s.nodes {
+		u := &n.c.udp
+		switch {
+		case n.isUDPFirewalled && u.isOpen():
+			t.Fatalf("node %d behind a NAT verified open", i)
+		case n.isUDPFirewalled && u.isVerified && u.isFirewalledNow():
+			closed++
+		case !n.isUDPFirewalled && u.isOpen():
+			open++
+		}
+	}
+	if open < 90 || closed < 8 {
+		t.Fatalf("%d of 108 open nodes verified open, %d of 12 behind a NAT verified firewalled", open, closed)
+	}
+}
+
+// TestSimulatedBuddy: a node nobody can reach finds an open node near its
+// inverted ID as buddy, publishes itself through it, and a downloader's
+// callback request reaches the buddy.
+func TestSimulatedBuddy(t *testing.T) {
+	ids := buildIDs(80, false)
+	for i := range 10 {
+		copy(ids[i][:2], fileHash[:2])
+	}
+	for i := range ids[11] {
+		ids[11][i] = ^ids[10][i]
+	}
+	ids[11][15] ^= 1
+	s := buildSim(t, ids)
+	firewalled, buddy, searcher := s.nodes[10], s.nodes[11], s.nodes[3]
+	firewalled.isFirewalled, firewalled.isUDPFirewalled = true, true
+	firewalled.c.setWanted(Wanted{Publish: []Publish{{Hash: fileHash, Size: 123456}}}, s.now)
+	s.run(12 * time.Minute)
+	if firewalled.c.buddy.Addr != buddy.addr {
+		t.Fatalf("firewalled node's buddy %v, want %v", firewalled.c.buddy.Addr, buddy.addr)
+	}
+
+	searcher.c.setWanted(Wanted{Find: []Search{{Hash: fileHash, Size: 123456}}}, s.now)
+	s.run(time.Minute)
+	var got []Source
+	for _, f := range searcher.found {
+		for _, src := range f.Sources {
+			if src.UserHash == firewalled.c.userHash {
+				got = append(got, src)
+			}
+		}
+	}
+	if len(got) != 1 || got[0].Type != SourceFirewalled || got[0].Buddy != buddy.addr || got[0].BuddyID != firewalled.c.buddyTarget() {
+		t.Fatalf("searcher found %+v, want the firewalled node behind its buddy", got)
+	}
+	s.record(searcher, searcher.c.requestCallback(Callback{Buddy: got[0].Buddy, BuddyID: got[0].BuddyID, Hash: fileHash}))
+	s.drain()
+	want := CallbackRequested{BuddyID: firewalled.c.buddyTarget(), Hash: fileHash, Addr: netip.AddrPortFrom(searcher.addr.Addr(), 4662)}
+	if len(s.callbacks) != 1 || s.callbacks[0] != want {
+		t.Fatalf("callbacks %+v, want %+v", s.callbacks, want)
 	}
 }

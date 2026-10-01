@@ -44,6 +44,7 @@ func (n *Network) AddHost(addrs ...netip.Addr) *Host {
 		listeners: map[int]*fakeListener{},
 		sockets:   map[int]*fakePacketConn{},
 		conns:     map[*pipeConn]struct{}{},
+		udpPeers:  map[netip.Addr]bool{},
 		nextPort:  firstEphemeralPort,
 	}
 	for _, addr := range addrs {
@@ -69,6 +70,10 @@ type Host struct {
 	isUnreachable bool
 	isLowID       bool
 	isClosed      bool
+	// isUDPFirewalled hosts hear datagrams only from the IPs in udpPeers,
+	// those they sent one to.
+	isUDPFirewalled bool
+	udpPeers        map[netip.Addr]bool
 }
 
 // SetUnreachable makes dials to h fail and datagrams to h vanish, as for a
@@ -85,6 +90,14 @@ func (h *Host) SetLowID(isLowID bool) {
 	h.network.mu.Lock()
 	defer h.network.mu.Unlock()
 	h.isLowID = isLowID
+}
+
+// SetUDPFirewalled makes h drop datagrams from addresses it never sent one
+// to, as a NAT does.
+func (h *Host) SetUDPFirewalled(isUDPFirewalled bool) {
+	h.network.mu.Lock()
+	defer h.network.mu.Unlock()
+	h.isUDPFirewalled = isUDPFirewalled
 }
 
 // Close closes every listener, connection and UDP socket of h and takes it
@@ -309,8 +322,9 @@ func (s *fakePacketConn) WriteTo(b []byte, addr netip.AddrPort) (int, error) {
 	if !ok {
 		return 0, &net.OpError{Op: "write", Net: "udp", Addr: net.UDPAddrFromAddrPort(addr), Err: syscall.ENETUNREACH}
 	}
+	h.udpPeers[addr.Addr()] = true
 	target := n.hosts[addr.Addr()]
-	if target == nil || target.isUnreachable {
+	if target == nil || target.isUnreachable || target.isUDPFirewalled && !target.udpPeers[local] {
 		return len(b), nil
 	}
 	socket := target.sockets[int(addr.Port())]

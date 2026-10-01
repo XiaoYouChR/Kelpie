@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
 )
@@ -28,6 +29,7 @@ type harness struct {
 	answering map[netip.AddrPort]Node
 	sent      []datagram
 	found     []SourcesFound
+	requests  []Request
 }
 
 func buildHarness(t *testing.T) *harness {
@@ -38,6 +40,7 @@ func buildHarness(t *testing.T) *harness {
 func (h *harness) record(out output) {
 	h.sent = append(h.sent, out.datagrams...)
 	h.found = append(h.found, out.found...)
+	h.requests = append(h.requests, out.requests...)
 	for _, d := range out.datagrams {
 		peer, ok := h.answering[d.to]
 		if !ok {
@@ -45,11 +48,11 @@ func (h *harness) record(out output) {
 		}
 		switch p := d.packet.(type) {
 		case kadwire.Req:
-			h.record(h.c.onPacket(peer.Addr, kadwire.Res{Target: p.Target}, h.now))
+			h.record(h.c.onPacket(peer.Addr, kadwire.Res{Target: p.Target}, 0, h.now))
 		case kadwire.HelloReq:
-			h.record(h.c.onPacket(peer.Addr, kadwire.HelloRes{ID: peer.ID, TCPPort: peer.TCPPort, Version: peer.Version}, h.now))
+			h.record(h.c.onPacket(peer.Addr, kadwire.HelloRes{ID: peer.ID, TCPPort: peer.TCPPort, Version: peer.Version}, 0, h.now))
 		case kadwire.BootstrapReq:
-			h.record(h.c.onPacket(peer.Addr, kadwire.BootstrapRes{ID: peer.ID, TCPPort: peer.TCPPort, Version: peer.Version}, h.now))
+			h.record(h.c.onPacket(peer.Addr, kadwire.BootstrapRes{ID: peer.ID, TCPPort: peer.TCPPort, Version: peer.Version}, 0, h.now))
 		}
 	}
 }
@@ -60,11 +63,11 @@ func (h *harness) tick(d time.Duration) {
 }
 
 func (h *harness) receive(from netip.AddrPort, p wire.Packet) {
-	h.record(h.c.onPacket(from, p, h.now))
+	h.record(h.c.onPacket(from, p, 0, h.now))
 }
 
 // clearSent forgets what was sent so far.
-func (h *harness) clearSent() { h.sent, h.found = nil, nil }
+func (h *harness) clearSent() { h.sent, h.found, h.requests = nil, nil, nil }
 
 type sent[T wire.Packet] struct {
 	to     netip.AddrPort
@@ -122,12 +125,17 @@ func TestBootstrapThenSelfLookup(t *testing.T) {
 	}
 	h.clearSent()
 	h.tick(time.Second)
-	reqs := packetsOf[kadwire.Req](h)
+	var reqs []sent[kadwire.Req]
+	for _, r := range packetsOf[kadwire.Req](h) {
+		if r.packet.Target == selfID {
+			reqs = append(reqs, r)
+		}
+	}
 	if len(reqs) != 2 {
 		t.Fatalf("self lookup sent %d requests, want one to each known contact", len(reqs))
 	}
 	for _, r := range reqs {
-		if r.packet.Target != selfID || r.packet.SearchType != kadwire.FindNode {
+		if r.packet.SearchType != kadwire.FindNode {
 			t.Fatalf("self lookup request %+v", r.packet)
 		}
 	}
@@ -407,11 +415,14 @@ func TestFirewallCheckGatesPublishing(t *testing.T) {
 	if p.FileID != fileHash || p.Source.ID != userHash {
 		t.Fatalf("publish %+v", p)
 	}
-	wantTags := map[byte]uint64{kadwire.TagSourceType: 1, kadwire.TagSourcePort: 4662, kadwire.TagSourceUPort: 4672, kadwire.TagFileSize: 5000}
+	wantTags := map[byte]uint64{kadwire.TagSourceType: 1, kadwire.TagSourcePort: 4662, kadwire.TagFileSize: 5000}
 	for id, v := range wantTags {
 		if tag, ok := p.Source.TagByID(id); !ok || tag.Uint != v {
 			t.Fatalf("publish tag %#x = %+v, want %d", id, tag, v)
 		}
+	}
+	if _, ok := p.Source.TagByID(kadwire.TagSourceUPort); ok {
+		t.Fatal("published our UDP port before a UDP test chose it over the NAT's")
 	}
 	l := h.c.lookupByTarget(sourcePublish, fileHash)
 	for _, pub := range pubs {
@@ -458,5 +469,55 @@ func TestIndexStoresAndServesSources(t *testing.T) {
 	h.receive(searcher, kadwire.SearchSourcesReq{Target: near, Size: 1})
 	if len(packetsOf[kadwire.SearchRes](h)) != 0 {
 		t.Fatal("served an expired source")
+	}
+}
+
+// TestObfuscationFollowsAMule: requests to Kad 6+ contacts go out keyed
+// by their node ID, answers with the key the request carried, and a plain
+// request gets a plain answer.
+func TestObfuscationFollowsAMule(t *testing.T) {
+	h := buildHarness(t)
+	old := buildNear(fileHash, 1)
+	old.Version = 5
+	h.c.table.add(old, true, h.now)
+	modern := h.connect(fileHash, 1)[0]
+	delete(h.answering, modern.Addr)
+
+	h.c.startLookup(nodeLookup, fileHash, 0, h.now)
+	h.record(h.c.out)
+	h.c.out = output{}
+	if len(h.sent) != 2 {
+		t.Fatalf("lookup sent %d requests, want 2", len(h.sent))
+	}
+	for _, d := range h.sent {
+		want := wire.Hash{}
+		if d.to == modern.Addr {
+			want = modern.ID
+		}
+		if d.nodeID != want {
+			t.Fatalf("request to %v keyed by %v, want %v", d.to, d.nodeID, want)
+		}
+	}
+
+	h.clearSent()
+	h.receive(modern.Addr, kadwire.Ping{})
+	if len(h.sent) != 1 || h.sent[0].receiverKey != 0 || h.sent[0].nodeID != (wire.Hash{}) {
+		t.Fatalf("answer to a plain ping %+v, want plain", h.sent)
+	}
+	h.clearSent()
+	h.record(h.c.onPacket(modern.Addr, kadwire.Ping{}, 0x1234, h.now))
+	if len(h.sent) != 1 || h.sent[0].receiverKey != 0x1234 || h.sent[0].nodeID != (wire.Hash{}) ||
+		h.sent[0].senderKey != obfuscation.BuildKadVerifyKey(h.c.udpKey, modern.Addr.Addr()) {
+		t.Fatalf("answer to an obfuscated ping %+v, want it keyed by the ping's sender key", h.sent)
+	}
+	if h.c.table.byAddr[modern.Addr].udpKey != 0x1234 {
+		t.Fatal("contact did not keep its sender key")
+	}
+
+	d := h.sent[0]
+	data := h.c.buildDatagram(d)
+	p, key, isKad := buildCore(coreConfig{ID: modern.ID, Rand: h.c.rng}, h.now).parseDatagram(Datagram{Addr: netip.AddrPortFrom(netip.MustParseAddr("10.0.0.1"), 4672), Data: data})
+	if isKad || p != nil || key != 0 {
+		t.Fatal("a receiver key datagram decoded with someone else's verify key")
 	}
 }

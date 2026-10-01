@@ -110,6 +110,8 @@ type Engine struct {
 	kadCancel context.CancelFunc
 	kadDone   chan struct{}
 	kadStatus kad.Status
+	kadID     wire.Hash
+	buddy     buddy
 	listener  transport.Listener
 	udp       transport.PacketConn
 	tcpPort   int
@@ -119,6 +121,9 @@ type Engine struct {
 	trace     *leafQueue[traceLine]
 	disk      *leafQueue[diskJob]
 	unmapNAT  func(context.Context) error
+	// directCallbacks holds when each IP last asked us for a direct
+	// callback.
+	directCallbacks map[netip.Addr]time.Time
 
 	serverAddr netip.AddrPort
 	publicIP   netip.Addr
@@ -135,6 +140,7 @@ type Engine struct {
 	sourceLowIDs    map[lowIDKey]map[wire.Hash]bool
 	uploadEndpoints map[uploadKey]uploadTarget
 	a4afClients     map[wire.Hash]*a4afClient
+	kadChecks       map[uint64]kadCheck
 	recentConnects  []time.Time
 	budgetCursor    int
 	lastSecond      time.Time
@@ -230,6 +236,9 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		sourceLowIDs:    map[lowIDKey]map[wire.Hash]bool{},
 		uploadEndpoints: map[uploadKey]uploadTarget{},
 		a4afClients:     map[wire.Hash]*a4afClient{},
+		kadChecks:       map[uint64]kadCheck{},
+		buddy:           buddy{incoming: map[netip.Addr]incomingBuddy{}},
+		directCallbacks: map[netip.Addr]time.Time{},
 	}
 	if config.PacketLog != nil {
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)
@@ -395,6 +404,7 @@ func (e *Engine) startKad(nodes []kad.Node) {
 		Rand:      rand.New(rand.NewPCG(random.Uint64(), random.Uint64())),
 	})
 	e.kadStatus = kad.Status{IsFirewalled: true}
+	e.kadID = e.kad.State().ID
 	ctx, cancel := context.WithCancel(e.ctx)
 	e.kadCancel = cancel
 	e.kadDone = make(chan struct{})
@@ -522,8 +532,9 @@ func (e *Engine) run() {
 	var found <-chan kad.SourcesFound
 	var received <-chan kad.Datagram
 	var statuses <-chan kad.Status
+	var requests <-chan kad.Request
 	if e.kad != nil {
-		found, received, statuses = e.kad.Found(), e.kad.Received(), e.kad.Statuses()
+		found, received, statuses, requests = e.kad.Found(), e.kad.Received(), e.kad.Statuses(), e.kad.Requests()
 	}
 	for {
 		select {
@@ -541,6 +552,8 @@ func (e *Engine) run() {
 			e.onDatagram(d.Addr, d.Data)
 		case s := <-statuses:
 			e.kadStatus = s
+		case r := <-requests:
+			e.onKadRequest(r)
 		}
 		e.refreshRuns()
 		e.refreshNetwork()
@@ -591,6 +604,7 @@ func (e *Engine) onTick() {
 	e.runTransfers(now)
 	e.refreshUploadEndpoints()
 	e.runServer(e.server.OnTick(now, e.buildServerWanted()))
+	e.runBuddy(now)
 	if e.kad != nil {
 		e.kad.SetWanted(e.buildKadWanted())
 	}

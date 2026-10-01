@@ -35,7 +35,10 @@ type Identity struct {
 type Kad struct {
 	ID           wire.Hash
 	IsFirewalled bool
-	Nodes        []KadNode
+	// UDPKey is the secret behind the verify keys of obfuscated Kad
+	// datagrams; nodes that know it keep trusting us across restarts.
+	UDPKey uint32
+	Nodes  []KadNode
 }
 
 type KadNode struct {

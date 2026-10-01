@@ -862,3 +862,28 @@ func TestCryptOptionsReadAsEmuleDoes(t *testing.T) {
 		}
 	}
 }
+
+func TestBuddyLinkTimesOutLater(t *testing.T) {
+	l := buildLink(t)
+	l.a.s.SetIdleTimeout(15 * time.Minute)
+	if out := l.a.s.OnTick(start.Add(14 * time.Minute)); out.Close != "" {
+		t.Fatal("closed a buddy link within its timeout")
+	}
+	if out := l.a.s.OnTick(start.Add(16 * time.Minute)); out.Close != CloseTimeout {
+		t.Fatalf("close %q", out.Close)
+	}
+}
+
+func TestHelloNamesBuddyAndKadVersion(t *testing.T) {
+	cfg := buildConfig(t, 1)
+	cfg.Buddy, cfg.KadVersion = netip.MustParseAddrPort("5.6.7.8:4672"), 7
+	_, out := BuildOutgoing(cfg, netip.MustParseAddrPort("10.0.0.2:4662"), start)
+	if h := out.Send[0].(client.Hello); h.Buddy != cfg.Buddy || h.Misc2.KadVersion != 7 {
+		t.Fatalf("hello buddy %v, kad version %d", h.Buddy, h.Misc2.KadVersion)
+	}
+	b := BuildIncoming(buildConfig(t, 2), netip.MustParseAddrPort("10.0.0.1:4662"), start)
+	b.OnPacket(out.Send[0], nil, start)
+	if b.Capabilities().KadVersion != 7 {
+		t.Fatalf("kad version %d", b.Capabilities().KadVersion)
+	}
+}

@@ -23,6 +23,12 @@ const (
 	// randomLookup is eMule's NODE search: it asks one contact at a time
 	// and ends with the first answer, whose contacts fill the table.
 	randomLookup
+	// udpCheckLookup is eMule's NODEFWCHECKUDP: the contacts it hears of
+	// are UDP test clients, kept out of the routing table.
+	udpCheckLookup
+	// buddyLookup is eMule's FINDBUDDY: it asks the nodes closest to our
+	// inverted ID to be our buddy.
+	buddyLookup
 	sourceSearch
 	sourcePublish
 )
@@ -96,6 +102,8 @@ func (l *lookup) lifetime() time.Duration {
 		return fileLifetime
 	case sourcePublish:
 		return storeFileLifetime
+	case buddyLookup:
+		return buddyLifetime
 	}
 	return nodeLifetime
 }
@@ -106,6 +114,8 @@ func (l *lookup) total() int {
 		return fileTotal
 	case sourcePublish:
 		return storeFileTotal
+	case buddyLookup:
+		return buddyTotal
 	}
 	return nodeCompleteTotal
 }
@@ -199,7 +209,7 @@ func (c *core) startLookup(kind lookupKind, target wire.Hash, size uint64, now t
 
 func (c *core) sendFind(l *lookup, cand *candidate, now time.Time) {
 	cand.isTried = true
-	c.send(cand.Addr, kadwire.Req{SearchType: l.requestCount(), Target: l.target, Receiver: cand.ID})
+	c.sendTo(cand.Node, kadwire.Req{SearchType: l.requestCount(), Target: l.target, Receiver: cand.ID})
 	c.rpcs.add(&rpc{kind: rpcFind, node: cand.Node, target: l.target, sent: now, lookup: l})
 }
 
@@ -214,6 +224,13 @@ func (c *core) onRes(from netip.AddrPort, res kadwire.Res, now time.Time) {
 		return
 	}
 	c.table.add(Node{ID: r.node.ID, Addr: from, TCPPort: r.node.TCPPort, Version: r.node.Version}, true, now)
+	if l.kind == udpCheckLookup {
+		if !l.isDone {
+			l.lastResponse = now
+			c.addUDPCheckClients(res.Contacts)
+		}
+		return
+	}
 	for _, ct := range res.Contacts {
 		c.table.add(Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}, false, now)
 	}
@@ -292,7 +309,7 @@ func (c *core) sendAction(l *lookup, cand *candidate, now time.Time) {
 		if cand.Version < versionSearchSources {
 			return
 		}
-		c.send(cand.Addr, kadwire.SearchSourcesReq{Target: l.target, Size: l.size})
+		c.sendTo(cand.Node, kadwire.SearchSourcesReq{Target: l.target, Size: l.size})
 		c.rpcs.add(&rpc{kind: rpcSearchSources, node: cand.Node, target: l.target, sent: now, lookup: l})
 	case sourcePublish:
 		if l.answers > storeFileTotal {
@@ -302,28 +319,62 @@ func (c *core) sendAction(l *lookup, cand *candidate, now time.Time) {
 		if cand.Version < versionPublishSources {
 			return
 		}
-		c.send(cand.Addr, kadwire.PublishSourcesReq{FileID: l.target, Source: kadwire.Entry{ID: c.userHash, Tags: c.buildSourceTags(l.size)}})
+		tags, ok := c.buildSourceTags(l.size)
+		if !ok {
+			l.stop(now)
+			return
+		}
+		c.sendTo(cand.Node, kadwire.PublishSourcesReq{FileID: l.target, Source: kadwire.Entry{ID: c.userHash, Tags: tags}})
 		c.rpcs.add(&rpc{kind: rpcPublish, node: cand.Node, target: l.target, sent: now, lookup: l})
+	case buddyLookup:
+		c.sendFindBuddy(l, cand, now)
 	}
 }
 
-// buildSourceTags describes us as an open source: CSearch::StorePacket for
-// STOREFILE when not firewalled. The storing node adds our IP.
-func (c *core) buildSourceTags(size uint64) []wire.Tag {
-	sourceType := uint64(1)
-	if size > oldMaxFileSize {
-		sourceType = 4
+// buildSourceTags is CSearch::StorePacket for STOREFILE
+// (Search.cpp:595-660): an open source; a firewalled one that others reach
+// over UDP and so take callback requests itself; or one with the buddy
+// that passes callbacks on. A firewalled client without either does not
+// publish. The storing node adds our IP, and our UDP port as it sees it
+// unless a UDP test showed that our own port is the one to use.
+func (c *core) buildSourceTags(size uint64) ([]wire.Tag, bool) {
+	isLarge := size > oldMaxFileSize
+	var tags []wire.Tag
+	switch {
+	case !c.firewall.isFirewalled():
+		tags = append(tags, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: uint64(pick(isLarge, SourceOpenLarge, SourceOpen))})
+	case c.canDirectCallback():
+		tags = append(tags, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: uint64(SourceDirectCallback)})
+	case c.buddy.Addr.IsValid():
+		tags = append(tags,
+			wire.Tag{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: uint64(pick(isLarge, SourceFirewalledLarge, SourceFirewalled))},
+			wire.Tag{Type: wire.TagUint32, ID: kadwire.TagServerIP, Uint: uint64(wire.ToClientID(c.buddy.Addr.Addr()))},
+			wire.Tag{Type: wire.TagUint16, ID: kadwire.TagServerPort, Uint: uint64(c.buddy.Addr.Port())},
+			wire.Tag{Type: wire.TagString, ID: kadwire.TagBuddyHash, String: buildBuddyHash(c.buddyTarget())},
+		)
+	default:
+		return nil, false
+	}
+	tags = append(tags, wire.Tag{Type: wire.TagUint16, ID: kadwire.TagSourcePort, Uint: uint64(c.tcpPort)})
+	if !c.udp.useExternPort {
+		tags = append(tags, wire.Tag{Type: wire.TagUint16, ID: kadwire.TagSourceUPort, Uint: uint64(c.udpPort)})
 	}
 	sizeTag := wire.Tag{Type: wire.TagUint32, ID: kadwire.TagFileSize, Uint: size}
 	if size > 0xFFFFFFFF {
 		sizeTag.Type = wire.TagUint64
 	}
-	return []wire.Tag{
-		{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: sourceType},
-		{Type: wire.TagUint16, ID: kadwire.TagSourcePort, Uint: uint64(c.tcpPort)},
-		{Type: wire.TagUint16, ID: kadwire.TagSourceUPort, Uint: uint64(c.udpPort)},
-		sizeTag,
+	options := connectOptions
+	if c.canDirectCallback() {
+		options |= cryptDirectCallback
 	}
+	return append(tags, sizeTag, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagEncryption, Uint: uint64(options)}), true
+}
+
+func pick[T any](cond bool, yes, no T) T {
+	if cond {
+		return yes
+	}
+	return no
 }
 
 // oldMaxFileSize is eMule's OLD_MAX_EMULE_FILE_SIZE: larger files are
@@ -377,7 +428,7 @@ func (c *core) runLookups(now time.Time) {
 	for _, l := range c.lookups {
 		switch {
 		case l.isStopping:
-		case (l.kind == sourceSearch || l.kind == sourcePublish) && (l.answers >= l.total() || now.After(l.created.Add(l.lifetime()-stopMargin))):
+		case (l.kind == sourceSearch || l.kind == sourcePublish || l.kind == buddyLookup) && (l.answers >= l.total() || now.After(l.created.Add(l.lifetime()-stopMargin))):
 			l.stop(now)
 		default:
 			c.runJumpStart(l, now)

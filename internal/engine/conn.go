@@ -25,11 +25,6 @@ import (
 	serverwire "github.com/XiaoYouChR/Kelpie/internal/wire/server"
 )
 
-// opKadFirewallAck is OP_KAD_FWTCPCHECK_ACK, which a Kad node checking our
-// TCP port sends over the connection it opened; wire/client leaves it
-// undecoded.
-const opKadFirewallAck byte = 0xA8
-
 // conn is one TCP connection: to a peer, or to the server.
 type conn struct {
 	id           uint64
@@ -246,6 +241,10 @@ func (e *Engine) buildPeerConfig() peer.Config {
 	if e.kad != nil {
 		cfg.KadPort = uint16(e.udpPort)
 		cfg.KadVersion = kadVersion
+		if e.isFirewalled() {
+			cfg.Buddy = e.buddyAddr()
+		}
+		cfg.HasDirectCallback = e.canDirectCallback()
 	}
 	return cfg
 }
@@ -384,6 +383,8 @@ func (e *Engine) closeConn(c *conn, reason string) {
 			e.onPeerEvent(c, event)
 		}
 	}
+	e.onKadConnClosed(c)
+	e.onBuddyConnClosed(c)
 	for _, h := range c.files {
 		r := e.runByHash[h]
 		if r == nil || r.transfer == nil {
@@ -432,10 +433,8 @@ func (e *Engine) onPacket(id uint64, p wire.Packet) {
 		e.runServer(e.server.OnPacket(c.remote, p, e.now()))
 		return
 	}
-	if u, ok := p.(wire.Unknown); ok && u.Proto == wire.ProtocolEMule && u.Op == opKadFirewallAck {
-		if e.kad != nil {
-			e.kad.SendFirewallAck(c.remote.Addr())
-		}
+	e.onKadPacket(c, p)
+	if c.isClosed {
 		return
 	}
 	e.runSession(c, c.session.OnPacket(p, e.shareByHash, e.now()))
@@ -573,6 +572,10 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 		}
 	}
 	e.startFirstFile(c)
+	if !c.isClosed {
+		e.onKadHandshake(c)
+		e.onBuddyHandshake(c)
+	}
 	if !c.isClosed {
 		e.runQueueActions(e.queue.OnConnected(c.id, toUploadPeer(c), e.now()))
 	}
@@ -827,9 +830,12 @@ func toKadSources(found []kad.Source) []transfer.Source {
 	var sources []transfer.Source
 	for _, f := range found {
 		src := transfer.Source{UserHash: f.UserHash, UDPPort: f.UDPPort, CanObfuscate: f.CanObfuscate()}
-		if f.IsFirewalled() {
+		switch {
+		case f.IsFirewalled():
 			src.Buddy, src.BuddyID = f.Buddy, f.BuddyID
-		} else {
+		case f.Type == kad.SourceDirectCallback:
+			src.Buddy, src.IsDirectCallback = netip.AddrPortFrom(f.Addr.Addr(), f.UDPPort), true
+		default:
 			src.Endpoint = f.Addr
 		}
 		sources = append(sources, src)

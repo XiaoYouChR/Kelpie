@@ -27,10 +27,11 @@ type ReaskUDP struct{ Endpoint netip.AddrPort }
 type RequestServerCallback struct{ ClientID uint32 }
 
 // RequestKadCallback asks a firewalled Kad source's buddy to make it connect
-// to us.
+// to us; with IsDirect, Buddy is the source itself, asked over UDP.
 type RequestKadCallback struct {
-	Buddy   netip.AddrPort
-	BuddyID wire.Hash
+	Buddy    netip.AddrPort
+	BuddyID  wire.Hash
+	IsDirect bool
 }
 
 // RequestSources asks one channel for more sources. Peer is set only for

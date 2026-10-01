@@ -1,7 +1,6 @@
 package kad
 
 import (
-	"encoding/binary"
 	"net/netip"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -34,11 +33,17 @@ const (
 	SourceFirewalled      byte = 3 // reachable only through its buddy
 	SourceOpenLarge       byte = 4 // HighID, file over 4 GB
 	SourceFirewalledLarge byte = 5 // firewalled, file over 4 GB
+	SourceDirectCallback  byte = 6 // firewalled, but takes callback requests over UDP itself
 )
+
+// cryptDirectCallback is the TAG_ENCRYPTION bit of a source that takes
+// direct callbacks (CPrefs::GetMyConnectOptions).
+const cryptDirectCallback byte = 0x08
 
 // Source is one peer that has a file, as Kad reported it. For firewalled
 // types the engine cannot connect to Addr; it asks Kad to RequestCallback
-// through Buddy, and the source connects to us.
+// through Buddy, or for SourceDirectCallback sends the source's Kad port
+// (UDPPort) an OP_DIRECTCALLBACKREQ, and the source connects to us.
 type Source struct {
 	Type     byte
 	UserHash wire.Hash
@@ -66,6 +71,10 @@ type SourcesFound struct {
 type Status struct {
 	Nodes        int
 	IsFirewalled bool
+	// IsUDPFirewalled is the UDP test's verdict, or the last one while a
+	// test runs; IsUDPVerified says a test has ever finished.
+	IsUDPFirewalled bool
+	IsUDPVerified   bool
 }
 
 // Callback asks a firewalled source's buddy to have the source connect to
@@ -76,10 +85,11 @@ type Callback struct {
 	Hash    wire.Hash
 }
 
-// toSource reads a search result the way eMule's CSearch::ProcessResultFile
-// and CDownloadQueue::KademliaSearchFile do. Type 6 (direct UDP callback)
-// and type 2 are not used; firewalled sources are useless while we are
-// firewalled ourselves.
+// toSource reads a search result the way CSearch::ProcessResultFile and
+// CDownloadQueue::KademliaSearchFile (DownloadQueue.cpp:1600-1670) do. Type
+// 2 is skipped ("some clients process it wrong"); firewalled sources, types
+// 3, 5 and 6, are useless while we are firewalled ourselves, and type 6
+// must say it takes direct callbacks.
 func toSource(e kadwire.Entry, isFirewalled bool) (Source, bool) {
 	s := Source{UserHash: e.ID}
 	var ip netip.Addr
@@ -132,39 +142,38 @@ func toSource(e kadwire.Entry, isFirewalled bool) (Source, bool) {
 			s.Addr = netip.AddrPortFrom(netip.Addr{}, tcpPort)
 		}
 		return s, true
+	case SourceDirectCallback:
+		return s, !isFirewalled && s.CryptOptions&cryptDirectCallback != 0 && ip.IsValid() && s.UDPPort != 0
 	}
 	return Source{}, false
 }
 
 // eMule writes TAG_BUDDYHASH as the hex of the buddy ID's in-memory words,
-// which is its Kad wire form; BuddyID holds the hash form like every other
-// ID here, so buildCallback can encode it back.
+// which is its Kad wire form (eMule Search.cpp:765); BuddyID holds the hash
+// form like every other ID here, so the callback request can encode it
+// back. aMule writes and reads the hash form instead (Search.cpp:626, 909),
+// so eMule and aMule cannot call back each other's firewalled sources; we
+// follow eMule, the larger part of the network.
+func buildBuddyHash(id wire.Hash) string {
+	return wire.Hash(kadwire.BuildID(nil, id)).String()
+}
+
 func parseBuddyID(t wire.Tag) (wire.Hash, bool) {
 	raw, err := wire.ParseHash(t.String)
 	if t.Type != wire.TagString || err != nil {
 		return wire.Hash{}, false
 	}
-	return parseID(&wire.Reader{Rest: raw[:]}), true
+	return kadwire.ParseID(&wire.Reader{Rest: raw[:]}), true
 }
 
-// opCallbackReq is KADEMLIA_CALLBACK_REQ and opFirewalledAck
-// KADEMLIA_FIREWALLED_ACK_RES; wire/kad does not decode either.
-const (
-	opCallbackReq   byte = 0x52
-	opFirewalledAck byte = 0x59
-)
+// opFirewalledAck is KADEMLIA_FIREWALLED_ACK_RES, which wire/kad does not
+// decode.
+const opFirewalledAck byte = 0x59
 
-// callbackReq is what CUpDownClient::TryToConnect sends a firewalled
-// source's buddy: buddy ID, file hash, our TCP port. The buddy forwards it
-// as OP_CALLBACK over its TCP link to the source.
-type callbackReq struct {
-	BuddyID wire.Hash
-	Hash    wire.Hash
-	TCPPort uint16
-}
+// firewalledAck is KADEMLIA_FIREWALLED_ACK_RES, sent to a node older than
+// Kad version 7 whose TCP port we reached (ClientList.cpp:600).
+type firewalledAck struct{}
 
-func (callbackReq) Protocol() byte { return wire.ProtocolKad }
-func (callbackReq) Opcode() byte   { return opCallbackReq }
-func (p callbackReq) Build(b []byte) []byte {
-	return binary.LittleEndian.AppendUint16(buildID(buildID(b, p.BuddyID), p.Hash), p.TCPPort)
-}
+func (firewalledAck) Protocol() byte        { return wire.ProtocolKad }
+func (firewalledAck) Opcode() byte          { return opFirewalledAck }
+func (firewalledAck) Build(b []byte) []byte { return b }
