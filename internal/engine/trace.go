@@ -54,7 +54,7 @@ func openTrace(d disk.Disk, path string) (file disk.File, end int64, err error) 
 		file.Close()
 		return nil, 0, err
 	}
-	return file, info.Size(), nil
+	return file, info.Size, nil
 }
 
 // runTraceWriter is the trace file's leaf; it appends each line and reports

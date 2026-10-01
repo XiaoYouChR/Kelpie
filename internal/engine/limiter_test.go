@@ -1,4 +1,4 @@
-package transport
+package engine
 
 import (
 	"context"
@@ -7,8 +7,6 @@ import (
 
 	"github.com/XiaoYouChR/Kelpie/internal/clock"
 )
-
-var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // runWithClock advances c in steps whenever work is parked on a timer, until
 // work returns.
@@ -34,9 +32,9 @@ func runWithClock(c *clock.Fake, step time.Duration, work func()) {
 
 func TestLimiterUnlimitedNeverWaits(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := BuildLimiter(c, 0)
+	l := buildRateLimiter(c, 0)
 	for range 1000 {
-		l.WaitN(context.Background(), 1<<20)
+		l.waitN(context.Background(), 1<<20)
 	}
 	if c.Waiters() != 0 {
 		t.Fatal("unlimited limiter waited")
@@ -46,10 +44,10 @@ func TestLimiterUnlimitedNeverWaits(t *testing.T) {
 func TestLimiterHoldsRate(t *testing.T) {
 	for _, size := range []int{100, 1000, 5000} {
 		c := clock.BuildFake(start)
-		l := BuildLimiter(c, 1000)
+		l := buildRateLimiter(c, 1000)
 		runWithClock(c, time.Millisecond, func() {
 			for range 20000 / size {
-				l.WaitN(context.Background(), size)
+				l.waitN(context.Background(), size)
 			}
 		})
 		elapsed := c.Now().Sub(start)
@@ -63,13 +61,13 @@ func TestLimiterHoldsRate(t *testing.T) {
 // runnable, so only the lower bound is exact.
 func TestLimiterSharedByConnections(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := BuildLimiter(c, 1000)
+	l := buildRateLimiter(c, 1000)
 	runWithClock(c, time.Millisecond, func() {
 		done := make(chan struct{})
 		for range 4 {
 			go func() {
 				for range 25 {
-					l.WaitN(context.Background(), 100)
+					l.waitN(context.Background(), 100)
 				}
 				done <- struct{}{}
 			}()
@@ -85,26 +83,26 @@ func TestLimiterSharedByConnections(t *testing.T) {
 
 func TestLimiterSetRateWakesWaiters(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := BuildLimiter(c, 1)
+	l := buildRateLimiter(c, 1)
 	done := make(chan struct{})
 	go func() {
-		l.WaitN(context.Background(), 1000)
+		l.waitN(context.Background(), 1000)
 		close(done)
 	}()
 	for c.Waiters() == 0 {
 		time.Sleep(time.Microsecond)
 	}
-	l.SetRate(0)
+	l.setRate(0)
 	<-done
 }
 
 func TestLimiterSlowsDownLive(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := BuildLimiter(c, 0)
-	l.WaitN(context.Background(), 1<<20)
-	l.SetRate(100)
+	l := buildRateLimiter(c, 0)
+	l.waitN(context.Background(), 1<<20)
+	l.setRate(100)
 	runWithClock(c, time.Millisecond, func() {
-		l.WaitN(context.Background(), 100)
+		l.waitN(context.Background(), 100)
 	})
 	if elapsed := c.Now().Sub(start); elapsed < time.Second || elapsed > 1001*time.Millisecond {
 		t.Fatalf("100 bytes at 100 B/s right after unlimited took %v", elapsed)
@@ -113,10 +111,10 @@ func TestLimiterSlowsDownLive(t *testing.T) {
 
 func TestLimiterCancel(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := BuildLimiter(c, 1)
+	l := buildRateLimiter(c, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
-	go func() { done <- l.WaitN(ctx, 1000) }()
+	go func() { done <- l.waitN(ctx, 1000) }()
 	for c.Waiters() == 0 {
 		time.Sleep(time.Microsecond)
 	}

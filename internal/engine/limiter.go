@@ -1,4 +1,4 @@
-package transport
+package engine
 
 import (
 	"context"
@@ -9,8 +9,8 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/clock"
 )
 
-// Limiter is a token bucket shared by every peer connection in one direction.
-// Their reader and writer goroutines call WaitN before moving n bytes,
+// rateLimiter is a token bucket shared by every peer connection in one
+// direction. Their reader and writer goroutines call waitN before moving n bytes,
 // protocol overhead included.
 //
 // The bucket counts bytes cumulatively: reserved is every byte callers asked
@@ -18,10 +18,10 @@ import (
 // and returns once paid reaches the end of its reservation, so callers pass in
 // order, any n is paced exactly, and a rate change applies to callers already
 // waiting.
-type Limiter struct {
+type rateLimiter struct {
 	clock clock.Clock
 	// mu guards the bucket, which ADR-0005 keeps as shared memory: every
-	// connection's reader and writer leaf calls WaitN, the hub SetRate.
+	// connection's reader and writer leaf calls waitN, the hub setRate.
 	mu       sync.Mutex
 	rate     float64
 	reserved float64
@@ -30,12 +30,12 @@ type Limiter struct {
 	changed  chan struct{}
 }
 
-// BuildLimiter builds a Limiter for rate bytes per second; 0 means unlimited.
-func BuildLimiter(c clock.Clock, rate int64) *Limiter {
-	return &Limiter{clock: c, rate: float64(rate), last: c.Now(), changed: make(chan struct{})}
+// buildRateLimiter builds a rateLimiter for rate bytes per second; 0 means unlimited.
+func buildRateLimiter(c clock.Clock, rate int64) *rateLimiter {
+	return &rateLimiter{clock: c, rate: float64(rate), last: c.Now(), changed: make(chan struct{})}
 }
 
-func (l *Limiter) SetRate(rate int64) {
+func (l *rateLimiter) setRate(rate int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.clock.Now()
@@ -50,9 +50,9 @@ func (l *Limiter) SetRate(rate int64) {
 	l.changed = make(chan struct{})
 }
 
-// WaitN blocks until n bytes may pass. Bytes of a cancelled call stay
+// waitN blocks until n bytes may pass. Bytes of a cancelled call stay
 // reserved.
-func (l *Limiter) WaitN(ctx context.Context, n int) error {
+func (l *rateLimiter) waitN(ctx context.Context, n int) error {
 	l.mu.Lock()
 	if l.rate == 0 {
 		l.mu.Unlock()
@@ -86,12 +86,12 @@ func (l *Limiter) WaitN(ctx context.Context, n int) error {
 
 // burst is a quarter second of rate: enough that waiters wake rarely, little
 // enough that the burst after an idle spell hardly shows in the observed rate.
-func (l *Limiter) burst() float64 {
+func (l *rateLimiter) burst() float64 {
 	return l.rate / 4
 }
 
 // updatePaid is called with l.mu held.
-func (l *Limiter) updatePaid(now time.Time) {
+func (l *rateLimiter) updatePaid(now time.Time) {
 	if elapsed := now.Sub(l.last).Seconds(); elapsed > 0 {
 		l.paid = min(l.paid+elapsed*l.rate, l.reserved+l.burst())
 	}

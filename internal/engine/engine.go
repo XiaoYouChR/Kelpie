@@ -33,8 +33,8 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
-// Ports are the engine's only ways out: sockets, files, time and randomness.
-type Ports struct {
+// seams are the engine's only ways out: sockets, files, time and randomness.
+type seams struct {
 	Transport transport.Transport
 	Disk      disk.Disk
 	Clock     clock.Clock
@@ -79,7 +79,7 @@ type openNAT func(ctx context.Context, tcpPort, udpPort int) (func(context.Conte
 
 type Engine struct {
 	config Config
-	ports  Ports
+	ports  seams
 	events Events
 	caps   capacities
 
@@ -87,12 +87,12 @@ type Engine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	// leaves counts the leaf goroutines, so Close returns once all are gone.
-	leaves  sync.WaitGroup
-	hubDone chan struct{}
+	leaves sync.WaitGroup
 
 	// closeOnce makes a second Close return the first one's result: once the
 	// hub has stopped, its buffered inbox would still take a closeRequested
-	// that nobody answers.
+	// that nobody answers. The hub stops only on a closeRequested, since a
+	// panic exits the Engine Process (ADR-0005).
 	closeOnce sync.Once
 	closeErr  error
 
@@ -100,22 +100,19 @@ type Engine struct {
 	packetLog *log.Logger
 
 	// The limiters are shared memory, safe from any goroutine (ADR-0005).
-	downloadLimiter *transport.Limiter
-	uploadLimiter   *transport.Limiter
+	downloadLimiter *rateLimiter
+	uploadLimiter   *rateLimiter
 
 	// Everything below is owned by the hub goroutine.
-	state     store.State
-	self      identity.Self
-	ledger    *identity.Ledger
-	queue     *upload.Queue
-	server    *server.Server
-	kad       *kad.Kad
-	kadCancel context.CancelFunc
-	// kadDone carries Kad's last state once Run ends; it closes empty if
-	// Run failed.
-	kadDone   chan kad.State
+	state  store.State
+	self   identity.Self
+	ledger *identity.Ledger
+	queue  *upload.Queue
+	server *server.Server
+	kad    *kad.Kad
+	// stopKad cancels Kad and returns its last state; false if Run failed.
+	stopKad   func() (kad.State, bool)
 	kadStatus kad.Status
-	kadID     wire.Hash
 	buddy     buddy
 	listener  transport.Listener
 	udp       transport.PacketConn
@@ -133,19 +130,19 @@ type Engine struct {
 	serverAddr netip.AddrPort
 	publicIP   netip.Addr
 	mappedIP   netip.Addr
-	network    Network
-	hasNetwork bool
+	// network is the Network last reported.
+	network Network
 
-	nextConn        uint64
-	conns           map[uint64]*conn
-	runs            map[RunID]*run
+	nextConn uint64
+	conns    map[uint64]*conn
+	// runs are the open runs in the order they started; runByHash indexes
+	// them.
+	runs            []*run
 	runByHash       map[wire.Hash]*run
-	runList         []*run
 	sourceUsers     map[wire.Hash]map[wire.Hash]bool
 	sourceLowIDs    map[lowIDKey]map[wire.Hash]bool
 	uploadEndpoints map[uploadKey]uploadTarget
 	a4afClients     map[wire.Hash]*a4afClient
-	kadChecks       map[uint64]kadCheck
 	recentConnects  []time.Time
 	budgetCursor    int
 	lastSecond      time.Time
@@ -166,7 +163,7 @@ type uploadKey struct {
 func Start(config Config, events Events) (*Engine, error) {
 	var seed [32]byte
 	crand.Read(seed[:])
-	ports := Ports{
+	ports := seams{
 		Transport: transport.Real{},
 		Disk:      disk.Real{},
 		Clock:     clock.Real{},
@@ -181,13 +178,7 @@ func Start(config Config, events Events) (*Engine, error) {
 	return build(config, ports, events, defaultCapacities, mapPorts)
 }
 
-// Build runs an Engine on the given ports; tests pass fakes. UPnP is never
-// attempted.
-func Build(config Config, ports Ports, events Events) (*Engine, error) {
-	return build(config, ports, events, defaultCapacities, nil)
-}
-
-func build(config Config, ports Ports, events Events, caps capacities, mapPorts openNAT) (*Engine, error) {
+func build(config Config, ports seams, events Events, caps capacities, mapPorts openNAT) (*Engine, error) {
 	state, err := store.Load(config.DataFolder)
 	if err != nil {
 		return nil, toStartFailed(err)
@@ -205,9 +196,8 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		inbox:           make(chan any, caps.inbox),
 		ctx:             ctx,
 		cancel:          cancel,
-		hubDone:         make(chan struct{}),
-		downloadLimiter: transport.BuildLimiter(ports.Clock, config.RateLimits.Download),
-		uploadLimiter:   transport.BuildLimiter(ports.Clock, config.RateLimits.Upload),
+		downloadLimiter: buildRateLimiter(ports.Clock, config.RateLimits.Download),
+		uploadLimiter:   buildRateLimiter(ports.Clock, config.RateLimits.Upload),
 		state:           state,
 		self:            self,
 		ledger:          identity.BuildLedger(toCredits(state.Credits), ports.Clock.Now()),
@@ -215,13 +205,11 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		saverDone:       make(chan struct{}),
 		disk:            buildLeafQueue[diskJob](caps.disk),
 		conns:           map[uint64]*conn{},
-		runs:            map[RunID]*run{},
 		runByHash:       map[wire.Hash]*run{},
 		sourceUsers:     map[wire.Hash]map[wire.Hash]bool{},
 		sourceLowIDs:    map[lowIDKey]map[wire.Hash]bool{},
 		uploadEndpoints: map[uploadKey]uploadTarget{},
 		a4afClients:     map[wire.Hash]*a4afClient{},
-		kadChecks:       map[uint64]kadCheck{},
 		buddy:           buddy{incoming: map[netip.Addr]incomingBuddy{}},
 		directCallbacks: map[netip.Addr]time.Time{},
 	}
@@ -279,7 +267,8 @@ func (e *Engine) start(mapPorts openNAT) error {
 	if mapPorts != nil {
 		e.startLeaf(func() { e.runNAT(mapPorts) })
 	}
-	e.refreshNetwork()
+	e.network = e.buildNetwork()
+	e.events.SetNetwork(e.network)
 	go e.run()
 	return nil
 }
@@ -394,19 +383,22 @@ func (e *Engine) startKad(nodes []kad.Node) {
 		Rand:      rand.New(rand.NewPCG(random.Uint64(), random.Uint64())),
 	})
 	e.kadStatus = kad.Status{IsFirewalled: true}
-	e.kadID = e.kad.ID()
 	ctx, cancel := context.WithCancel(e.ctx)
-	e.kadCancel = cancel
-	e.kadDone = make(chan kad.State, 1)
+	done := make(chan kad.State, 1)
 	go func() {
-		defer close(e.kadDone)
+		defer close(done)
 		state, err := e.kad.Run(ctx)
 		if err != nil {
 			log.Printf("engine: kad: %v", err)
 			return
 		}
-		e.kadDone <- state
+		done <- state
 	}()
+	e.stopKad = func() (kad.State, bool) {
+		cancel()
+		state, ok := <-done
+		return state, ok
+	}
 }
 
 func (e *Engine) startLeaf(f func()) {
@@ -438,11 +430,8 @@ func (e *Engine) Post(command Command) {
 func (e *Engine) Close() error {
 	e.closeOnce.Do(func() {
 		reply := make(chan error, 1)
-		select {
-		case e.inbox <- closeRequested{reply}:
-			e.closeErr = <-reply
-		case <-e.hubDone:
-		}
+		e.inbox <- closeRequested{reply}
+		e.closeErr = <-reply
 		e.cancel()
 		e.leaves.Wait()
 	})
@@ -453,8 +442,11 @@ func (e *Engine) Close() error {
 type (
 	commandPosted  struct{ command Command }
 	closeRequested struct{ reply chan<- error }
-	connAccepted   struct{ conn net.Conn }
-	connOpened     struct {
+	connAccepted   struct {
+		conn   net.Conn
+		remote netip.AddrPort
+	}
+	connOpened struct {
 		id   uint64
 		conn net.Conn
 		err  error
@@ -519,7 +511,6 @@ func (q *leafQueue[T]) onDone() {
 func (e *Engine) now() time.Time { return e.ports.Clock.Now() }
 
 func (e *Engine) run() {
-	defer close(e.hubDone)
 	ticker := e.ports.Clock.CreateTicker(tickInterval)
 	defer ticker.Stop()
 	var kadEvents <-chan kad.Event
@@ -549,7 +540,7 @@ func (e *Engine) onMessage(m any) {
 	case commandPosted:
 		e.onCommand(m.command)
 	case connAccepted:
-		e.onConnAccepted(m.conn)
+		e.onConnAccepted(m)
 	case connOpened:
 		e.onConnOpened(m)
 	case packetReceived:
@@ -595,7 +586,7 @@ func (e *Engine) onTick() {
 	if e.kad != nil {
 		e.kad.Post(e.buildKadWanted())
 	}
-	for _, r := range e.runList {
+	for _, r := range e.runs {
 		e.refreshProgress(r, false)
 	}
 	if now.Sub(e.lastSave) >= saveInterval {
@@ -605,9 +596,16 @@ func (e *Engine) onTick() {
 	}
 }
 
-// refreshNetwork reports a changed Network; without Kad, kadStatus stays
-// zero.
+// refreshNetwork reports a changed Network.
 func (e *Engine) refreshNetwork() {
+	if network := e.buildNetwork(); network != e.network {
+		e.network = network
+		e.events.SetNetwork(network)
+	}
+}
+
+// buildNetwork is the Network now; without Kad, kadStatus stays zero.
+func (e *Engine) buildNetwork() Network {
 	network := Network{
 		IsServerConnected: e.server.ClientID() != 0,
 		IsHighID:          !wire.IsLowID(e.server.ClientID()),
@@ -615,12 +613,7 @@ func (e *Engine) refreshNetwork() {
 		KadNodes:          e.kadStatus.Nodes,
 	}
 	network.IsBehindCarrierNat = !network.IsHighID && matchCarrierNAT(e.mappedIP, e.publicIP)
-	if e.hasNetwork && network == e.network {
-		return
-	}
-	e.hasNetwork = true
-	e.network = network
-	e.events.SetNetwork(network)
+	return network
 }
 
 // isFirewalled is whether peers cannot connect to us: neither the server nor
@@ -679,7 +672,7 @@ func (e *Engine) closeNAT(unmap func(context.Context) error) {
 // stop is the hub's last step: end every run, then save and close
 // everything it owns.
 func (e *Engine) stop() error {
-	for _, r := range append([]*run(nil), e.runList...) {
+	for _, r := range append([]*run(nil), e.runs...) {
 		e.stopRun(r, nil)
 	}
 	if unmap := e.unmapNAT; unmap != nil {
@@ -690,8 +683,7 @@ func (e *Engine) stop() error {
 	}
 	e.closeSockets()
 	if e.kad != nil {
-		e.kadCancel()
-		if s, ok := <-e.kadDone; ok {
+		if s, ok := e.stopKad(); ok {
 			e.state.Kad = store.Kad(s)
 		}
 	}
@@ -736,7 +728,7 @@ func (e *Engine) buildState() store.State {
 	for _, c := range e.ledger.ToCredits() {
 		state.Credits[c.User] = store.Credit{Uploaded: c.Uploaded, Downloaded: c.Downloaded, PublicKey: c.PublicKey, LastSeen: c.LastSeen}
 	}
-	for _, r := range e.runList {
+	for _, r := range e.runs {
 		if r.transfer != nil {
 			state.Transfers[r.file.Hash] = store.Transfer(r.transfer.ToState())
 		}

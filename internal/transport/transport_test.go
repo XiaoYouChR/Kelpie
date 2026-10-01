@@ -53,20 +53,21 @@ func TestTCPContract(t *testing.T) {
 			}
 			defer listener.Close()
 			accepted := make(chan net.Conn, 1)
+			remotes := make(chan netip.AddrPort, 1)
 			go func() {
-				c, err := listener.Accept()
+				c, remote, err := listener.Accept()
 				if err != nil {
 					t.Error(err)
 				}
 				accepted <- c
+				remotes <- remote
 			}()
 			client, err := p.client.OpenTCP(context.Background(), netip.AddrPortFrom(p.serverAddr, uint16(listener.Port())))
 			if err != nil {
 				t.Fatal(err)
 			}
 			server := <-accepted
-			peer := server.RemoteAddr().(*net.TCPAddr).AddrPort()
-			if peer.Addr().Unmap().Is4() != p.serverAddr.Is4() {
+			if peer := <-remotes; peer.Addr().Is4() != p.serverAddr.Is4() || peer.Addr().Is4In6() {
 				t.Fatalf("peer %v has the wrong family", peer)
 			}
 			if _, err := client.Write([]byte("hello")); err != nil {
@@ -249,10 +250,10 @@ func TestFakeHostCloseClosesEverything(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	accepted, _ := listener.Accept()
+	accepted, _, _ := listener.Accept()
 
 	server.Close()
-	if _, err := listener.Accept(); !errors.Is(err, net.ErrClosed) {
+	if _, _, err := listener.Accept(); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("accept: %v", err)
 	}
 	if _, _, err := socket.ReadFrom(make([]byte, 1)); !errors.Is(err, net.ErrClosed) {
@@ -283,7 +284,7 @@ func createConnPair(t *testing.T) (net.Conn, net.Conn) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	accepted, _ := listener.Accept()
+	accepted, _, _ := listener.Accept()
 	t.Cleanup(func() { conn.Close(); accepted.Close() })
 	return conn, accepted
 }
@@ -341,7 +342,7 @@ func TestFakeIsRaceFree(t *testing.T) {
 	listener, _ := server.OpenListener(4662)
 	go func() {
 		for {
-			c, err := listener.Accept()
+			c, _, err := listener.Accept()
 			if err != nil {
 				return
 			}

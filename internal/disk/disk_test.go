@@ -48,7 +48,7 @@ func TestDiskContract(t *testing.T) {
 			}
 
 			info, err := d.Probe(path)
-			if err != nil || info.Size() != 11 || info.Name() != "a.iso" || info.IsDir() {
+			if err != nil || *info != (Info{Size: 11}) {
 				t.Fatalf("probe: %v %v", info, err)
 			}
 
@@ -166,5 +166,12 @@ func TestFakeIsRaceFree(t *testing.T) {
 	}
 	if data, _ := d.DataByPath("/a"); len(data) != 400 {
 		t.Fatalf("size %d", len(data))
+	}
+}
+
+func TestRealProbeFolder(t *testing.T) {
+	info, err := Real{}.Probe(t.TempDir())
+	if err != nil || info == nil || !info.IsFolder {
+		t.Fatalf("probe folder: %v %v", info, err)
 	}
 }

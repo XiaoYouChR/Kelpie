@@ -191,9 +191,9 @@ func (e *Engine) onCallback(p client.Callback) {
 	if e.kad == nil {
 		return
 	}
-	var target wire.Hash
+	target := e.kad.ID()
 	for i := range target {
-		target[i] = ^e.kadID[i]
+		target[i] = ^target[i]
 	}
 	if p.BuddyID != target && p.BuddyID != wire.Hash(kadwire.BuildID(nil, target)) {
 		return

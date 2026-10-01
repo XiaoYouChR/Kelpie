@@ -23,7 +23,7 @@ func (f *Fake) Now() time.Time {
 	return f.now
 }
 
-func (f *Fake) CreateTicker(d time.Duration) Ticker {
+func (f *Fake) CreateTicker(d time.Duration) Timer {
 	if d <= 0 {
 		panic("clock: non-positive ticker interval")
 	}

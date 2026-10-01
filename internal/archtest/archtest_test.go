@@ -39,7 +39,7 @@ var allowed = map[string][]string{
 	"internal/server":      {"internal/wire", "internal/wire/server"},
 	"internal/store":       {"internal/piece", "internal/wire"},
 	"internal/transfer":    {"internal/aich", "internal/link", "internal/piece", "internal/wire", "internal/wire/client"},
-	"internal/transport":   {"internal/clock"},
+	"internal/transport":   {},
 	"internal/upload":      {"internal/identity", "internal/piece", "internal/wire"},
 	"internal/wire":        {},
 	"internal/wire/client": {"internal/wire", "internal/wire/kad"},
@@ -58,7 +58,7 @@ var allowed = map[string][]string{
 // entry too.
 var exceptions = map[edge]string{
 	// The engine takes connections from the transport seam as net.Conn, and
-	// matches net.ErrClosed and *net.TCPAddr on them; it opens nothing itself.
+	// matches net.ErrClosed on them; it opens nothing itself.
 	{"internal/engine", "net"}: "engine uses the transport seam's net.Conn",
 	// Allowed, not debt: the store is a leaf I/O actor (ADR-0005) whose only
 	// job is the atomic write of state.json; tests point it at a temp folder.

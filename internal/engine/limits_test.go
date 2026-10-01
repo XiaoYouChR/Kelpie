@@ -191,7 +191,7 @@ func (n *node) startOn(d disk.Disk) {
 	t := n.w.t
 	t.Helper()
 	n.events = buildRecorder()
-	ports := Ports{Transport: n.host, Disk: d, Clock: n.w.clock, Rand: rand.New(rand.NewPCG(uint64(n.ip.As4()[3]), 1))}
+	ports := seams{Transport: n.host, Disk: d, Clock: n.w.clock, Rand: rand.New(rand.NewPCG(uint64(n.ip.As4()[3]), 1))}
 	e, err := build(n.config, ports, n.events, n.w.caps, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -313,9 +313,9 @@ func buildIdleEngine(t *testing.T, clock *clock.Fake) (*Engine, *run) {
 		asked:    map[wire.Hash]time.Time{},
 	}
 	e := &Engine{
-		ports:        Ports{Clock: clock},
+		ports:        seams{Clock: clock},
 		runByHash:    map[wire.Hash]*run{file.Hash: r},
-		runList:      []*run{r},
+		runs:         []*run{r},
 		sourceUsers:  map[wire.Hash]map[wire.Hash]bool{},
 		sourceLowIDs: map[lowIDKey]map[wire.Hash]bool{},
 		a4afClients:  map[wire.Hash]*a4afClient{},

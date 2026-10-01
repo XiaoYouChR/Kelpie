@@ -17,7 +17,6 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
-	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/upload"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
@@ -64,6 +63,9 @@ type conn struct {
 	// the upload bytes being read or waiting to be written.
 	uploadBlocks   []diskJob
 	uploadBuffered int64
+	// kadCheck is set on a connection opened for a Kad check until the
+	// check is done with it.
+	kadCheck *kadCheck
 	// isHandshaken is set once the engine has acted on the handshake, which
 	// is later than the session completes it: within the Output that carries
 	// HandshakeCompleted the transfers do not know the peer yet.
@@ -195,12 +197,12 @@ func (e *Engine) runAcceptor() {
 		case <-e.ctx.Done():
 			return
 		}
-		netConn, err := e.listener.Accept()
+		netConn, remote, err := e.listener.Accept()
 		if err != nil {
 			return
 		}
 		e.startLeaf(func() {
-			e.runIncoming(netConn, self)
+			e.runIncoming(netConn, remote, self)
 			<-handshakes
 		})
 	}
@@ -208,23 +210,22 @@ func (e *Engine) runAcceptor() {
 
 // runIncoming waits for an accepted connection's first bytes, which tell
 // whether the peer obfuscates, before the hub sees the connection.
-func (e *Engine) runIncoming(netConn net.Conn, self wire.Hash) {
+func (e *Engine) runIncoming(netConn net.Conn, remote netip.AddrPort, self wire.Hash) {
 	conn, err := openObfuscated(e.ctx, netConn, func(c net.Conn) (net.Conn, error) {
 		return obfuscation.OpenIncoming(c, self)
 	})
-	if err == nil && !e.send(e.ctx, connAccepted{conn}) {
+	if err == nil && !e.send(e.ctx, connAccepted{conn, remote}) {
 		netConn.Close()
 	}
 }
 
-func (e *Engine) onConnAccepted(netConn net.Conn) {
-	addr, ok := netConn.RemoteAddr().(*net.TCPAddr)
-	if !ok || len(e.conns) >= maxConnections {
-		netConn.Close()
+func (e *Engine) onConnAccepted(m connAccepted) {
+	if len(e.conns) >= maxConnections {
+		m.conn.Close()
 		return
 	}
-	c := e.addConn(addr.AddrPort(), false, false)
-	c.net = netConn
+	c := e.addConn(m.remote, false, false)
+	c.net = m.conn
 	e.startConnLeaves(c)
 	c.session = peer.BuildIncoming(e.buildPeerConfig(c), c.remote, e.now())
 }
@@ -310,12 +311,12 @@ func (c *countingReader) Read(b []byte) (int, error) {
 
 // runReader is a connection's reader leaf: it decodes frames and posts
 // them, blocking while the hub is busy so that TCP pushes back.
-func (e *Engine) runReader(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, parse func(protocol, opcode byte, body []byte) (wire.Packet, error), limiter *transport.Limiter) {
+func (e *Engine) runReader(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, parse func(protocol, opcode byte, body []byte) (wire.Packet, error), limiter *rateLimiter) {
 	r := &countingReader{r: bufio.NewReaderSize(netConn, 64<<10)}
 	for {
 		frame, err := wire.ParseFrameFrom(r)
 		if err == nil && limiter != nil {
-			err = limiter.WaitN(ctx, r.n)
+			err = limiter.waitN(ctx, r.n)
 		}
 		r.n = 0
 		var p wire.Packet
@@ -337,7 +338,7 @@ func (e *Engine) runReader(ctx context.Context, id uint64, remote netip.AddrPort
 
 // runWriter is a connection's writer leaf. It reports each written packet
 // so the hub can count credit and uploaded bytes.
-func (e *Engine) runWriter(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, items <-chan outItem, limiter *transport.Limiter) {
+func (e *Engine) runWriter(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, items <-chan outItem, limiter *rateLimiter) {
 	var buf []byte
 	for {
 		var item outItem
@@ -351,7 +352,7 @@ func (e *Engine) runWriter(ctx context.Context, id uint64, remote netip.AddrPort
 			return
 		}
 		buf = wire.BuildPacket(buf[:0], item.packet)
-		if limiter != nil && limiter.WaitN(ctx, len(buf)) != nil {
+		if limiter != nil && limiter.waitN(ctx, len(buf)) != nil {
 			return
 		}
 		if _, err := netConn.Write(buf); err != nil {
@@ -736,7 +737,7 @@ func (e *Engine) sendUploadReads(c *conn) {
 	for len(c.uploadBlocks) > 0 && c.uploadBuffered < uploadBufferSize && !c.isClosed {
 		job := c.uploadBlocks[0]
 		c.uploadBlocks = c.uploadBlocks[1:]
-		if e.runs[job.run] == nil {
+		if e.runByID(job.run) == nil {
 			continue
 		}
 		c.uploadBuffered += job.block.End - job.block.Begin
@@ -752,7 +753,7 @@ func (e *Engine) onBlockRead(d diskDone) {
 		return
 	}
 	c.uploadBuffered -= d.job.block.End - d.job.block.Begin
-	r := e.runs[d.job.run]
+	r := e.runByID(d.job.run)
 	switch {
 	case r == nil || r.transfer == nil:
 	case d.err != nil:

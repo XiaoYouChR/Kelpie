@@ -179,7 +179,7 @@ func (e *Engine) swapTarget(c *conn, user, file wire.Hash, isAnyFile bool) *run 
 	if c != nil {
 		candidates = append(candidates, c.files...)
 	}
-	for _, r := range e.runList {
+	for _, r := range e.runs {
 		if e.sourceUsers[user][r.file.Hash] {
 			candidates = append(candidates, r.file.Hash)
 		}

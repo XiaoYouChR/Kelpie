@@ -167,7 +167,7 @@ func (n *node) start() *Engine {
 	t.Helper()
 	n.events = buildRecorder()
 	seed := uint64(n.ip.As4()[3])
-	ports := Ports{Transport: n.host, Disk: n.disk, Clock: n.w.clock, Rand: rand.New(rand.NewPCG(seed, 1))}
+	ports := seams{Transport: n.host, Disk: n.disk, Clock: n.w.clock, Rand: rand.New(rand.NewPCG(seed, 1))}
 	e, err := build(n.config, ports, n.events, n.w.caps, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -691,8 +691,8 @@ func TestStartFailsOnCorruptState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(b.folder, "state.json"), []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ports := Ports{Transport: b.host, Disk: b.disk, Clock: w.clock, Rand: rand.New(rand.NewPCG(1, 1))}
-	_, err := Build(b.config, ports, buildRecorder())
+	ports := seams{Transport: b.host, Disk: b.disk, Clock: w.clock, Rand: rand.New(rand.NewPCG(1, 1))}
+	_, err := build(b.config, ports, buildRecorder(), defaultCapacities, nil)
 	if e, ok := err.(*Error); !ok || e.Code != CodeStartFailed {
 		t.Fatalf("got %v, want START_FAILED", err)
 	}

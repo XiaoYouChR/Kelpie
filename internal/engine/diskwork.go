@@ -116,7 +116,7 @@ func (e *Engine) onDiskDone(d diskDone) {
 		e.onBlockRead(d)
 		return
 	}
-	r := e.runs[d.job.run]
+	r := e.runByID(d.job.run)
 	if r == nil {
 		return
 	}

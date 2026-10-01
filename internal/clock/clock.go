@@ -5,15 +5,14 @@ import "time"
 
 type Clock interface {
 	Now() time.Time
-	CreateTicker(d time.Duration) Ticker
+	// CreateTicker fires every d, dropping a tick while the last one waits
+	// to be received.
+	CreateTicker(d time.Duration) Timer
 	CreateTimer(d time.Duration) Timer
 }
 
-type Ticker interface {
-	C() <-chan time.Time
-	Stop()
-}
-
+// Timer delivers on C until it is stopped: once, or every period of a
+// ticker.
 type Timer interface {
 	C() <-chan time.Time
 	Stop()
@@ -24,18 +23,21 @@ type Real struct{}
 
 func (Real) Now() time.Time { return time.Now() }
 
-func (Real) CreateTicker(d time.Duration) Ticker { return realTicker{time.NewTicker(d)} }
+func (Real) CreateTicker(d time.Duration) Timer {
+	ticker := time.NewTicker(d)
+	return realTimer{ticker.C, ticker.Stop}
+}
 
-func (Real) CreateTimer(d time.Duration) Timer { return realTimer{time.NewTimer(d)} }
+func (Real) CreateTimer(d time.Duration) Timer {
+	timer := time.NewTimer(d)
+	return realTimer{timer.C, func() { timer.Stop() }}
+}
 
-type realTicker struct{ ticker *time.Ticker }
+type realTimer struct {
+	c    <-chan time.Time
+	stop func()
+}
 
-func (t realTicker) C() <-chan time.Time { return t.ticker.C }
+func (t realTimer) C() <-chan time.Time { return t.c }
 
-func (t realTicker) Stop() { t.ticker.Stop() }
-
-type realTimer struct{ timer *time.Timer }
-
-func (t realTimer) C() <-chan time.Time { return t.timer.C }
-
-func (t realTimer) Stop() { t.timer.Stop() }
+func (t realTimer) Stop() { t.stop() }

@@ -75,11 +75,10 @@ func (w *world) addScriptedPeer(ip string, f testFile) *scriptedPeer {
 	w.t.Cleanup(p.host.Close)
 	go func() {
 		for {
-			netConn, err := listener.Accept()
+			netConn, remote, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			remote := netConn.RemoteAddr().(*net.TCPAddr).AddrPort()
 			p.run(netConn, peer.BuildIncoming(p.cfg, remote, w.clock.Now()), peer.Output{})
 		}
 	}()

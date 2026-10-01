@@ -148,7 +148,7 @@ func (s *Server) Run(ctx context.Context) error {
 	accept := func(listener transport.Listener, isObfuscated bool) {
 		defer wg.Done()
 		for {
-			conn, err := listener.Accept()
+			conn, _, err := listener.Accept()
 			if err != nil {
 				errs <- err
 				return

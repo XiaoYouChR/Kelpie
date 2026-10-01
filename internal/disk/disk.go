@@ -13,7 +13,13 @@ import (
 type Disk interface {
 	Open(path string, mode Mode) (File, error)
 	// Probe reports a missing path as nil info and nil error.
-	Probe(path string) (fs.FileInfo, error)
+	Probe(path string) (*Info, error)
+}
+
+// Info is what Probe tells of an existing path.
+type Info struct {
+	Size     int64
+	IsFolder bool
 }
 
 type File interface {
@@ -47,10 +53,13 @@ func (Real) Open(path string, mode Mode) (File, error) {
 	return os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 }
 
-func (Real) Probe(path string) (fs.FileInfo, error) {
+func (Real) Probe(path string) (*Info, error) {
 	info, err := os.Stat(path)
-	if errors.Is(err, fs.ErrNotExist) {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
 		return nil, nil
+	case err != nil:
+		return nil, err
 	}
-	return info, err
+	return &Info{Size: info.Size(), IsFolder: info.IsDir()}, nil
 }
