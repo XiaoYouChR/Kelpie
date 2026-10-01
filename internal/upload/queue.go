@@ -46,11 +46,9 @@ type Peer struct {
 
 // isOld is aMule's test for clients from before eMule 0.20
 // (UploadClient.cpp:144): an old eMule protocol version, or no version at all
-// from a client whose user hash marks it as eMule (GetHashType,
-// BaseClient.cpp:1743).
+// from a client whose user hash marks it as eMule.
 func (p Peer) isOld() bool {
-	isEmuleHash := p.User[5] == 14 && p.User[14] == 111
-	return p.MuleVersion <= oldMuleVersion && (p.MuleVersion > 0 || isEmuleHash)
+	return p.MuleVersion <= oldMuleVersion && (p.MuleVersion > 0 || identity.IsEmuleHash(p.User))
 }
 
 type key struct {

@@ -127,7 +127,7 @@ func (l *Ledger) TrustByUser(user wire.Hash, ip netip.Addr) Trust {
 
 // PublicKeyByUser is the key a signature from user must be checked against:
 // the stored key if any, otherwise the key the user offered. Nil when neither
-// is known, in which case the request is StateKeyAndSignatureNeeded.
+// is known, in which case the request is stateKeyAndSignatureNeeded.
 func (l *Ledger) PublicKeyByUser(user wire.Hash) []byte {
 	a, ok := l.accounts[user]
 	if !ok {
