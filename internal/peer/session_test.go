@@ -441,9 +441,9 @@ func TestPipelineStaysFull(t *testing.T) {
 		t.Fatal("duplicate request served again")
 	}
 
-	// A block a minute is a slow peer: one more block refills the three.
+	// A finished block is refilled at once; with no time passed in the slot
+	// its rate is unknown and three stay in flight.
 	l.a.events = nil
-	l.now = l.now.Add(time.Minute)
 	b0 := block(0)
 	l.run(l.b, l.b.s.SendBlock(file, b0, data[b0.Begin:b0.End]))
 	if r := lastOf[BlockReceived](t, l.a); r.Block != b0 {
@@ -461,8 +461,9 @@ func TestPipelineStaysFull(t *testing.T) {
 	lastOf[UploadCancelled](t, l.b)
 }
 
-// A peer sending faster than 75 KiB/s gets six blocks in flight, as eMule
-// asks; three would leave it idle a round trip after each burst.
+// A peer that sends three blocks in the round trip its first data took gets
+// twice that plus three in flight, as aMule 3.1 asks; three would leave it
+// idle a round trip after each burst.
 func TestFastPeerGetsDeeperPipeline(t *testing.T) {
 	l := buildLink(t)
 	size := 10 * piece.BlockSize
@@ -474,12 +475,33 @@ func TestFastPeerGetsDeeperPipeline(t *testing.T) {
 	}
 	l.run(l.a, l.a.s.Request(file, []piece.Block{block(0), block(1), block(2)}))
 
-	l.a.events = nil
-	l.now = l.now.Add(time.Second)
-	b0 := block(0)
-	l.run(l.b, l.b.s.SendBlock(file, b0, data[b0.Begin:b0.End]))
-	if w := lastOf[BlocksWanted](t, l.a); w.Count != 4 {
-		t.Fatalf("180 KiB in a second wanted %+v, want 4 to reach six", w)
+	l.now = l.now.Add(250 * time.Millisecond)
+	for i := range int64(3) {
+		b := block(i)
+		l.run(l.b, l.b.s.SendBlock(file, b, data[b.Begin:b.End]))
+	}
+	if w := lastOf[BlocksWanted](t, l.a); w.Count != 9 {
+		t.Fatalf("three blocks in a 250 ms round trip wanted %+v, want 9", w)
+	}
+}
+
+func TestPipelineDepth(t *testing.T) {
+	slot := start
+	for _, c := range []struct {
+		bytes     int64
+		roundTrip time.Duration
+		want      int
+	}{
+		{0, 0, minPipeline},
+		{100 << 10, 250 * time.Millisecond, minPipeline},
+		{4 << 20, 250 * time.Millisecond, 13},
+		{40 << 20, 250 * time.Millisecond, maxPipeline},
+		{40 << 20, time.Millisecond, minPipeline},
+	} {
+		d := downloadState{slotStart: slot, lastData: slot.Add(time.Second), slotBytes: c.bytes, roundTrip: c.roundTrip}
+		if got := d.pipeline(); got != c.want {
+			t.Errorf("%d bytes in a second, round trip %v: pipeline %d, want %d", c.bytes, c.roundTrip, got, c.want)
+		}
 	}
 }
 

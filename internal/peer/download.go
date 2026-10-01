@@ -15,13 +15,13 @@ import (
 // OLD_MAX_EMULE_FILE_SIZE: larger files need the 64-bit part packets.
 const largeFileSize = 4_290_048_000
 
-// eMule keeps three blocks requested, six from a peer sending faster than
-// 75 KiB/s (DownloadClient.cpp:895-917). With three, a fast peer far away
-// sends them in one burst and then waits a round trip for our next request.
+// aMule 3.1 keeps in flight twice the blocks a peer sends in a round trip,
+// plus three, at most 24 (amule-org 3.1.0 DownloadClient.cpp:557-597). A
+// fixed depth caps a peer at that many blocks a round trip: eMule's six give
+// 4.2 MiB/s at 250 ms, and a fast peer far away idles between bursts.
 const (
-	normalPipeline = 3
-	fastPipeline   = 6
-	fastRate       = 75 << 10
+	minPipeline = 3
+	maxPipeline = 24
 )
 
 // downloadState is the download role. Every added file is probed for the
@@ -33,19 +33,23 @@ type downloadState struct {
 	started  wire.Hash
 	slot     slot
 	lastData time.Time
-	// slotStart is when the slot was granted and slotBytes what arrived in
-	// it since, for the rate that sets the pipeline.
+	// slotStart is when the slot was granted, slotBytes what arrived in it
+	// since, and roundTrip how long its first data took: the first blocks
+	// are requested at the grant.
 	slotStart time.Time
 	slotBytes int64
+	roundTrip time.Duration
 }
 
-// pipeline is how many blocks to keep in flight: the rate counts the slot
-// up to its last data.
+// pipeline is how many blocks to keep in flight; the rate counts the slot up
+// to its last data.
 func (d *downloadState) pipeline() int {
-	if float64(d.slotBytes) > fastRate*d.lastData.Sub(d.slotStart).Seconds() {
-		return fastPipeline
+	seconds := d.lastData.Sub(d.slotStart).Seconds()
+	if seconds <= 0 {
+		return minPipeline
 	}
-	return normalPipeline
+	blocks := float64(d.slotBytes) / seconds * d.roundTrip.Seconds() / float64(piece.BlockSize)
+	return min(2*int(blocks)+minPipeline, maxPipeline)
 }
 
 // slot is where our upload slot with the peer stands. A peer may grant one
@@ -409,6 +413,14 @@ func (s *Session) onSlotGranted(now time.Time, out *Output) {
 	s.runStarted(out)
 }
 
+func (s *Session) onData(n int, now time.Time) {
+	if s.down.slotBytes == 0 {
+		s.down.roundTrip = now.Sub(s.down.slotStart)
+	}
+	s.down.lastData = now
+	s.down.slotBytes += int64(n)
+}
+
 func (s *Session) stopSlot(out *Output) {
 	if s.down.slot != slotGranted {
 		return
@@ -433,8 +445,7 @@ func (s *Session) onPart(file wire.Hash, start int64, data []byte, now time.Time
 	if i < 0 {
 		return
 	}
-	s.down.lastData = now
-	s.down.slotBytes += int64(len(data))
+	s.onData(len(data), now)
 	f := d.inFlight[i]
 	if f.data == nil {
 		f.data = make([]byte, f.block.End-f.block.Begin)
@@ -500,8 +511,7 @@ func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint3
 	if i < 0 {
 		return
 	}
-	s.down.lastData = now
-	s.down.slotBytes += int64(len(data))
+	s.onData(len(data), now)
 	f := d.inFlight[i]
 	size := f.block.End - f.block.Begin
 	// eMule packs into a buffer 300 bytes larger than the block and sends
