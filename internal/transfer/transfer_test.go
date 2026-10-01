@@ -523,6 +523,56 @@ func TestConnectCarriesObfuscation(t *testing.T) {
 	}
 }
 
+func connects(actions []transfer.Action) []transfer.Connect {
+	var found []transfer.Connect
+	for _, action := range actions {
+		if c, ok := action.(transfer.Connect); ok {
+			found = append(found, c)
+		}
+	}
+	return found
+}
+
+func TestPlainDialIsRetriedObfuscatedOnceTheHashIsKnown(t *testing.T) {
+	obfuscated := transfer.Connect{Endpoint: endpoint(1), UserHash: userHash(1), CanObfuscate: true}
+	for _, isHashLate := range []bool{false, true} {
+		data := buildData(1000)
+		h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+		h.run(h.transfer.OnSourcesFound([]transfer.Source{{Endpoint: endpoint(1)}}, transfer.ChannelGlobalServer, start))
+		if got := connects(h.tick(transfer.Tick{ConnectBudget: 1})); len(got) != 1 || got[0].CanObfuscate {
+			t.Fatalf("first connects %+v", got)
+		}
+		kad := []transfer.Source{{Endpoint: endpoint(1), UserHash: userHash(1), CanObfuscate: true}}
+		if !isHashLate {
+			h.run(h.transfer.OnSourcesFound(kad, transfer.ChannelKad, start))
+		}
+		h.run(h.transfer.OnConnectFailed(endpoint(1), "EOF", start))
+		if isHashLate {
+			h.run(h.transfer.OnSourcesFound(kad, transfer.ChannelKad, start))
+		}
+		if got := connects(h.tick(transfer.Tick{ConnectBudget: 1})); len(got) != 1 || got[0] != obfuscated {
+			t.Fatalf("isHashLate=%v retry connects %+v", isHashLate, got)
+		}
+		h.run(h.transfer.OnConnectFailed(endpoint(1), "EOF", start))
+		h.run(h.transfer.OnSourcesFound(kad, transfer.ChannelKad, start))
+		if got := connects(h.tick(transfer.Tick{ConnectBudget: 1})); len(got) != 0 {
+			t.Fatalf("isHashLate=%v obfuscated failure retried: %+v", isHashLate, got)
+		}
+	}
+}
+
+func TestPlainDialFailureWithoutHashStaysDead(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	h.run(h.transfer.OnSourcesFound([]transfer.Source{{Endpoint: endpoint(1)}}, transfer.ChannelGlobalServer, start))
+	h.tick(transfer.Tick{ConnectBudget: 1})
+	h.run(h.transfer.OnConnectFailed(endpoint(1), "EOF", start))
+	h.run(h.transfer.OnSourcesFound([]transfer.Source{{Endpoint: endpoint(1)}}, transfer.ChannelServer, start))
+	if got := connects(h.tick(transfer.Tick{ConnectBudget: 1})); len(got) != 0 {
+		t.Fatalf("connects %+v", got)
+	}
+}
+
 func lowIDSource(i int, server netip.AddrPort) transfer.Source {
 	return transfer.Source{ClientID: uint32(i + 1), Server: server}
 }

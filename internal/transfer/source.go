@@ -134,7 +134,10 @@ type source struct {
 	// a4afUntil: until then another Transfer asks this client for a slot,
 	// and this one leaves it alone (aMule's A4AF list).
 	a4afUntil time.Time
-	peer      uint64
+	// isDialledPlain: our last Connect went out plain because no channel
+	// had told us the source's user hash and crypt support yet.
+	isDialledPlain bool
+	peer           uint64
 
 	lastAsked    time.Time
 	lastExchange time.Time
@@ -234,6 +237,9 @@ func (t *Transfer) addSource(found Source, channel Channel, now time.Time) []Act
 		if s.UDPPort == 0 {
 			s.UDPPort = found.UDPPort
 		}
+		if found.CanObfuscate && !s.CanObfuscate && s.state == stateFailed && s.isDialledPlain {
+			s.state = stateNew
+		}
 		s.CanObfuscate = s.CanObfuscate || found.CanObfuscate
 		return nil
 	}
@@ -299,10 +305,23 @@ func (t *Transfer) canReach(s *source) bool {
 }
 
 // OnConnectFailed reports that a Connect to endpoint did not succeed.
+//
+// A plain Connect fails against a client that requires obfuscation, and a
+// source found first through a channel without user hashes (global server
+// UDP) is dialled plain. When another channel has meanwhile told its user
+// hash and crypt support, or tells it later, the source is dialled once
+// more, obfuscated. aMule has no such retry and keeps the source dead
+// (BaseClient.cpp:1335-1343); it meets this less because it starts global
+// UDP only once connected to a server (DownloadQueue.cpp:883), after Kad
+// has answered.
 func (t *Transfer) OnConnectFailed(endpoint netip.AddrPort, reason string, now time.Time) []Action {
 	for _, s := range t.sources {
 		if s.state == stateConnecting && s.Endpoint == endpoint {
-			return []Action{t.setFailed(s, reason, now)}
+			event := t.setFailed(s, reason, now)
+			if s.isDialledPlain && s.CanObfuscate {
+				s.state = stateNew
+			}
+			return []Action{event}
 		}
 	}
 	return nil
@@ -653,7 +672,9 @@ func (t *Transfer) requestConnect(s *source, budget *int) []Action {
 	*budget--
 	s.state = stateConnecting
 	s.deadline = time.Time{}
-	if _, isConnect := action.(Connect); !isConnect {
+	_, isConnect := action.(Connect)
+	s.isDialledPlain = isConnect && !s.CanObfuscate
+	if !isConnect {
 		s.deadline = t.tick.Now.Add(callbackTimeout)
 	}
 	return []Action{action}
