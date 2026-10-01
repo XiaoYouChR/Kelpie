@@ -62,9 +62,8 @@ func (BuddyRequested) isRequest()    {}
 func (CallbackRequested) isRequest() {}
 
 type buddySearch struct {
-	isDue  bool
-	next   time.Time
-	lookup *lookup
+	isDue bool
+	next  time.Time
 }
 
 // buddyTarget is the ID a buddy lookup looks for and callbacks carry: our
@@ -95,12 +94,9 @@ func (c *core) runBuddySearch(now time.Time) {
 		return
 	}
 	b.isDue = false
-	l := c.startLookup(buddyLookup, c.buddyTarget(), 0, now)
-	if l == nil {
+	if c.startLookup(buddyLookup, c.buddyTarget(), 0, now) == nil {
 		b.isDue = true
-		return
 	}
-	b.lookup = l
 }
 
 // setBuddy takes the engine's latest buddy state. A lost buddy is looked
