@@ -470,7 +470,7 @@ func TestDownloadFromTwoSeedersViaServer(t *testing.T) {
 	for _, n := range []*node{a1, a2, b} {
 		w.waitFor("server login", func() bool { return n.events.lastNetwork().IsServerConnected })
 	}
-	// Each seed publishes on its next tick and the server offer follows.
+	// The server offers each seed on its next tick.
 	settle := w.clock.Now().Add(10 * time.Second)
 	w.waitFor("both seeds offered", func() bool { return !w.clock.Now().Before(settle) })
 	path := b.download(2, f)

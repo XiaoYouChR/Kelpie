@@ -51,7 +51,7 @@ func loggedIn(t *testing.T, entries []Entry, clientID, flags uint32, wanted []Wa
 	}
 	s.OnConnected(entries[0].Endpoint)
 	out = byKind(s.OnPacket(entries[0].Endpoint, serverwire.IDChange{ClientID: clientID, Flags: flags}, start))
-	if s.ClientID() == 0 {
+	if _, id := s.Login(); id == 0 {
 		t.Fatal("not connected after IDChange")
 	}
 	return s, out
@@ -176,16 +176,17 @@ func TestFirstLoginWins(t *testing.T) {
 		t.Fatalf("message while logging in = %+v", out.Events)
 	}
 	out = byKind(s.OnPacket(b, serverwire.IDChange{ClientID: highID}, start))
-	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a}) || !reflect.DeepEqual(out.Events, []Action{IDChanged{Server: b, ClientID: highID}}) {
+	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a}) || !reflect.DeepEqual(out.Events, []Action{IDChanged{ClientID: highID}}) {
 		t.Fatalf("login output = %+v", out)
 	}
-	if s.ClientID() == 0 || s.current.Endpoint != b {
+	if server, clientID := s.Login(); clientID == 0 || server != b {
 		t.Fatal("not logged in to b")
 	}
 	if out := byKind(s.OnDisconnected(a, start)); len(dialed(out)) > 0 || s.servers[0].Failures != 0 {
 		t.Fatalf("closed loser reported: %+v failures=%d", out, s.servers[0].Failures)
 	}
-	if out := byKind(s.OnPacket(a, serverwire.IDChange{ClientID: 1234}, start)); len(out.Events) > 0 || s.ClientID() != highID {
+	out = byKind(s.OnPacket(a, serverwire.IDChange{ClientID: 1234}, start))
+	if _, id := s.Login(); len(out.Events) > 0 || id != highID {
 		t.Fatalf("packet from the closed loser used: %+v", out)
 	}
 	if out := byKind(s.OnTick(start.Add(time.Hour), nil, noIP)); len(dialed(out)) > 0 || len(out.Close) > 0 {
@@ -249,7 +250,7 @@ func TestLogin(t *testing.T) {
 	if len(out.Send) != 1 || !reflect.DeepEqual(out.Send[0], want) {
 		t.Fatalf("login = %+v, want %+v", out.Send, want)
 	}
-	if s.ClientID() != 0 {
+	if _, id := s.Login(); id != 0 {
 		t.Fatal("connected before IDChange")
 	}
 }
@@ -257,18 +258,18 @@ func TestLogin(t *testing.T) {
 func TestIDChangeGivesLowIDOrHighID(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}}
 	s, out := loggedIn(t, entries, 1234, 0, nil)
-	if s.ClientID() != 1234 {
-		t.Fatalf("LowID: id=%d", s.ClientID())
+	if server, clientID := s.Login(); clientID != 1234 || server != entries[0].Endpoint {
+		t.Fatalf("LowID: id=%d server=%s", clientID, server)
 	}
-	if !reflect.DeepEqual(out.Events, []Action{IDChanged{Server: entries[0].Endpoint, ClientID: 1234}}) {
+	if !reflect.DeepEqual(out.Events, []Action{IDChanged{ClientID: 1234}}) {
 		t.Fatalf("events = %+v", out.Events)
 	}
 	s, _ = loggedIn(t, entries, highID, 0, nil)
-	if s.ClientID() != highID {
+	if _, id := s.Login(); id != highID {
 		t.Fatal("HighID not reported")
 	}
 	byKind(s.OnDisconnected(first, start))
-	if s.ClientID() != 0 {
+	if server, clientID := s.Login(); clientID != 0 || server.IsValid() {
 		t.Fatal("still connected after disconnect")
 	}
 }

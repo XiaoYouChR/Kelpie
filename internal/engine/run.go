@@ -19,15 +19,14 @@ import (
 // run is one open Run. transfer is nil while a seed's file is being
 // checked against the link.
 type run struct {
-	id        RunID
-	mode      Mode
-	file      link.File
-	path      string
-	handle    disk.File
-	transfer  *transfer.Transfer
-	share     peer.Share
-	published piece.Set
-	progress  Progress
+	id       RunID
+	mode     Mode
+	file     link.File
+	path     string
+	handle   disk.File
+	transfer *transfer.Transfer
+	share    peer.Share
+	progress Progress
 	// asked maps each user we sent the file request to the last time we did.
 	asked map[wire.Hash]time.Time
 	// isSyncing is set while a complete download is flushed to the device;
@@ -158,9 +157,6 @@ func (e *Engine) startTransfer(r *run, state *transfer.State) {
 		Random: e.ports.Rand,
 	}, e.now())
 	e.refreshShare(r)
-	for _, src := range r.file.Sources {
-		e.addKnownSource(r.file.Hash, transfer.Source{Endpoint: src})
-	}
 	e.runTransferActions(r, actions)
 }
 
@@ -221,7 +217,6 @@ func (e *Engine) stopRun(r *run, err *Error) {
 	r.handle.Close()
 	delete(e.runByHash, h)
 	e.runs = slices.DeleteFunc(e.runs, func(other *run) bool { return other == r })
-	e.removeKnownSources(h)
 	e.events.SendEnded(r.id, err)
 	e.requestSave()
 }
@@ -276,6 +271,7 @@ func (e *Engine) runTransfers(now time.Time) {
 		order = append(order, e.runs[(e.budgetCursor+i)%n])
 	}
 	e.budgetCursor++
+	server, _ := e.server.Login()
 	for _, r := range order {
 		if r.transfer == nil || e.runByHash[r.file.Hash] != r {
 			continue
@@ -283,7 +279,7 @@ func (e *Engine) runTransfers(now time.Time) {
 		actions := r.transfer.OnTick(transfer.Tick{
 			Now:           now,
 			ConnectBudget: budget,
-			Server:        e.serverAddr,
+			Server:        server,
 			IsFirewalled:  e.isFirewalled(),
 			PublicIP:      e.publicIP,
 			Port:          uint16(e.tcpPort),
@@ -351,8 +347,6 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			if c := e.conns[a.Peer]; c != nil && c.session != nil {
 				e.runSession(c, c.session.RequestHashSet(r.file.Hash))
 			}
-		case transfer.Publish:
-			r.published = a.Parts
 		case transfer.Write:
 			e.disk.send(diskJob{kind: jobWrite, run: r.id, file: r.handle, block: a.Block, data: a.Data})
 		case transfer.HashPart:
@@ -376,46 +370,6 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 	}
 }
 
-// addSources feeds a transfer and remembers who the sources are, so an
-// incoming connection from one of them is recognised.
-func (e *Engine) addSources(r *run, sources []transfer.Source, channel transfer.Channel) {
-	for _, src := range sources {
-		e.addKnownSource(r.file.Hash, src)
-	}
-	e.runTransferActions(r, r.transfer.OnSourcesFound(sources, channel, e.now()))
-}
-
-func (e *Engine) addKnownSource(file wire.Hash, src transfer.Source) {
-	if src.UserHash != (wire.Hash{}) {
-		addToSet(e.sourceUsers, src.UserHash, file)
-	}
-	if src.ClientID != 0 && src.Server.IsValid() {
-		addToSet(e.sourceLowIDs, lowIDKey{src.ClientID, src.Server}, file)
-	}
-}
-
-func addToSet[K comparable](sets map[K]map[wire.Hash]bool, key K, file wire.Hash) {
-	if sets[key] == nil {
-		sets[key] = map[wire.Hash]bool{}
-	}
-	sets[key][file] = true
-}
-
-// refreshKnownSources keeps only the sources running transfers still hold;
-// a transfer refuses sources beyond its cap, and these sets follow it.
-func (e *Engine) refreshKnownSources() {
-	clear(e.sourceUsers)
-	clear(e.sourceLowIDs)
-	for _, r := range e.runs {
-		if r.transfer == nil {
-			continue
-		}
-		for _, src := range r.transfer.Sources() {
-			e.addKnownSource(r.file.Hash, src)
-		}
-	}
-}
-
 // refreshAsked forgets file requests older than the reask time, which no
 // longer hold back a request on an incoming connection.
 func (e *Engine) refreshAsked() {
@@ -427,27 +381,14 @@ func (e *Engine) refreshAsked() {
 	}
 }
 
-func (e *Engine) removeKnownSources(file wire.Hash) {
-	for user, files := range e.sourceUsers {
-		if delete(files, file); len(files) == 0 {
-			delete(e.sourceUsers, user)
-		}
-	}
-	for key, files := range e.sourceLowIDs {
-		if delete(files, file); len(files) == 0 {
-			delete(e.sourceLowIDs, key)
-		}
-	}
-}
-
 // matchKnownSource lists the downloads that know the peer as a source, in
 // run order.
 func (e *Engine) matchKnownSource(user wire.Hash, caps peer.Capabilities) []wire.Hash {
+	found := transfer.Source{UserHash: user, ClientID: caps.ClientID, Server: caps.Server}
 	var files []wire.Hash
 	for _, r := range e.runs {
-		h := r.file.Hash
-		if e.downloadByHash(h) != nil && (e.sourceUsers[user][h] || e.sourceLowIDs[lowIDKey{caps.ClientID, caps.Server}][h]) {
-			files = append(files, h)
+		if e.downloadByHash(r.file.Hash) != nil && r.transfer.MatchSource(found) {
+			files = append(files, r.file.Hash)
 		}
 	}
 	return files

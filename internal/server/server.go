@@ -137,10 +137,7 @@ type SourcesFound struct {
 }
 
 // IDChanged reports the id the connected server gave us.
-type IDChanged struct {
-	Server   netip.AddrPort
-	ClientID uint32
-}
+type IDChanged struct{ ClientID uint32 }
 
 type MessageReceived struct{ Text string }
 
@@ -253,12 +250,13 @@ func (s *Server) Entries() []Entry {
 	return entries
 }
 
-// ClientID is the id the connected server gave us; 0 while not logged in.
-func (s *Server) ClientID() uint32 {
+// Login is the server we are logged in to and the client id it gave us;
+// invalid and 0 while not logged in.
+func (s *Server) Login() (netip.AddrPort, uint32) {
 	if s.current == nil {
-		return 0
+		return netip.AddrPort{}, 0
 	}
-	return s.clientID
+	return s.current.Endpoint, s.clientID
 }
 
 // OnTick takes the files the engine shares or downloads and our public
@@ -416,7 +414,7 @@ func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) []A
 // clientID, which that server named, connect to us. It is possible only
 // while we are HighID.
 func (s *Server) RequestCallback(clientID uint32, now time.Time) []Action {
-	if wire.IsLowID(s.ClientID()) {
+	if s.current == nil || wire.IsLowID(s.clientID) {
 		return nil
 	}
 	s.lastSent = now
@@ -451,7 +449,7 @@ func (s *Server) onIDChange(sender *listed, p serverwire.IDChange, now time.Time
 		s.nextOffer = now
 	}
 	s.clientID = p.ClientID
-	*out = append(*out, IDChanged{Server: s.current.Endpoint, ClientID: p.ClientID})
+	*out = append(*out, IDChanged{ClientID: p.ClientID})
 	s.runSession(now, out)
 }
 

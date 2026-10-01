@@ -81,7 +81,6 @@ func (e *Engine) deferConnect(r *run, a transfer.Connect) bool {
 		return false
 	}
 	client := e.a4afClients[user]
-	e.addKnownSource(r.file.Hash, transfer.Source{UserHash: user})
 	r.transfer.SetA4AF(transfer.Source{Endpoint: a.Endpoint, UserHash: user}, client.lastAsked.Add(a4afTime))
 	return true
 }
@@ -180,7 +179,7 @@ func (e *Engine) swapTarget(c *conn, user, file wire.Hash, isAnyFile bool) *run 
 		candidates = append(candidates, c.files...)
 	}
 	for _, r := range e.runs {
-		if e.sourceUsers[user][r.file.Hash] {
+		if r.transfer != nil && r.transfer.MatchSource(transfer.Source{UserHash: user}) {
 			candidates = append(candidates, r.file.Hash)
 		}
 	}

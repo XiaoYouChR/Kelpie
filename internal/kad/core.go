@@ -72,14 +72,14 @@ type output struct {
 }
 
 type find struct {
-	Search
+	File
 	searches int
 	next     time.Time
 	lookup   *lookup
 }
 
 type publish struct {
-	Publish
+	File
 	next   time.Time
 	lookup *lookup
 }
@@ -194,14 +194,17 @@ func (c *core) setWanted(w Wanted, now time.Time) {
 		finds[f.Hash] = f
 	}
 	c.finds = nil
-	for _, s := range w.Find {
-		f := finds[s.Hash]
+	for _, file := range w {
+		if file.IsComplete {
+			continue
+		}
+		f := finds[file.Hash]
 		if f == nil {
 			f = &find{}
 		}
-		delete(finds, s.Hash)
-		f.Search = s
-		if s.Sources >= maxSourcesUDP {
+		delete(finds, file.Hash)
+		f.File = file
+		if file.Sources >= maxSourcesUDP {
 			c.cancelLookup(f.lookup)
 		}
 		c.finds = append(c.finds, f)
@@ -214,13 +217,16 @@ func (c *core) setWanted(w Wanted, now time.Time) {
 		publishes[p.Hash] = p
 	}
 	c.publishes = nil
-	for _, p := range w.Publish {
-		pub := publishes[p.Hash]
+	for _, file := range w {
+		if !file.IsShared {
+			continue
+		}
+		pub := publishes[file.Hash]
 		if pub == nil {
 			pub = &publish{}
 		}
-		delete(publishes, p.Hash)
-		pub.Publish = p
+		delete(publishes, file.Hash)
+		pub.File = file
 		c.publishes = append(c.publishes, pub)
 	}
 	for _, p := range publishes {

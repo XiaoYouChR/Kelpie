@@ -523,14 +523,10 @@ func (t *Transfer) removePeer(peer uint64, now time.Time) []Action {
 }
 
 // OnTick runs the timers: source reasks and connections within the budget,
-// callback timeouts, the hash set request and publishing.
+// callback timeouts and the hash set request.
 func (t *Transfer) OnTick(tick Tick) []Action {
-	if !t.isRunning() {
+	if !t.isRunning() || t.mode == ModeSeed {
 		return nil
-	}
-	actions := t.runPublish(tick.Now)
-	if t.mode == ModeSeed {
-		return actions
 	}
 	t.tick = tick
 	t.removeExpired(tick.Now)
@@ -538,6 +534,7 @@ func (t *Transfer) OnTick(tick Tick) []Action {
 		t.sources = slices.DeleteFunc(t.sources, func(s *source) bool { return s.ClientID != 0 && !t.isConnected(s) })
 	}
 	t.removeNoNeeded(tick.Now)
+	var actions []Action
 	budget := tick.ConnectBudget
 	for _, s := range slices.Clone(t.sources) {
 		actions = append(actions, t.runSource(s, &budget)...)
@@ -662,13 +659,11 @@ func (t *Transfer) requestConnect(s *source, budget *int) []Action {
 	return []Action{action}
 }
 
-// Sources lists the sources the transfer keeps.
-func (t *Transfer) Sources() []Source {
-	sources := make([]Source, len(t.sources))
-	for i, s := range t.sources {
-		sources[i] = s.Source
-	}
-	return sources
+// MatchSource tells whether the transfer keeps found as a source; found
+// names it as for OnSourcesFound: by user hash, else by LowID client id and
+// server, else by endpoint.
+func (t *Transfer) MatchSource(found Source) bool {
+	return t.matchingSource(found) != nil
 }
 
 // removeExpired forgets bans that ended, and the senders of connections

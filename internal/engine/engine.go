@@ -127,9 +127,8 @@ type Engine struct {
 	// callback.
 	directCallbacks map[netip.Addr]time.Time
 
-	serverAddr netip.AddrPort
-	publicIP   netip.Addr
-	mappedIP   netip.Addr
+	publicIP netip.Addr
+	mappedIP netip.Addr
 	// network is the Network last reported.
 	network Network
 
@@ -139,19 +138,12 @@ type Engine struct {
 	// them.
 	runs            []*run
 	runByHash       map[wire.Hash]*run
-	sourceUsers     map[wire.Hash]map[wire.Hash]bool
-	sourceLowIDs    map[lowIDKey]map[wire.Hash]bool
 	uploadEndpoints map[uploadKey]uploadTarget
 	a4afClients     map[wire.Hash]*a4afClient
 	recentConnects  []time.Time
 	budgetCursor    int
 	lastSecond      time.Time
 	lastSave        time.Time
-}
-
-type lowIDKey struct {
-	clientID uint32
-	server   netip.AddrPort
 }
 
 type uploadKey struct {
@@ -206,8 +198,6 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 		disk:            buildLeafQueue[diskJob](caps.disk),
 		conns:           map[uint64]*conn{},
 		runByHash:       map[wire.Hash]*run{},
-		sourceUsers:     map[wire.Hash]map[wire.Hash]bool{},
-		sourceLowIDs:    map[lowIDKey]map[wire.Hash]bool{},
 		uploadEndpoints: map[uploadKey]uploadTarget{},
 		a4afClients:     map[wire.Hash]*a4afClient{},
 		buddy:           buddy{incoming: map[netip.Addr]incomingBuddy{}},
@@ -578,13 +568,13 @@ func (e *Engine) onTick() {
 	}
 	e.runTransfers(now)
 	e.refreshUploadEndpoints()
-	e.refreshKnownSources()
 	e.refreshAsked()
 	e.refreshA4AF()
-	e.runServer(e.server.OnTick(now, e.buildServerWanted(), e.publicIP))
+	serverWanted, kadWanted := e.buildWanted()
+	e.runServer(e.server.OnTick(now, serverWanted, e.publicIP))
 	e.runBuddy(now)
 	if e.kad != nil {
-		e.kad.Post(e.buildKadWanted())
+		e.kad.Post(kadWanted)
 	}
 	for _, r := range e.runs {
 		e.refreshProgress(r, false)
@@ -606,9 +596,10 @@ func (e *Engine) refreshNetwork() {
 
 // buildNetwork is the Network now; without Kad, kadStatus stays zero.
 func (e *Engine) buildNetwork() Network {
+	_, clientID := e.server.Login()
 	network := Network{
-		IsServerConnected: e.server.ClientID() != 0,
-		IsHighID:          !wire.IsLowID(e.server.ClientID()),
+		IsServerConnected: clientID != 0,
+		IsHighID:          !wire.IsLowID(clientID),
 		IsKadFirewalled:   e.kadStatus.IsFirewalled,
 		KadNodes:          e.kadStatus.Nodes,
 	}
@@ -619,7 +610,8 @@ func (e *Engine) buildNetwork() Network {
 // isFirewalled is whether peers cannot connect to us: neither the server nor
 // Kad says we are reachable.
 func (e *Engine) isFirewalled() bool {
-	return wire.IsLowID(e.server.ClientID()) && (e.kad == nil || e.kadStatus.IsFirewalled)
+	_, clientID := e.server.Login()
+	return wire.IsLowID(clientID) && (e.kad == nil || e.kadStatus.IsFirewalled)
 }
 
 func (e *Engine) runNAT(mapPorts openNAT) {
@@ -638,7 +630,7 @@ func (e *Engine) onNATOpened(m natOpened) {
 	}
 	e.unmapNAT = m.unmap
 	e.mappedIP = m.ip
-	if isPublicIPv4(m.ip) && !e.publicIP.IsValid() && wire.IsLowID(e.server.ClientID()) {
+	if _, clientID := e.server.Login(); isPublicIPv4(m.ip) && !e.publicIP.IsValid() && wire.IsLowID(clientID) {
 		e.publicIP = m.ip
 	}
 }

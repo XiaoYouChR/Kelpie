@@ -271,14 +271,15 @@ func (e *Engine) startConnLeaves(c *conn) {
 }
 
 func (e *Engine) buildPeerConfig(c *conn) peer.Config {
+	server, clientID := e.server.Login()
 	cfg := peer.Config{
 		Self:        e.self,
 		Version:     e.config.Version,
-		ClientID:    e.server.ClientID(),
+		ClientID:    clientID,
 		PublicIP:    e.publicIP,
 		Port:        uint16(e.tcpPort),
 		UDPPort:     uint16(e.udpPort),
-		Server:      e.serverAddr,
+		Server:      server,
 		Pipeline:    pipeline,
 		Random:      e.ports.Rand,
 		ShareByHash: e.shareByHash,
@@ -421,9 +422,6 @@ func (e *Engine) closeConn(c *conn, reason string) {
 	close(c.out.items)
 	now := e.now()
 	if c.isServer {
-		if c.remote == e.serverAddr {
-			e.serverAddr = netip.AddrPort{}
-		}
 		e.runServer(e.server.OnDisconnected(c.remote, now))
 		return
 	}
@@ -562,7 +560,7 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		e.queue.OnConnectionGone(c.id)
 	case peer.SourcesFound:
 		if r := e.downloadByHash(ev.File); r != nil {
-			e.addSources(r, toExchangeSources(ev.Sources), transfer.ChannelExchange)
+			e.runTransferActions(r, r.transfer.OnSourcesFound(toExchangeSources(ev.Sources), transfer.ChannelExchange, now))
 		}
 	case peer.RootReceived:
 		if r := e.downloadByHash(ev.File); r != nil {
@@ -595,7 +593,7 @@ func (e *Engine) requestTree(file wire.Hash) {
 func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	c.isHandshaken = true
 	caps := c.session.Capabilities()
-	if ev.YourIP.Is4() && wire.IsLowID(e.server.ClientID()) {
+	if _, clientID := e.server.Login(); ev.YourIP.Is4() && wire.IsLowID(clientID) {
 		e.publicIP = ev.YourIP
 	}
 	if caps.Port != 0 {
@@ -637,7 +635,6 @@ func (e *Engine) isReaskDue(r *run, user wire.Hash) bool {
 func (e *Engine) addTransferPeer(c *conn, r *run) {
 	user := c.session.UserHash()
 	r.asked[user] = e.now()
-	e.addKnownSource(r.file.Hash, transfer.Source{UserHash: user})
 	caps := c.session.Capabilities()
 	hello := transfer.Source{
 		Endpoint:     c.endpoint(),

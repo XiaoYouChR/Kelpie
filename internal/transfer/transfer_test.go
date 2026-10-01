@@ -417,6 +417,48 @@ func TestSourceCap(t *testing.T) {
 	}
 }
 
+// A peer is a known source by user hash or LowID while the transfer keeps
+// it, and no longer once a banned or refused source is gone.
+func TestMatchSource(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	server := endpoint(9999)
+	h.run(h.transfer.OnSourcesFound([]transfer.Source{
+		{Endpoint: endpoint(1), UserHash: userHash(1)},
+		lowIDSource(2, server),
+		{Endpoint: endpoint(3)},
+	}, transfer.ChannelServer, start))
+
+	for _, found := range []transfer.Source{
+		{UserHash: userHash(1)},
+		{UserHash: userHash(7), ClientID: 3, Server: server},
+	} {
+		if !h.transfer.MatchSource(found) {
+			t.Fatalf("%+v not matched", found)
+		}
+	}
+	for _, found := range []transfer.Source{
+		{UserHash: userHash(2)},
+		{ClientID: 3, Server: endpoint(8888)},
+		{ClientID: wire.ToClientID(endpoint(3).Addr())},
+		{},
+	} {
+		if h.transfer.MatchSource(found) {
+			t.Fatalf("%+v matched", found)
+		}
+	}
+
+	h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(3), UserHash: userHash(3)}, start)
+	if !h.transfer.MatchSource(transfer.Source{UserHash: userHash(3)}) {
+		t.Fatal("user hash from the Hello not matched")
+	}
+	h.connect(2, 1, piece.BuildFullSet(1))
+	h.deliver(2, 1, true)
+	if h.transfer.MatchSource(transfer.Source{UserHash: userHash(1)}) {
+		t.Fatal("banned source still matched")
+	}
+}
+
 func TestLowIDSourceNeedsServerCallback(t *testing.T) {
 	data := buildData(1000)
 	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
@@ -449,7 +491,7 @@ func TestSeedMode(t *testing.T) {
 	if got := h.transfer.Outcome(); got.Status != transfer.StatusRunning {
 		t.Fatalf("seed of a complete file: %+v", got)
 	}
-	if got := h.tick(transfer.Tick{ConnectBudget: 5, Server: endpoint(1)}); len(got) != 1 || countActions[transfer.Publish](got) != 1 {
+	if got := h.tick(transfer.Tick{ConnectBudget: 5, Server: endpoint(1)}); len(got) != 0 {
 		t.Fatalf("seed tick: %+v", got)
 	}
 	h.transfer.OnUploaded(1000, start)

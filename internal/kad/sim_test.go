@@ -200,7 +200,7 @@ func TestSimulatedNetwork(t *testing.T) {
 	}
 
 	publisher, searcher := s.nodes[5], s.nodes[9]
-	publisher.c.setWanted(Wanted{Publish: []Publish{{Hash: fileHash, Size: 123456}}}, s.now)
+	publisher.c.setWanted(Wanted{{Hash: fileHash, Size: 123456, IsComplete: true, IsShared: true}}, s.now)
 	s.run(3 * time.Minute)
 	stored := 0
 	for _, n := range s.nodes {
@@ -212,7 +212,7 @@ func TestSimulatedNetwork(t *testing.T) {
 		t.Fatalf("publisher stored on %d nodes", stored)
 	}
 
-	searcher.c.setWanted(Wanted{Find: []Search{{Hash: fileHash, Size: 123456}}}, s.now)
+	searcher.c.setWanted(Wanted{{Hash: fileHash, Size: 123456}}, s.now)
 	s.run(time.Minute)
 	want := Source{Type: sourceOpen, UserHash: publisher.c.userHash, Addr: netip.AddrPortFrom(publisher.addr.Addr(), 4662), UDPPort: 4672, CryptOptions: connectOptions}
 	var got []Source
@@ -300,13 +300,13 @@ func TestSimulatedBuddy(t *testing.T) {
 	for _, n := range s.nodes {
 		n.c.udp.isVerified = n != firewalled
 	}
-	firewalled.c.setWanted(Wanted{Publish: []Publish{{Hash: fileHash, Size: 123456}}}, s.now)
+	firewalled.c.setWanted(Wanted{{Hash: fileHash, Size: 123456, IsComplete: true, IsShared: true}}, s.now)
 	s.run(12 * time.Minute)
 	if firewalled.c.buddy.Addr != buddy.addr {
 		t.Fatalf("firewalled node's buddy %v, want %v", firewalled.c.buddy.Addr, buddy.addr)
 	}
 
-	searcher.c.setWanted(Wanted{Find: []Search{{Hash: fileHash, Size: 123456}}}, s.now)
+	searcher.c.setWanted(Wanted{{Hash: fileHash, Size: 123456}}, s.now)
 	s.run(time.Minute)
 	var got []Source
 	for _, f := range searcher.found {
