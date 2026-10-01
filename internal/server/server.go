@@ -33,8 +33,6 @@ const (
 	// which carries the user hash an obfuscated connection needs.
 	loginFlags = packet.CapZlib | packet.CapNewTags | packet.CapUnicode | packet.CapLargeFiles |
 		packet.CapSupportCrypt | packet.CapRequestCrypt
-	// cryptSupported is the CryptOptions bit for "supports obfuscation".
-	cryptSupported byte = 0x01
 
 	// keepAliveTime stands in for eMule's ServerKeepAliveTimeout, which is
 	// off by default; an idle seeding Engine Process would otherwise lose
@@ -403,7 +401,7 @@ func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) Out
 			out.ConnectPeers = append(out.ConnectPeers, Callback{
 				Endpoint:     p.Addr,
 				UserHash:     p.UserHash,
-				CanObfuscate: p.CryptOptions&cryptSupported != 0 && p.UserHash != wire.Hash{},
+				CanObfuscate: p.CryptOptions&wire.CryptSupported != 0 && p.UserHash != wire.Hash{},
 			})
 		}
 	case packet.CallbackRequestedIPv6:
@@ -480,7 +478,7 @@ func (s *Server) toSource(f packet.Source, server netip.AddrPort) (Source, bool)
 		ClientID:     f.ClientID,
 		Server:       server,
 		UserHash:     f.UserHash,
-		CanObfuscate: f.CryptOptions&cryptSupported != 0 && f.CryptOptions&packet.CryptHasUserHash != 0,
+		CanObfuscate: f.CryptOptions&wire.CryptSupported != 0 && f.CryptOptions&wire.CryptHasUserHash != 0,
 	}
 	switch {
 	case f.Port == 0 || f.ClientID == 0:

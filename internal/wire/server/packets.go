@@ -350,9 +350,6 @@ type Source struct {
 	IPv6         netip.Addr
 }
 
-// CryptHasUserHash is the CryptOptions bit announcing a user hash.
-const CryptHasUserHash byte = 0x80
-
 // FoundSources is OP_FOUNDSOURCES.
 type FoundSources struct {
 	Hash    wire.Hash
@@ -378,7 +375,7 @@ func buildSources(b []byte, f FoundSources, isObfu bool) []byte {
 		b = binary.LittleEndian.AppendUint16(b, s.Port)
 		if isObfu {
 			b = append(b, s.CryptOptions)
-			if s.CryptOptions&CryptHasUserHash != 0 {
+			if s.CryptOptions&wire.CryptHasUserHash != 0 {
 				b = append(b, s.UserHash[:]...)
 			}
 		}
@@ -403,7 +400,7 @@ func parseSources(r *wire.Reader, isObfu bool) FoundSources {
 		s := Source{ClientID: r.Uint32(), Port: r.Uint16()}
 		if isObfu {
 			s.CryptOptions = r.Uint8()
-			if s.CryptOptions&CryptHasUserHash != 0 {
+			if s.CryptOptions&wire.CryptHasUserHash != 0 {
 				s.UserHash = r.Hash()
 			}
 		}

@@ -601,7 +601,7 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 		e.publicIP = ev.YourIP
 	}
 	if caps.Port != 0 {
-		e.uploadEndpoints[uploadKey{ev.UserHash, c.remote.Addr()}] = uploadTarget{c.endpoint(), caps.CryptOptions&peer.CryptSupported != 0}
+		e.uploadEndpoints[uploadKey{ev.UserHash, c.remote.Addr()}] = uploadTarget{c.endpoint(), caps.CryptOptions&wire.CryptSupported != 0}
 	}
 	for _, h := range slices.Clone(c.files) {
 		if r := e.downloadByHash(h); r != nil && !c.isClosed {
@@ -649,7 +649,7 @@ func (e *Engine) addTransferPeer(c *conn, r *run) {
 		UDPPort:      caps.UDPPort,
 		CanReaskUDP:  caps.UDPVersion > 0 && caps.UDPPort != 0,
 		CanExchange:  caps.HasSourceExchange2,
-		CanObfuscate: caps.CryptOptions&peer.CryptSupported != 0,
+		CanObfuscate: caps.CryptOptions&wire.CryptSupported != 0,
 	}
 	e.runTransferActions(r, r.transfer.OnPeerConnected(c.id, hello, e.now()))
 }

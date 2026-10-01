@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
-	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
@@ -72,7 +71,7 @@ func (e *Engine) startBuddyLink() {
 				return
 			}
 			var obfuscateFor wire.Hash
-			if f.CryptOptions&peer.CryptSupported != 0 {
+			if f.CryptOptions&wire.CryptSupported != 0 {
 				obfuscateFor = f.UserHash
 			}
 			c = e.openConn(f.Addr, false, obfuscateFor, 0)
@@ -265,7 +264,7 @@ func (e *Engine) onDirectCallbackReq(from netip.AddrPort, p client.DirectCallbac
 		return
 	}
 	var obfuscateFor wire.Hash
-	if p.ConnectOptions&peer.CryptSupported != 0 {
+	if p.ConnectOptions&wire.CryptSupported != 0 {
 		obfuscateFor = p.UserHash
 	}
 	e.openConn(endpoint, false, obfuscateFor, 0)

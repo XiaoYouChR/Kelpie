@@ -62,7 +62,7 @@ func FuzzOnPacket(f *testing.F) {
 		packet.ServerIdent{Hash: fileHash(9), Addr: first, Name: "s", Description: "d", Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x87, Uint: 9}}},
 		packet.ServerList{Servers: []netip.AddrPort{ep("1.0.0.3:4661"), netip.AddrPortFrom(v6, 4661)}},
 		packet.FoundSources{Hash: fileHash(0), Sources: []packet.Source{{ClientID: highID, Port: 4662}, {ClientID: 5, Port: 6}, {ClientID: wire.IPv6Sentinel, Port: 7, IPv6: v6}}},
-		packet.FoundSourcesObfu{Hash: fileHash(1), Sources: []packet.Source{{ClientID: highID, Port: 4662, CryptOptions: packet.CryptHasUserHash | 0x03, UserHash: userHash}}},
+		packet.FoundSourcesObfu{Hash: fileHash(1), Sources: []packet.Source{{ClientID: highID, Port: 4662, CryptOptions: wire.CryptHasUserHash | 0x03, UserHash: userHash}}},
 		packet.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x83, UserHash: userHash},
 		packet.CallbackRequestedIPv6{Addr: netip.AddrPortFrom(v6, 4662)},
 		packet.CallbackFailed{},

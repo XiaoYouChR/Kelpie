@@ -138,11 +138,11 @@ func toMuleVersion(emuleVersion uint32) byte {
 func toCryptOptions(m client.MiscOptions2) byte {
 	var options byte
 	if m.CanCrypt {
-		options |= CryptSupported
+		options |= wire.CryptSupported
 		if m.IsCryptRequested {
-			options |= CryptRequested
+			options |= wire.CryptRequested
 			if m.IsCryptRequired {
-				options |= CryptRequired
+				options |= wire.CryptRequired
 			}
 		}
 	}

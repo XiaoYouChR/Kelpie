@@ -4,7 +4,6 @@ import (
 	"net/netip"
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
-	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
@@ -55,7 +54,7 @@ func (e *Engine) startFirewallCheck(r kad.FirewallCheck) {
 		return
 	}
 	var obfuscateFor wire.Hash
-	if r.CryptOptions&peer.CryptSupported != 0 {
+	if r.CryptOptions&wire.CryptSupported != 0 {
 		obfuscateFor = r.UserHash
 	}
 	c := e.openConn(r.Addr, false, obfuscateFor, 0)
