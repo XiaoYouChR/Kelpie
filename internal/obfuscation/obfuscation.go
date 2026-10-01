@@ -1,7 +1,8 @@
-// Package obfuscation is eMule's protocol obfuscation for TCP connections
-// between clients: an RC4 stream keyed by the receiving client's user hash.
-// Clients that require it close a plain connection as soon as our Hello
-// arrives; on the real network those were the fastest sources of a hot file.
+// Package obfuscation is eMule's protocol obfuscation for TCP connections:
+// an RC4 stream keyed by the receiving client's user hash between clients,
+// or by a Diffie-Hellman agreement with a server. Clients that require it
+// close a plain connection as soon as our Hello arrives; on the real network
+// those were the fastest sources of a hot file.
 package obfuscation
 
 import (
@@ -11,6 +12,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math/big"
 	"net"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -26,7 +28,23 @@ const (
 	methodObfuscation byte = 0x00
 	// rc4Discard is how much keystream eMule throws away after keying.
 	rc4Discard = 1024
+	// primeSize is PRIMESIZE_BYTES, the length of every number in the
+	// server handshake.
+	primeSize = 96
 )
+
+// dhPrime is dh768_p, the fixed prime of the server handshake
+// (aMule EncryptedStreamSocket.cpp:104-117); the generator is 2.
+var dhPrime = new(big.Int).SetBytes([]byte{
+	0xF2, 0xBF, 0x52, 0xC5, 0x5F, 0x58, 0x7A, 0xDD, 0x53, 0x71, 0xA9, 0x36,
+	0xE8, 0x86, 0xEB, 0x3C, 0x62, 0x17, 0xA3, 0x3E, 0xC3, 0x4C, 0xB4, 0x0D,
+	0xC7, 0x3A, 0x41, 0xA6, 0x43, 0xAF, 0xFC, 0xE7, 0x21, 0xFC, 0x28, 0x63,
+	0x66, 0x53, 0x5B, 0xDB, 0xCE, 0x25, 0x9F, 0x22, 0x86, 0xDA, 0x4A, 0x91,
+	0xB2, 0x07, 0xCB, 0xAA, 0x52, 0x55, 0xD4, 0xF6, 0x1C, 0xCE, 0xAE, 0xD4,
+	0x5A, 0xD5, 0xE0, 0x74, 0x7D, 0xF7, 0x78, 0x18, 0x28, 0x10, 0x5F, 0x34,
+	0x0F, 0x76, 0x23, 0x87, 0xF8, 0x8B, 0x28, 0x91, 0x42, 0xFB, 0x42, 0x68,
+	0x8F, 0x05, 0x15, 0x0F, 0x54, 0x8B, 0x5F, 0x43, 0x6A, 0xF7, 0x0D, 0xF3,
+})
 
 var ErrHandshake = errors.New("obfuscation: bad handshake")
 
@@ -74,9 +92,13 @@ func (c *Conn) discard(n int) error {
 	return nil
 }
 
-func buildCipher(user wire.Hash, magic byte, keyPart [4]byte) *rc4.Cipher {
-	sum := md5.Sum(append(append(user[:], magic), keyPart[:]...))
-	c, _ := rc4.NewCipher(sum[:])
+// buildCipher keys RC4 with the MD5 of the key parts in order.
+func buildCipher(parts ...[]byte) *rc4.Cipher {
+	h := md5.New()
+	for _, part := range parts {
+		h.Write(part)
+	}
+	c, _ := rc4.NewCipher(h.Sum(nil))
 	discard := make([]byte, rc4Discard)
 	c.XORKeyStream(discard, discard)
 	return c
@@ -100,8 +122,8 @@ func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (*Conn, error)
 	c := &Conn{
 		Conn: conn,
 		r:    bufio.NewReader(conn),
-		in:   buildCipher(user, magicServer, keyPart),
-		out:  buildCipher(user, magicRequester, keyPart),
+		in:   buildCipher(user[:], []byte{magicServer}, keyPart[:]),
+		out:  buildCipher(user[:], []byte{magicRequester}, keyPart[:]),
 	}
 	marker := keyPart[0] ^ keyPart[3]
 	for matchPlain(marker) {
@@ -114,6 +136,58 @@ func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (*Conn, error)
 		return nil, err
 	}
 	if err := c.readAnswer(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// OpenServer starts obfuscation on a connection we opened to a server's
+// obfuscation port. A server has no user hash to key with, so the key is
+// agreed by Diffie-Hellman; secret is our 128-bit exponent and marker a
+// random first byte (aMule EncryptedStreamSocket.cpp:56-81, 398-424,
+// 603-668). It blocks until the server has answered: the caller sets a
+// deadline.
+//
+// Request, plain: <Marker 1><g^a mod p 96><PaddingLen 1>. Answer: plain
+// <g^b mod p 96>, then encrypted <MagicValue 4><MethodsSupported 1>
+// <MethodPreferred 1><PaddingLen 1><Padding>. Reply, encrypted:
+// <MagicValue 4><MethodSelected 1><PaddingLen 1>.
+func OpenServer(conn net.Conn, secret [16]byte, marker byte) (*Conn, error) {
+	a := new(big.Int).SetBytes(secret[:])
+	for matchPlain(marker) {
+		marker++
+	}
+	request := make([]byte, 1+primeSize+1)
+	request[0] = marker
+	new(big.Int).Exp(big.NewInt(2), a, dhPrime).FillBytes(request[1 : 1+primeSize])
+	if _, err := conn.Write(request); err != nil {
+		return nil, err
+	}
+	r := bufio.NewReader(conn)
+	shared := make([]byte, primeSize)
+	if _, err := io.ReadFull(r, shared); err != nil {
+		return nil, err
+	}
+	new(big.Int).Exp(new(big.Int).SetBytes(shared), a, dhPrime).FillBytes(shared)
+	c := &Conn{
+		Conn: conn,
+		r:    r,
+		in:   buildCipher(shared, []byte{magicServer}),
+		out:  buildCipher(shared, []byte{magicRequester}),
+	}
+	var head [7]byte
+	if _, err := io.ReadFull(r, head[:]); err != nil {
+		return nil, err
+	}
+	c.in.XORKeyStream(head[:], head[:])
+	if binary.LittleEndian.Uint32(head[:]) != magicSync {
+		return nil, ErrHandshake
+	}
+	if err := c.discard(int(head[6])); err != nil {
+		return nil, err
+	}
+	reply := binary.LittleEndian.AppendUint32(nil, magicSync)
+	if _, err := c.Write(append(reply, methodObfuscation, 0)); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -145,8 +219,8 @@ func OpenIncoming(conn net.Conn, self wire.Hash) (net.Conn, error) {
 	c := &Conn{
 		Conn: conn,
 		r:    r,
-		in:   buildCipher(self, magicRequester, keyPart),
-		out:  buildCipher(self, magicServer, keyPart),
+		in:   buildCipher(self[:], []byte{magicRequester}, keyPart[:]),
+		out:  buildCipher(self[:], []byte{magicServer}, keyPart[:]),
 	}
 	request := head[5:]
 	c.in.XORKeyStream(request, request)
