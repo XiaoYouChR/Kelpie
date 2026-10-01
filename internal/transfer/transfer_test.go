@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/aich"
 	"github.com/XiaoYouChR/Kelpie/internal/link"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/store"
@@ -79,6 +80,10 @@ func (h *harness) run(actions []transfer.Action) {
 			var hasher piece.MD4
 			hasher.Write(h.disk[a.Begin:a.End])
 			actions = append(actions, h.transfer.OnPartHashed(a.Part, hasher.Digest(), h.now)...)
+		case transfer.HashBlocks:
+			var hasher aich.Hasher
+			hasher.Write(h.disk[a.Begin:a.End])
+			actions = append(actions, h.transfer.OnBlocksHashed(a.Part, hasher.Leaves(), h.now)...)
 		}
 	}
 }

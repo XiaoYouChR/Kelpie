@@ -88,6 +88,7 @@ type Transfer struct {
 	hashSetPeer       uint64
 	isHashSetAsked    bool
 	hashSetAskedPeers map[uint64]bool
+	aich              aichState
 
 	lastPublish time.Time
 
@@ -123,6 +124,7 @@ func Build(options Options, now time.Time) *Transfer {
 		senders:           map[uint64]*source{},
 		bannedHashes:      map[wire.Hash]bool{},
 		bannedEndpoints:   map[netip.AddrPort]bool{},
+		aich:              buildAICHState(options.File.AICHHash, options.Random),
 	}
 	if state := options.State; state != nil && state.File == options.Path && state.Size == options.File.Size {
 		picker, err := piece.BuildPicker[uint64](state.Size, toResumeData(state), options.Random)
@@ -310,8 +312,9 @@ func (t *Transfer) expectedHash(part int) (wire.Hash, bool) {
 	return t.partHashes[part], true
 }
 
-// OnPartHashed verifies a part. A mismatch discards the part and bans every
-// peer that sent a block of it.
+// OnPartHashed verifies a part. A mismatch starts an AICH repair of the
+// part, or when none is possible discards it and bans every peer that sent
+// a block of it.
 func (t *Transfer) OnPartHashed(part int, hash wire.Hash, now time.Time) []Action {
 	if !t.isDownloading() {
 		return nil
@@ -323,11 +326,7 @@ func (t *Transfer) OnPartHashed(part int, hash wire.Hash, now time.Time) []Actio
 		}
 		return nil
 	}
-	var actions []Action
-	for _, peer := range t.picker.OnPartFailed(part) {
-		actions = append(actions, t.removeCorrupt(peer, now)...)
-	}
-	return actions
+	return t.repairPart(part, now)
 }
 
 // OnHashSet accepts the part hashes a peer sent if they add up to the file
