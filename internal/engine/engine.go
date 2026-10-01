@@ -118,7 +118,6 @@ type Engine struct {
 	disk      *leafQueue[diskJob]
 	unmapNAT  func(context.Context) error
 
-	serverConn uint64
 	serverAddr netip.AddrPort
 	publicIP   netip.Addr
 	network    Network

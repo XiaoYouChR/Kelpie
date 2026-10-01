@@ -172,7 +172,7 @@ func (e *Engine) onConnOpened(m connOpened) {
 	c.net = m.conn
 	e.startConnLeaves(c)
 	if c.isServer {
-		e.runServer(e.server.OnConnected(e.now()))
+		e.runServer(e.server.OnConnected(c.remote, e.now()))
 		return
 	}
 	session, out := peer.BuildOutgoing(e.buildPeerConfig(), c.remote, e.now())
@@ -331,13 +331,13 @@ func (e *Engine) closeConn(c *conn, reason string) {
 	close(c.out.items)
 	now := e.now()
 	if c.isServer {
-		if c.id == e.serverConn {
-			e.serverConn, e.serverAddr = 0, netip.AddrPort{}
-			if c.net == nil {
-				e.runServer(e.server.OnConnectFailed(now))
-			} else {
-				e.runServer(e.server.OnDisconnected(now))
-			}
+		if c.remote == e.serverAddr {
+			e.serverAddr = netip.AddrPort{}
+		}
+		if c.net == nil {
+			e.runServer(e.server.OnConnectFailed(c.remote, now))
+		} else {
+			e.runServer(e.server.OnDisconnected(c.remote, now))
 		}
 		return
 	}
@@ -387,7 +387,7 @@ func (e *Engine) onPacket(id uint64, p wire.Packet) {
 		return
 	}
 	if c.isServer {
-		e.runServer(e.server.OnPacket(p, e.now()))
+		e.runServer(e.server.OnPacket(c.remote, p, e.now()))
 		return
 	}
 	if u, ok := p.(wire.Unknown); ok && u.Proto == wire.ProtocolEMule && u.Op == opKadFirewallAck {

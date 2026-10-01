@@ -16,6 +16,10 @@ const (
 	connectTimeout = 25 * time.Second // CONSERVTIMEOUT, covers connect and login
 	passRetryTime  = 30 * time.Second // CS_RETRYCONNECTTIME (sockets.h)
 	maxFailures    = 10               // MAX_SERVERFAILCOUNT
+	// maxAttempts follows aMule's TryAnotherConnectionrequest
+	// (ServerConnect.cpp): two servers at once unless SafeServerConnect,
+	// which is off by default; the first to log in wins.
+	maxAttempts = 2
 
 	sourceReaskTime     = 15 * time.Minute            // SERVERREASKTIME
 	sourceFilesPerFrame = 15                          // iMaxFilesPerTcpFrame (DownloadQueue.cpp)
@@ -81,13 +85,14 @@ type Datagram struct {
 	Packet wire.Packet
 }
 
-// Output is what the engine must do, in field order: close the server
-// connection, open a new one, send, and connect to peers that asked for a
-// callback. After Close the engine reports nothing more about the closed
-// connection.
+// Output is what the engine must do, in field order: close server
+// connections, open new ones, send to the server at To, and connect to peers
+// that asked for a callback. A server connection is named by the endpoint it
+// was opened to; reports about a closed one are ignored.
 type Output struct {
-	Close        bool
-	Connect      netip.AddrPort
+	Close        []netip.AddrPort
+	Connect      []netip.AddrPort
+	To           netip.AddrPort
 	Send         []wire.Packet
 	SendUDP      []Datagram
 	ConnectPeers []netip.AddrPort
@@ -121,15 +126,6 @@ func (IDChanged) isEvent()       {}
 func (MessageReceived) isEvent() {}
 func (CallbackFailed) isEvent()  {}
 
-type phase int
-
-const (
-	phaseIdle phase = iota
-	phaseConnecting
-	phaseLoggingIn
-	phaseLoggedIn
-)
-
 // listed is an Entry with what this process learned about it.
 type listed struct {
 	Entry
@@ -143,15 +139,22 @@ type listed struct {
 	searchedAt time.Time
 }
 
-// Server owns the server list and the one server connection.
+// attempt is a server connection that has not logged in yet.
+type attempt struct {
+	server *listed
+	since  time.Time
+}
+
+// Server owns the server list, the connection attempts and the one
+// logged-in server connection.
 type Server struct {
 	config  Config
 	servers []*listed
 	wanted  []Wanted
 
-	phase    phase
+	attempts []attempt
+	// current is the server we are logged in to.
 	current  *listed
-	since    time.Time
 	tried    map[*listed]bool
 	retryAt  time.Time
 	clientID uint32
@@ -186,7 +189,7 @@ func BuildServer(config Config, entries []Entry) *Server {
 	return s
 }
 
-func (s *Server) IsServerConnected() bool { return s.phase == phaseLoggedIn }
+func (s *Server) IsServerConnected() bool { return s.current != nil }
 
 func (s *Server) IsHighID() bool { return s.IsServerConnected() && !wire.IsLowID(s.clientID) }
 
@@ -201,12 +204,14 @@ func (s *Server) ClientID() uint32 {
 func (s *Server) OnTick(now time.Time, wanted []Wanted) Output {
 	s.wanted = wanted
 	var out Output
-	if (s.phase == phaseConnecting || s.phase == phaseLoggingIn) && now.Sub(s.since) > connectTimeout {
-		out.Close = true
-		s.setFailed()
+	for _, a := range slices.Clone(s.attempts) {
+		if now.Sub(a.since) > connectTimeout {
+			out.Close = append(out.Close, a.server.Endpoint)
+			s.setFailed(a.server.Endpoint)
+		}
 	}
 	s.runConnect(now, &out)
-	if s.phase == phaseLoggedIn {
+	if s.current != nil {
 		s.runSession(now, &out)
 		s.runStats(now, &out)
 		s.runSearch(now, &out)
@@ -214,8 +219,10 @@ func (s *Server) OnTick(now time.Time, wanted []Wanted) Output {
 	return out
 }
 
-func (s *Server) OnConnected(now time.Time) Output {
-	s.phase = phaseLoggingIn
+func (s *Server) OnConnected(server netip.AddrPort, now time.Time) Output {
+	if s.attemptIndex(server) < 0 {
+		return Output{}
+	}
 	login := packet.Login{
 		UserHash:     s.config.UserHash,
 		Port:         s.config.Port,
@@ -224,58 +231,74 @@ func (s *Server) OnConnected(now time.Time) Output {
 		Flags:        loginFlags,
 		EmuleVersion: toEmuleVersion(s.config.Version),
 	}
-	s.lastSent = now
-	return Output{Send: []wire.Packet{login}}
+	return Output{To: server, Send: []wire.Packet{login}}
 }
 
-func (s *Server) OnConnectFailed(now time.Time) Output {
-	s.setFailed()
+func (s *Server) OnConnectFailed(server netip.AddrPort, now time.Time) Output {
+	if s.attemptIndex(server) < 0 {
+		return Output{}
+	}
+	s.setFailed(server)
 	var out Output
 	s.runConnect(now, &out)
 	return out
 }
 
-// OnDisconnected handles the end of the server connection at any stage.
+// OnDisconnected handles the end of a server connection at any stage.
 // Losing a server before login counts against it; losing it afterwards
 // moves on to the next server, as eMule's reconnect does.
-func (s *Server) OnDisconnected(now time.Time) Output {
-	if s.phase == phaseLoggedIn {
+func (s *Server) OnDisconnected(server netip.AddrPort, now time.Time) Output {
+	switch {
+	case s.current != nil && s.current.Endpoint == server:
 		s.tried[s.current] = true
-		s.phase = phaseIdle
 		s.current = nil
-	} else {
-		s.setFailed()
+	case s.attemptIndex(server) >= 0:
+		s.setFailed(server)
+	default:
+		return Output{}
 	}
 	var out Output
 	s.runConnect(now, &out)
 	return out
 }
 
-func (s *Server) OnPacket(p wire.Packet, now time.Time) Output {
+// OnPacket takes a packet from the server at from, logged in or still
+// logging in.
+func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) Output {
 	var out Output
+	sender := s.current
+	if i := s.attemptIndex(from); i >= 0 {
+		sender = s.attempts[i].server
+	}
+	if sender == nil || sender.Endpoint != from {
+		return out
+	}
 	switch p := p.(type) {
 	case packet.IDChange:
-		s.onIDChange(p, now, &out)
+		s.onIDChange(sender, p, now, &out)
 	case packet.ServerMessage:
 		out.Events = append(out.Events, MessageReceived{Text: p.Text})
 	case packet.ServerStatus:
-		if s.current != nil {
-			s.current.Users, s.current.Files = p.Users, p.Files
-		}
+		sender.Users, sender.Files = p.Users, p.Files
 	case packet.ServerIdent:
-		if s.current != nil && p.Name != "" {
-			s.current.Name, s.current.Description = p.Name, p.Description
+		if p.Name != "" {
+			sender.Name, sender.Description = p.Name, p.Description
 		}
+	}
+	if sender != s.current {
+		return out
+	}
+	switch p := p.(type) {
 	case packet.FoundSources:
 		s.onFoundSources(p.Hash, p.Sources, &out)
 	case packet.FoundSourcesObfu:
 		s.onFoundSources(p.Hash, p.Sources, &out)
 	case packet.CallbackRequested:
-		if s.phase == phaseLoggedIn && p.Addr.IsValid() && p.Addr.Port() != 0 {
+		if p.Addr.IsValid() && p.Addr.Port() != 0 {
 			out.ConnectPeers = append(out.ConnectPeers, p.Addr)
 		}
 	case packet.CallbackRequestedIPv6:
-		if s.phase == phaseLoggedIn && p.Addr.IsValid() && p.Addr.Port() != 0 {
+		if p.Addr.IsValid() && p.Addr.Port() != 0 {
 			out.ConnectPeers = append(out.ConnectPeers, p.Addr)
 		}
 	case packet.CallbackFailed:
@@ -292,16 +315,26 @@ func (s *Server) RequestCallback(source Source, now time.Time) (Output, bool) {
 		return Output{}, false
 	}
 	s.lastSent = now
-	return Output{Send: []wire.Packet{packet.CallbackRequest{ClientID: source.ClientID}}}, true
+	return Output{To: s.current.Endpoint, Send: []wire.Packet{packet.CallbackRequest{ClientID: source.ClientID}}}, true
 }
 
-func (s *Server) onIDChange(p packet.IDChange, now time.Time, out *Output) {
-	if s.phase != phaseLoggingIn && s.phase != phaseLoggedIn || p.ClientID == 0 {
+// onIDChange logs in to the first attempt that gets an id and closes the
+// other one, which aMule's StopConnectionTry does without counting a
+// failure.
+func (s *Server) onIDChange(sender *listed, p packet.IDChange, now time.Time, out *Output) {
+	if p.ClientID == 0 {
 		return
 	}
-	if s.phase == phaseLoggingIn {
-		s.phase = phaseLoggedIn
+	if sender != s.current {
+		for _, a := range s.attempts {
+			if a.server != sender {
+				out.Close = append(out.Close, a.server.Endpoint)
+			}
+		}
+		s.attempts = nil
+		s.current = sender
 		s.current.Failures = 0
+		s.lastSent = now
 		clear(s.tried)
 		clear(s.offered)
 		s.nextSourceFrame = now
@@ -313,7 +346,7 @@ func (s *Server) onIDChange(p packet.IDChange, now time.Time, out *Output) {
 }
 
 func (s *Server) onFoundSources(file wire.Hash, found []packet.Source, out *Output) {
-	if s.phase != phaseLoggedIn || !s.isWanted(file) {
+	if !s.isWanted(file) {
 		return
 	}
 	var sources []Source
@@ -355,32 +388,37 @@ func (s *Server) isWanted(file wire.Hash) bool {
 	return slices.ContainsFunc(s.wanted, func(w Wanted) bool { return w.File == file && !w.IsComplete })
 }
 
-func (s *Server) setFailed() {
-	if s.current != nil {
-		s.current.Failures++
-	}
-	s.phase = phaseIdle
-	s.current = nil
+func (s *Server) attemptIndex(server netip.AddrPort) int {
+	return slices.IndexFunc(s.attempts, func(a attempt) bool { return a.server.Endpoint == server })
 }
 
-// runConnect starts the next attempt of the current pass. A pass tries
-// every server once, best first; when it runs out, eMule waits
-// CS_RETRYCONNECTTIME so a short list is not hammered.
+func (s *Server) setFailed(server netip.AddrPort) {
+	i := s.attemptIndex(server)
+	s.attempts[i].server.Failures++
+	s.attempts = slices.Delete(s.attempts, i, i+1)
+}
+
+// runConnect keeps maxAttempts servers of the current pass in flight. A
+// pass tries every server once, best first; when it runs out and no
+// attempt is left, eMule waits CS_RETRYCONNECTTIME so a short list is not
+// hammered.
 func (s *Server) runConnect(now time.Time, out *Output) {
-	if s.phase != phaseIdle || now.Before(s.retryAt) {
+	if s.current != nil || now.Before(s.retryAt) {
 		return
 	}
-	next := s.nextServer()
-	if next == nil {
-		if len(s.tried) > 0 {
-			clear(s.tried)
-			s.retryAt = now.Add(passRetryTime)
+	for len(s.attempts) < maxAttempts {
+		next := s.nextServer()
+		if next == nil {
+			if len(s.attempts) == 0 && len(s.tried) > 0 {
+				clear(s.tried)
+				s.retryAt = now.Add(passRetryTime)
+			}
+			return
 		}
-		return
+		s.tried[next] = true
+		s.attempts = append(s.attempts, attempt{server: next, since: now})
+		out.Connect = append(out.Connect, next.Endpoint)
 	}
-	s.tried[next] = true
-	s.current, s.phase, s.since = next, phaseConnecting, now
-	out.Connect = next.Endpoint
 }
 
 // nextServer prefers high preference, then fewer failures, then more users
@@ -417,6 +455,7 @@ func isBetter(a, b *listed) bool {
 }
 
 func (s *Server) runSession(now time.Time, out *Output) {
+	out.To = s.current.Endpoint
 	n := len(out.Send)
 	s.runSourceRequests(now, out)
 	s.runOffer(now, out)

@@ -22,17 +22,15 @@ const (
 
 // runServer performs the server's Output in its documented order.
 func (e *Engine) runServer(out server.Output) {
-	if out.Close && e.serverConn != 0 {
-		c := e.conns[e.serverConn]
-		e.serverConn, e.serverAddr = 0, netip.AddrPort{}
-		if c != nil {
+	for _, addr := range out.Close {
+		if c := e.serverConnByEndpoint(addr); c != nil {
 			e.closeConn(c, "server closed")
 		}
 	}
-	if out.Connect.IsValid() {
-		e.serverConn = e.openConn(out.Connect, true, wire.Hash{}).id
+	for _, addr := range out.Connect {
+		e.openConn(addr, true, wire.Hash{})
 	}
-	if c := e.conns[e.serverConn]; c != nil {
+	if c := e.serverConnByEndpoint(out.To); c != nil {
 		for _, p := range out.Send {
 			e.sendPacket(c, p, wire.Hash{}, 0)
 		}
@@ -64,6 +62,15 @@ func (e *Engine) runServer(out server.Output) {
 			log.Printf("engine: server message: %s", ev.Text)
 		}
 	}
+}
+
+func (e *Engine) serverConnByEndpoint(addr netip.AddrPort) *conn {
+	for _, c := range e.conns {
+		if c.isServer && c.remote == addr {
+			return c
+		}
+	}
+	return nil
 }
 
 func toServerSources(found []server.Source) []transfer.Source {

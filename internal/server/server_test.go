@@ -20,6 +20,9 @@ var (
 
 func ep(s string) netip.AddrPort { return netip.MustParseAddrPort(s) }
 
+// first is the server loggedIn connects to.
+var first = ep("1.0.0.1:4661")
+
 func fileHash(i int) wire.Hash {
 	var h wire.Hash
 	h[0], h[1] = byte(i), byte(i>>8)
@@ -40,11 +43,11 @@ func loggedIn(t *testing.T, entries []Entry, clientID, flags uint32, wanted []Wa
 	t.Helper()
 	s := BuildServer(config, entries)
 	out := s.OnTick(start, wanted)
-	if out.Connect != entries[0].Endpoint {
-		t.Fatalf("connect = %v, want %v", out.Connect, entries[0].Endpoint)
+	if out.Connect[0] != entries[0].Endpoint {
+		t.Fatalf("connect = %v, want %v first", out.Connect, entries[0].Endpoint)
 	}
-	s.OnConnected(start)
-	out = s.OnPacket(packet.IDChange{ClientID: clientID, Flags: flags}, start)
+	s.OnConnected(entries[0].Endpoint, start)
+	out = s.OnPacket(entries[0].Endpoint, packet.IDChange{ClientID: clientID, Flags: flags}, start)
 	if !s.IsServerConnected() {
 		t.Fatal("not connected after IDChange")
 	}
@@ -72,38 +75,93 @@ func TestChoiceAndRotation(t *testing.T) {
 	}
 	s := BuildServer(config, entries)
 	now := start
-	var order []netip.AddrPort
+	var order, pending []netip.AddrPort
 	out := s.OnTick(now, nil)
-	for out.Connect.IsValid() {
-		order = append(order, out.Connect)
-		if again := s.OnTick(now, nil); again.Connect.IsValid() {
-			t.Fatal("second connection while one is pending")
+	for len(out.Connect) > 0 || len(pending) > 0 {
+		order = append(order, out.Connect...)
+		pending = append(pending, out.Connect...)
+		if len(pending) > maxAttempts {
+			t.Fatalf("%d attempts in flight", len(pending))
 		}
-		out = s.OnConnectFailed(now)
+		if again := s.OnTick(now, nil); len(again.Connect) > 0 {
+			t.Fatalf("tick connects %v while %v are pending", again.Connect, pending)
+		}
+		out = s.OnConnectFailed(pending[0], now)
+		pending = pending[1:]
 	}
 	want := []netip.AddrPort{ep("1.0.0.2:4661"), ep("1.0.0.1:4661"), ep("1.0.0.3:4661"), ep("1.0.0.4:4661")}
 	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("pass order = %v, want %v", order, want)
 	}
 	for ; now.Before(start.Add(passRetryTime)); now = now.Add(time.Second) {
-		if out := s.OnTick(now, nil); out.Connect.IsValid() {
+		if out := s.OnTick(now, nil); len(out.Connect) > 0 {
 			t.Fatalf("retried at %v, before CS_RETRYCONNECTTIME", now.Sub(start))
 		}
 	}
 	// Every server failed once, so the order is the same again.
-	if out := s.OnTick(now.Add(time.Second), nil); out.Connect != ep("1.0.0.2:4661") {
+	if out := s.OnTick(now.Add(time.Second), nil); !reflect.DeepEqual(out.Connect, want[:2]) {
 		t.Fatalf("new pass connects %v", out.Connect)
 	}
 }
 
+// TestFirstLoginWins follows aMule: two servers are tried at once, the
+// first to give an id is kept and the other is closed without counting
+// a failure against it.
+func TestFirstLoginWins(t *testing.T) {
+	a, b := ep("1.0.0.1:4661"), ep("1.0.0.2:4661")
+	s := BuildServer(config, []Entry{{Endpoint: a, Users: 10}, {Endpoint: b}})
+	if out := s.OnTick(start, nil); !reflect.DeepEqual(out.Connect, []netip.AddrPort{a, b}) {
+		t.Fatalf("connect = %v", out.Connect)
+	}
+	if out := s.OnConnected(b, start); out.To != b || len(sent[packet.Login](out)) != 1 {
+		t.Fatalf("login to b = %+v", out)
+	}
+	if out := s.OnConnected(a, start); out.To != a || len(sent[packet.Login](out)) != 1 {
+		t.Fatalf("login to a = %+v", out)
+	}
+	out := s.OnPacket(a, packet.ServerMessage{Text: "from a"}, start)
+	if !reflect.DeepEqual(out.Events, []Event{MessageReceived{Text: "from a"}}) {
+		t.Fatalf("message while logging in = %+v", out.Events)
+	}
+	out = s.OnPacket(b, packet.IDChange{ClientID: highID}, start)
+	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a}) || out.To != b {
+		t.Fatalf("login output = %+v", out)
+	}
+	if !s.IsServerConnected() || s.current.Endpoint != b {
+		t.Fatal("not logged in to b")
+	}
+	if out := s.OnDisconnected(a, start); len(out.Connect) > 0 || s.servers[0].Failures != 0 {
+		t.Fatalf("closed loser reported: %+v failures=%d", out, s.servers[0].Failures)
+	}
+	if out := s.OnPacket(a, packet.IDChange{ClientID: 1234}, start); len(out.Events) > 0 || s.ClientID() != highID {
+		t.Fatalf("packet from the closed loser used: %+v", out)
+	}
+	if out := s.OnTick(start.Add(time.Hour), nil); len(out.Connect) > 0 || len(out.Close) > 0 {
+		t.Fatalf("attempt left after login: %+v", out)
+	}
+}
+
+func TestFailedAttemptCountsAgainstItsServer(t *testing.T) {
+	a, b := ep("1.0.0.1:4661"), ep("1.0.0.2:4661")
+	s := BuildServer(config, []Entry{{Endpoint: a, Users: 10}, {Endpoint: b}})
+	s.OnTick(start, nil)
+	s.OnConnected(a, start)
+	if out := s.OnDisconnected(a, start); len(out.Connect) > 0 {
+		t.Fatalf("reconnected while b is pending: %v", out.Connect)
+	}
+	if s.servers[0].Failures != 1 || s.servers[1].Failures != 0 {
+		t.Fatalf("failures = %d, %d", s.servers[0].Failures, s.servers[1].Failures)
+	}
+}
+
 func TestServerIsGivenUpAfterMaxFailures(t *testing.T) {
-	s := BuildServer(config, []Entry{{Endpoint: ep("1.0.0.1:4661")}})
+	s := BuildServer(config, []Entry{{Endpoint: first}})
 	now := start
 	attempts := 0
 	for range 1000 {
-		if out := s.OnTick(now, nil); out.Connect.IsValid() {
+		if out := s.OnTick(now, nil); len(out.Connect) > 0 {
 			attempts++
-			s.OnConnectFailed(now)
+			s.OnConnectFailed(first, now)
 		}
 		now = now.Add(5 * time.Second)
 	}
@@ -113,22 +171,23 @@ func TestServerIsGivenUpAfterMaxFailures(t *testing.T) {
 }
 
 func TestLoginTimesOut(t *testing.T) {
-	s := BuildServer(config, []Entry{{Endpoint: ep("1.0.0.1:4661")}, {Endpoint: ep("1.0.0.2:4661")}})
+	a, b, c := ep("1.0.0.1:4661"), ep("1.0.0.2:4661"), ep("1.0.0.3:4661")
+	s := BuildServer(config, []Entry{{Endpoint: a, Users: 2}, {Endpoint: b, Users: 1}, {Endpoint: c}})
 	s.OnTick(start, nil)
-	s.OnConnected(start.Add(time.Second))
-	if out := s.OnTick(start.Add(connectTimeout), nil); out.Close || out.Connect.IsValid() {
+	s.OnConnected(a, start.Add(time.Second))
+	if out := s.OnTick(start.Add(connectTimeout), nil); len(out.Close) > 0 || len(out.Connect) > 0 {
 		t.Fatalf("gave up too early: %+v", out)
 	}
 	out := s.OnTick(start.Add(connectTimeout+time.Second), nil)
-	if !out.Close || out.Connect != ep("1.0.0.2:4661") {
+	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a, b}) || !reflect.DeepEqual(out.Connect, []netip.AddrPort{c}) {
 		t.Fatalf("timeout output = %+v", out)
 	}
 }
 
 func TestLogin(t *testing.T) {
-	s := BuildServer(config, []Entry{{Endpoint: ep("1.0.0.1:4661")}})
+	s := BuildServer(config, []Entry{{Endpoint: first}})
 	s.OnTick(start, nil)
-	out := s.OnConnected(start)
+	out := s.OnConnected(first, start)
 	want := packet.Login{
 		UserHash: userHash, Port: 4662, Name: "Kelpie", Version: 0x3C,
 		Flags: packet.CapZlib | packet.CapNewTags | packet.CapUnicode | packet.CapLargeFiles |
@@ -156,7 +215,7 @@ func TestIDChangeGivesLowIDOrHighID(t *testing.T) {
 	if !s.IsHighID() {
 		t.Fatal("HighID not reported")
 	}
-	s.OnDisconnected(start)
+	s.OnDisconnected(first, start)
 	if s.IsServerConnected() || s.IsHighID() || s.ClientID() != 0 {
 		t.Fatal("still connected after disconnect")
 	}
@@ -165,19 +224,19 @@ func TestIDChangeGivesLowIDOrHighID(t *testing.T) {
 func TestReconnectMovesToAnotherServer(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661"), Users: 10}, {Endpoint: ep("1.0.0.2:4661")}}
 	s, _ := loggedIn(t, entries, highID, 0, nil)
-	if out := s.OnDisconnected(start.Add(time.Hour)); out.Connect != ep("1.0.0.2:4661") {
+	if out := s.OnDisconnected(first, start.Add(time.Hour)); !reflect.DeepEqual(out.Connect, []netip.AddrPort{ep("1.0.0.2:4661")}) {
 		t.Fatalf("reconnect = %v", out.Connect)
 	}
 }
 
 func TestServerMessagesAndStatus(t *testing.T) {
 	s, _ := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, 0, nil)
-	out := s.OnPacket(packet.ServerMessage{Text: "welcome"}, start)
+	out := s.OnPacket(first, packet.ServerMessage{Text: "welcome"}, start)
 	if !reflect.DeepEqual(out.Events, []Event{MessageReceived{Text: "welcome"}}) {
 		t.Fatalf("events = %+v", out.Events)
 	}
-	s.OnPacket(packet.ServerStatus{Users: 7, Files: 8}, start)
-	s.OnPacket(packet.ServerIdent{Name: "renamed"}, start)
+	s.OnPacket(first, packet.ServerStatus{Users: 7, Files: 8}, start)
+	s.OnPacket(first, packet.ServerIdent{Name: "renamed"}, start)
 	if c := s.current; c.Users != 7 || c.Files != 8 || c.Name != "renamed" {
 		t.Fatalf("entry = %+v", c.Entry)
 	}
@@ -271,7 +330,7 @@ func TestFoundSources(t *testing.T) {
 		{ClientID: 0, Port: 4662},
 	}}
 	s, _ := loggedIn(t, []Entry{{Endpoint: server}}, highID, 0, downloads(1))
-	out := s.OnPacket(found, start)
+	out := s.OnPacket(first, found, start)
 	want := SourcesFound{File: fileHash(0), Sources: []Source{
 		{Endpoint: ep("5.6.7.8:4662"), ClientID: found.Sources[0].ClientID, Server: server},
 		{ClientID: 77, IsLowID: true, Server: server},
@@ -282,20 +341,20 @@ func TestFoundSources(t *testing.T) {
 	}
 
 	obfu := packet.FoundSourcesObfu{Hash: fileHash(0), Sources: []packet.Source{{ClientID: 77, Port: 4662, CryptOptions: 0x80, UserHash: userHash}}}
-	if out := s.OnPacket(obfu, start); len(out.Events) != 1 || out.Events[0].(SourcesFound).Sources[0].UserHash != userHash ||
+	if out := s.OnPacket(first, obfu, start); len(out.Events) != 1 || out.Events[0].(SourcesFound).Sources[0].UserHash != userHash ||
 		out.Events[0].(SourcesFound).Sources[0].CanObfuscate {
 		t.Fatalf("obfuscated variant: %+v", out.Events)
 	}
 	obfu.Sources[0].CryptOptions = 0x81
-	if out := s.OnPacket(obfu, start); !out.Events[0].(SourcesFound).Sources[0].CanObfuscate {
+	if out := s.OnPacket(first, obfu, start); !out.Events[0].(SourcesFound).Sources[0].CanObfuscate {
 		t.Fatalf("supports bit lost: %+v", out.Events)
 	}
-	if out := s.OnPacket(packet.FoundSources{Hash: fileHash(5), Sources: found.Sources}, start); len(out.Events) != 0 {
+	if out := s.OnPacket(first, packet.FoundSources{Hash: fileHash(5), Sources: found.Sources}, start); len(out.Events) != 0 {
 		t.Fatal("sources for a file nobody wants")
 	}
 
 	s, _ = loggedIn(t, []Entry{{Endpoint: server}}, 1234, 0, downloads(1))
-	out = s.OnPacket(found, start)
+	out = s.OnPacket(first, found, start)
 	for _, src := range out.Events[0].(SourcesFound).Sources {
 		if src.IsLowID {
 			t.Fatal("LowID source kept while we are LowID")
@@ -321,15 +380,15 @@ func TestCallbacks(t *testing.T) {
 		t.Fatal("callback for a HighID source")
 	}
 
-	out = s.OnPacket(packet.CallbackRequested{Addr: ep("5.6.7.8:4662")}, start)
+	out = s.OnPacket(first, packet.CallbackRequested{Addr: ep("5.6.7.8:4662")}, start)
 	if !reflect.DeepEqual(out.ConnectPeers, []netip.AddrPort{ep("5.6.7.8:4662")}) {
 		t.Fatalf("connect peers = %v", out.ConnectPeers)
 	}
-	out = s.OnPacket(packet.CallbackRequestedIPv6{Addr: ep("[2001:db8::1]:4662")}, start)
+	out = s.OnPacket(first, packet.CallbackRequestedIPv6{Addr: ep("[2001:db8::1]:4662")}, start)
 	if len(out.ConnectPeers) != 1 {
 		t.Fatalf("IPv6 callback = %v", out.ConnectPeers)
 	}
-	if out := s.OnPacket(packet.CallbackFailed{}, start); !reflect.DeepEqual(out.Events, []Event{CallbackFailed{}}) {
+	if out := s.OnPacket(first, packet.CallbackFailed{}, start); !reflect.DeepEqual(out.Events, []Event{CallbackFailed{}}) {
 		t.Fatalf("events = %+v", out.Events)
 	}
 
