@@ -38,9 +38,13 @@ func (e *Engine) runServer(out server.Output) {
 	for _, d := range out.SendUDP {
 		e.sendDatagram(d.To, wire.BuildPacketDatagram(nil, d.Packet))
 	}
-	for _, addr := range out.ConnectPeers {
-		if e.connByEndpoint(addr) == nil && len(e.conns) < maxConnections {
-			e.openConn(addr, false, wire.Hash{})
+	for _, callback := range out.ConnectPeers {
+		if e.connByEndpoint(callback.Endpoint) == nil && len(e.conns) < maxConnections {
+			var obfuscateFor wire.Hash
+			if callback.CanObfuscate {
+				obfuscateFor = callback.UserHash
+			}
+			e.openConn(callback.Endpoint, false, obfuscateFor)
 		}
 	}
 	for _, event := range out.Events {

@@ -95,8 +95,17 @@ type Output struct {
 	To           netip.AddrPort
 	Send         []wire.Packet
 	SendUDP      []Datagram
-	ConnectPeers []netip.AddrPort
+	ConnectPeers []Callback
 	Events       []Event
+}
+
+// Callback is a peer that asked, through the server, for us to connect.
+// Obfuscation-aware servers pass on its crypt options and user hash, as
+// aMule's OP_CALLBACKREQUESTED handling (ServerSocket.cpp) uses them.
+type Callback struct {
+	Endpoint     netip.AddrPort
+	UserHash     wire.Hash
+	CanObfuscate bool
 }
 
 type Event interface{ isEvent() }
@@ -295,11 +304,15 @@ func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) Out
 		s.onFoundSources(p.Hash, p.Sources, &out)
 	case packet.CallbackRequested:
 		if p.Addr.IsValid() && p.Addr.Port() != 0 {
-			out.ConnectPeers = append(out.ConnectPeers, p.Addr)
+			out.ConnectPeers = append(out.ConnectPeers, Callback{
+				Endpoint:     p.Addr,
+				UserHash:     p.UserHash,
+				CanObfuscate: p.CryptOptions&cryptSupported != 0 && p.UserHash != wire.Hash{},
+			})
 		}
 	case packet.CallbackRequestedIPv6:
 		if p.Addr.IsValid() && p.Addr.Port() != 0 {
-			out.ConnectPeers = append(out.ConnectPeers, p.Addr)
+			out.ConnectPeers = append(out.ConnectPeers, Callback{Endpoint: p.Addr})
 		}
 	case packet.CallbackFailed:
 		out.Events = append(out.Events, CallbackFailed{})

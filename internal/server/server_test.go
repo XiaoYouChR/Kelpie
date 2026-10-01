@@ -381,8 +381,17 @@ func TestCallbacks(t *testing.T) {
 	}
 
 	out = s.OnPacket(first, packet.CallbackRequested{Addr: ep("5.6.7.8:4662")}, start)
-	if !reflect.DeepEqual(out.ConnectPeers, []netip.AddrPort{ep("5.6.7.8:4662")}) {
-		t.Fatalf("connect peers = %v", out.ConnectPeers)
+	if !reflect.DeepEqual(out.ConnectPeers, []Callback{{Endpoint: ep("5.6.7.8:4662")}}) {
+		t.Fatalf("connect peers = %+v", out.ConnectPeers)
+	}
+	user := wire.Hash{1, 2, 3}
+	out = s.OnPacket(first, packet.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x83, UserHash: user}, start)
+	if !reflect.DeepEqual(out.ConnectPeers, []Callback{{Endpoint: ep("5.6.7.8:4662"), UserHash: user, CanObfuscate: true}}) {
+		t.Fatalf("obfuscated callback = %+v", out.ConnectPeers)
+	}
+	out = s.OnPacket(first, packet.CallbackRequested{Addr: ep("5.6.7.8:4662"), CryptOptions: 0x80, UserHash: user}, start)
+	if len(out.ConnectPeers) != 1 || out.ConnectPeers[0].CanObfuscate {
+		t.Fatalf("callback without crypt support = %+v", out.ConnectPeers)
 	}
 	out = s.OnPacket(first, packet.CallbackRequestedIPv6{Addr: ep("[2001:db8::1]:4662")}, start)
 	if len(out.ConnectPeers) != 1 {
