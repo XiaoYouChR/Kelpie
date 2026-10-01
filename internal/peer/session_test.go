@@ -593,6 +593,55 @@ func TestEmptySlotIsCancelled(t *testing.T) {
 	lastOf[UploadCancelled](t, l.b)
 }
 
+// startOneBlock has a request one block of a fresh share of b and returns
+// the uploader's packets for it, undelivered.
+func startOneBlock(t *testing.T, l *link, isCompressible bool) (wire.Hash, []byte, []wire.Packet) {
+	t.Helper()
+	file, data := addShare(l.b, 1, piece.BlockSize, isCompressible)
+	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}))
+	l.run(l.a, l.a.s.Start(file))
+	l.run(l.b, l.b.s.StartUpload())
+	block := piece.Block{Begin: 0, End: piece.BlockSize}
+	l.run(l.a, l.a.s.Request(file, []piece.Block{block}))
+	return file, data, l.b.s.SendBlock(file, block, data).Send
+}
+
+func TestSlotEndHandsOverReceivedPrefix(t *testing.T) {
+	l := buildLink(t)
+	file, data, packets := startOneBlock(t, l, false)
+	l.run(l.b, Output{Send: []wire.Packet{packets[1], packets[0], packets[3]}})
+	l.run(l.b, l.b.s.StopUpload())
+	got := lastOf[BlockReceived](t, l.a)
+	want := piece.Block{Begin: 0, End: 2 * partPacketSize}
+	if got.File != file || got.Block != want || !bytes.Equal(got.Data, data[:want.End]) {
+		t.Fatalf("received %+v (%d bytes)", got.Block, len(got.Data))
+	}
+	if _, ok := l.a.events[len(l.a.events)-1].(SlotRevoked); !ok {
+		t.Fatal("slot revoked before the prefix was handed over")
+	}
+}
+
+func TestClosingHandsOverInflatedPrefix(t *testing.T) {
+	l := buildLink(t)
+	file, data, packets := startOneBlock(t, l, true)
+	if len(packets) < 2 {
+		t.Fatalf("block packed into %d packets", len(packets))
+	}
+	l.run(l.b, Output{Send: packets[:len(packets)/2]})
+	out := l.a.s.Stop()
+	if len(out.Events) != 1 {
+		t.Fatalf("events %+v", out.Events)
+	}
+	got := out.Events[0].(BlockReceived)
+	n := got.Block.End
+	if got.File != file || got.Block.Begin != 0 || n == 0 || n >= piece.BlockSize || !bytes.Equal(got.Data, data[:n]) {
+		t.Fatalf("received %+v (%d bytes)", got.Block, len(got.Data))
+	}
+	if again := l.a.s.Stop(); len(again.Events) != 0 {
+		t.Fatal("prefix handed over twice")
+	}
+}
+
 func TestSourceExchange(t *testing.T) {
 	l := buildLink(t)
 	file, _ := addShare(l.b, 1, piece.BlockSize, false)

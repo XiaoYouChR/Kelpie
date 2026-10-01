@@ -38,10 +38,13 @@ type download struct {
 }
 
 type inFlight struct {
-	block    piece.Block
-	data     []byte
-	received int64
-	packed   []byte
+	block piece.Block
+	data  []byte
+	// prefix counts the bytes received from the block's start without a gap;
+	// ranges holds what arrived beyond a gap.
+	prefix int64
+	ranges []piece.Block
+	packed []byte
 }
 
 // Add asks the peer about file, of which we have parts. Before the
@@ -66,7 +69,7 @@ func (s *Session) Remove(file wire.Hash) Output {
 	if s.down.isStarted && s.down.started == file && s.down.isSlotGranted {
 		out.send(client.CancelTransfer{})
 	}
-	s.removeFile(file)
+	s.removeFile(file, &out)
 	return out
 }
 
@@ -82,7 +85,7 @@ func (s *Session) Start(file wire.Hash) Output {
 			out.send(client.CancelTransfer{})
 			s.down.isSlotGranted = false
 		}
-		s.down.files[s.down.started].inFlight = nil
+		s.cancelInFlight(s.down.started, &out)
 		s.down.isStartSent = false
 	}
 	s.down.started, s.down.isStarted = file, true
@@ -147,7 +150,17 @@ func (s *Session) Request(file wire.Hash, blocks []piece.Block) Output {
 	return out
 }
 
-func (s *Session) removeFile(file wire.Hash) {
+// Stop gives up every block in flight on a closing connection.
+func (s *Session) Stop() Output {
+	var out Output
+	if s.down.isStarted {
+		s.cancelInFlight(s.down.started, &out)
+	}
+	return out
+}
+
+func (s *Session) removeFile(file wire.Hash, out *Output) {
+	s.cancelInFlight(file, out)
 	delete(s.down.files, file)
 	delete(s.sx.asked, file)
 	if s.down.isStarted && s.down.started == file {
@@ -168,7 +181,7 @@ func (s *Session) sendFileRequests(out *Output) {
 
 func (s *Session) sendFileRequest(file wire.Hash, d *download, out *Output) {
 	if d.size > largeFileSize && !s.caps.HasLargeFiles {
-		s.removeFile(file)
+		s.removeFile(file, out)
 		out.add(FileRejected{File: file})
 		return
 	}
@@ -252,7 +265,7 @@ func (s *Session) onNoFile(file wire.Hash, out *Output) {
 	if s.down.files[file] == nil {
 		return
 	}
-	s.removeFile(file)
+	s.removeFile(file, out)
 	out.add(FileRejected{File: file})
 }
 
@@ -322,7 +335,7 @@ func (s *Session) stopSlot(out *Output) {
 	var file wire.Hash
 	if s.down.isStarted {
 		file = s.down.started
-		s.down.files[file].inFlight = nil
+		s.cancelInFlight(file, out)
 	}
 	out.add(SlotRevoked{File: file})
 }
@@ -347,10 +360,53 @@ func (s *Session) onPart(file wire.Hash, start int64, data []byte, now time.Time
 		f.data = make([]byte, f.block.End-f.block.Begin)
 	}
 	copy(f.data[start-f.block.Begin:], data)
-	f.received += int64(len(data))
-	if f.received >= int64(len(f.data)) {
+	f.ranges = append(f.ranges, piece.Block{Begin: start, End: end})
+	f.updatePrefix()
+	if f.prefix == int64(len(f.data)) {
 		s.onBlockFilled(file, d, i, out)
 	}
+}
+
+func (f *inFlight) updatePrefix() {
+	for isGrown := true; isGrown; {
+		isGrown = false
+		end := f.block.Begin + f.prefix
+		for _, r := range f.ranges {
+			if r.Begin <= end && end < r.End {
+				end, isGrown = r.End, true
+			}
+		}
+		f.prefix = end - f.block.Begin
+	}
+	f.ranges = slices.DeleteFunc(f.ranges, func(r piece.Block) bool { return r.End <= f.block.Begin+f.prefix })
+}
+
+// cancelInFlight gives up file's block requests and hands over what arrived
+// of each block from its start: aMule writes every packet as it comes and
+// later asks only for the gaps (DownloadClient.cpp:835-848), and inflates a
+// compressed block as its packets arrive.
+func (s *Session) cancelInFlight(file wire.Hash, out *Output) {
+	d := s.down.files[file]
+	if d == nil {
+		return
+	}
+	for _, f := range d.inFlight {
+		if data := toReceived(f); len(data) > 0 {
+			out.add(BlockReceived{File: file, Block: piece.Block{Begin: f.block.Begin, End: f.block.Begin + int64(len(data))}, Data: data})
+		}
+	}
+	d.inFlight = nil
+}
+
+// toReceived is the block's data received without a gap from its start; for
+// a compressed block, what its zlib stream so far inflates to.
+func toReceived(f *inFlight) []byte {
+	if f.packed == nil {
+		return f.data[:f.prefix]
+	}
+	size := f.block.End - f.block.Begin
+	plain, _ := toInflated(f.packed, size)
+	return plain[:min(int64(len(plain)), size)]
 }
 
 // onCompressedPart collects one block's zlib stream, which the uploader

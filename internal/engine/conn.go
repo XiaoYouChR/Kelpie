@@ -345,6 +345,11 @@ func (e *Engine) closeConn(c *conn, reason string) {
 		return
 	}
 	e.queue.OnConnectionGone(c.id)
+	if c.session != nil && c.isHandshaken {
+		for _, event := range c.session.Stop().Events {
+			e.onPeerEvent(c, event)
+		}
+	}
 	for _, h := range c.files {
 		r := e.runByHash[h]
 		if r == nil || r.transfer == nil {
