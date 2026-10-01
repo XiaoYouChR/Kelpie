@@ -47,22 +47,23 @@ type uploadState struct {
 	// carries no hash.
 	file wire.Hash
 	// parts holds, per file, what the peer's file request said it has.
-	parts       map[wire.Hash]piece.Set
-	isUploading bool
-	sizes       map[wire.Hash]int64
-	// blocks holds the blocks requested and not yet sent (false) and the
-	// last ones sent (true, oldest first in sent), so a peer re-listing
-	// blocks still in flight gets each only once.
-	blocks map[uploadBlock]bool
-	sent   []uploadBlock
+	parts map[wire.Hash]piece.Set
+	// slot is nil while the peer holds no upload slot.
+	slot *uploadSlot
+}
+
+// uploadSlot remembers the blocks requested and not yet sent, with the size
+// of their file, and the last ones sent, oldest first, so a peer re-listing
+// blocks still in flight gets each only once.
+type uploadSlot struct {
+	pending map[uploadBlock]int64
+	sent    []uploadBlock
 }
 
 // StartUpload gives the peer an upload slot.
 func (s *Session) StartUpload() Output {
 	var out Output
-	s.up.isUploading = true
-	clear(s.up.blocks)
-	s.up.sent = nil
+	s.up.slot = &uploadSlot{pending: map[uploadBlock]int64{}}
 	out.send(client.AcceptUploadRequest{})
 	return out
 }
@@ -70,10 +71,8 @@ func (s *Session) StartUpload() Output {
 // StopUpload ends the peer's upload slot.
 func (s *Session) StopUpload() Output {
 	var out Output
-	if s.up.isUploading {
-		s.up.isUploading = false
-		clear(s.up.blocks)
-		s.up.sent = nil
+	if s.up.slot != nil {
+		s.up.slot = nil
 		out.send(client.OutOfParts{})
 	}
 	return out
@@ -94,16 +93,20 @@ func (s *Session) SendQueueRank(rank uint32) Output {
 // supports it and compression makes it smaller.
 func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Output {
 	var out Output
-	key := uploadBlock{file, block}
-	if isSent, ok := s.up.blocks[key]; !s.up.isUploading || !ok || isSent {
+	slot := s.up.slot
+	if slot == nil {
 		return out
 	}
-	s.up.blocks[key] = true
-	if s.up.sent = append(s.up.sent, key); len(s.up.sent) > maxUploadBlocks {
-		delete(s.up.blocks, s.up.sent[0])
-		s.up.sent = s.up.sent[1:]
+	key := uploadBlock{file, block}
+	size, ok := slot.pending[key]
+	if !ok {
+		return out
 	}
-	isLarge := s.up.sizes[file] > largeFileSize
+	delete(slot.pending, key)
+	if slot.sent = append(slot.sent, key); len(slot.sent) > maxUploadBlocks {
+		slot.sent = slot.sent[1:]
+	}
+	isLarge := size > largeFileSize
 	if s.features.canCompress {
 		if packed := toDeflated(data); len(packed) < len(data) {
 			for chunk := range slices.Chunk(packed, partPacketSize) {
@@ -279,18 +282,19 @@ func (s *Session) onUploadRequest(file wire.Hash, out *Output) {
 
 func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, out *Output) {
 	share, ok := s.cfg.ShareByHash(file)
-	if !s.up.isUploading || !ok {
+	slot := s.up.slot
+	if slot == nil || !ok {
 		return
 	}
-	s.up.sizes[file] = share.Size
 	var fresh []piece.Block
 	for _, b := range blocks {
 		key := uploadBlock{file, b}
-		isFull := len(s.up.blocks)-len(s.up.sent) >= maxUploadBlocks
-		if _, seen := s.up.blocks[key]; seen || isFull || b.End > share.Size || b.End-b.Begin > maxRequestSize {
+		_, isPending := slot.pending[key]
+		isFull := len(slot.pending) >= maxUploadBlocks
+		if isPending || isFull || slices.Contains(slot.sent, key) || b.End > share.Size || b.End-b.Begin > maxRequestSize {
 			continue
 		}
-		s.up.blocks[key] = false
+		slot.pending[key] = share.Size
 		fresh = append(fresh, b)
 	}
 	if len(fresh) > 0 {
@@ -299,9 +303,7 @@ func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, out *Outp
 }
 
 func (s *Session) onUploadCancelled(out *Output) {
-	s.up.isUploading = false
-	clear(s.up.blocks)
-	s.up.sent = nil
+	s.up.slot = nil
 	out.add(UploadCancelled{})
 }
 

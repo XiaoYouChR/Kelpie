@@ -47,7 +47,7 @@ type sourceState struct {
 // SOURCECLIENTREASKS; otherwise it does nothing.
 func (s *Session) RequestSources(file wire.Hash, now time.Time) Output {
 	var out Output
-	if !s.isHandshaken || !s.caps.HasSourceExchange2 || s.down.files[file] == nil ||
+	if s.greeting != handshaken || !s.caps.HasSourceExchange2 || s.down.files[file] == nil ||
 		!s.sx.lastRequest.IsZero() && now.Sub(s.sx.lastRequest) < sourceInterval {
 		return out
 	}

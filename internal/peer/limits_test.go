@@ -76,7 +76,7 @@ func TestRequestedBlocksAreCapped(t *testing.T) {
 	if got := len(requested()); got != 2*maxUploadBlocks {
 		t.Fatalf("%d blocks requested after sending, want %d", got, 2*maxUploadBlocks)
 	}
-	if got := len(l.b.s.up.blocks); got > 2*maxUploadBlocks {
+	if got := len(l.b.s.up.slot.pending) + len(l.b.s.up.slot.sent); got > 2*maxUploadBlocks {
 		t.Fatalf("%d blocks remembered, want at most %d", got, 2*maxUploadBlocks)
 	}
 }

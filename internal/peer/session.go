@@ -95,15 +95,14 @@ type features struct {
 }
 
 type Session struct {
-	cfg          Config
-	remote       netip.AddrPort
-	isOutgoing   bool
-	isHandshaken bool
-	userHash     wire.Hash
-	caps         Capabilities
-	features     features
-	lastActive   time.Time
-	timeout      time.Duration
+	cfg        Config
+	remote     netip.AddrPort
+	greeting   greeting
+	userHash   wire.Hash
+	caps       Capabilities
+	features   features
+	lastActive time.Time
+	timeout    time.Duration
 	// earlyEmuleInfo is an OP_EMULEINFO that came before the peer's Hello.
 	earlyEmuleInfo *client.EmuleInfo
 	recovery       *recoveryRequest
@@ -118,7 +117,7 @@ type Session struct {
 // returned Output carries our Hello.
 func BuildOutgoing(cfg Config, remote netip.AddrPort, now time.Time) (*Session, Output) {
 	s := buildSession(cfg, remote, now)
-	s.isOutgoing = true
+	s.greeting = awaitingHelloAnswer
 	var out Output
 	out.send(client.Hello(s.buildHello()))
 	return s, out
@@ -137,7 +136,7 @@ func buildSession(cfg Config, remote netip.AddrPort, now time.Time) *Session {
 		lastActive: now,
 		timeout:    connectionTimeout,
 		down:       downloadState{files: map[wire.Hash]*download{}},
-		up:         uploadState{parts: map[wire.Hash]piece.Set{}, sizes: map[wire.Hash]int64{}, blocks: map[uploadBlock]bool{}},
+		up:         uploadState{parts: map[wire.Hash]piece.Set{}},
 		sx:         sourceState{asked: map[wire.Hash]bool{}},
 	}
 }
@@ -146,13 +145,13 @@ func (s *Session) Capabilities() Capabilities { return s.caps }
 func (s *Session) UserHash() wire.Hash        { return s.userHash }
 
 // IsUploading tells whether the peer holds an upload slot with us.
-func (s *Session) IsUploading() bool { return s.up.isUploading }
+func (s *Session) IsUploading() bool { return s.up.slot != nil }
 
 // OnPacket reacts to one packet from the peer.
 func (s *Session) OnPacket(p wire.Packet, now time.Time) Output {
 	s.lastActive = now
 	var out Output
-	if !s.isHandshaken {
+	if s.greeting != handshaken {
 		s.onGreeting(p, &out)
 		return out
 	}
@@ -265,7 +264,7 @@ func (s *Session) OnTick(now time.Time) Output {
 		out.Close = closeTimeout
 		return out
 	}
-	if s.down.isSlotGranted && s.hasBlocksInFlight() && now.Sub(s.down.lastData) > downloadTimeout {
+	if s.down.slot == slotGranted && s.hasBlocksInFlight() && now.Sub(s.down.lastData) > downloadTimeout {
 		out.send(client.CancelTransfer{})
 		s.stopSlot(&out)
 	}

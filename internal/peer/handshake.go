@@ -60,6 +60,17 @@ func (s *Session) buildHello() client.Hello {
 	}
 }
 
+// greeting is how far the exchange of Hellos got.
+type greeting byte
+
+const (
+	// awaitingHello: the peer opened the connection and owes us its Hello.
+	awaitingHello greeting = iota
+	// awaitingHelloAnswer: we opened it and sent our Hello.
+	awaitingHelloAnswer
+	handshaken
+)
+
 func (s *Session) onGreeting(p wire.Packet, out *Output) {
 	var hello client.Hello
 	switch p := p.(type) {
@@ -69,14 +80,14 @@ func (s *Session) onGreeting(p wire.Packet, out *Output) {
 		s.earlyEmuleInfo = &p
 		return
 	case client.Hello:
-		if s.isOutgoing {
+		if s.greeting != awaitingHello {
 			out.Close = closeProtocol
 			return
 		}
 		hello = p
 		out.send(client.HelloAnswer(s.buildHello()))
 	case client.HelloAnswer:
-		if !s.isOutgoing {
+		if s.greeting != awaitingHelloAnswer {
 			out.Close = closeProtocol
 			return
 		}
@@ -90,7 +101,7 @@ func (s *Session) onGreeting(p wire.Packet, out *Output) {
 		s.setEmuleInfo(*s.earlyEmuleInfo)
 		s.earlyEmuleInfo = nil
 	}
-	s.isHandshaken = true
+	s.greeting = handshaken
 	out.add(HandshakeCompleted{UserHash: s.userHash, YourIP: hello.YourIP})
 	s.sendIdentState(out)
 	s.sendFileRequests(out)
@@ -200,11 +211,15 @@ func (s *Session) setEmuleInfo(p client.EmuleInfo) {
 // identState runs Secure User Identification in both directions: we prove
 // ourselves to the peer, and the peer proves itself to us.
 type identState struct {
-	challenge          uint32
-	peerKey            []byte
-	isSignaturePending bool
-	pendingChallenge   uint32
-	pendingKind        identity.IPKind
+	challenge uint32
+	peerKey   []byte
+	// pending is the peer's challenge we can sign only once its key arrives.
+	pending *pendingSignature
+}
+
+type pendingSignature struct {
+	challenge uint32
+	kind      identity.IPKind
 }
 
 // sendIdentState always asks for the key too: the engine compares the key
@@ -228,9 +243,7 @@ func (s *Session) onIdentState(p client.SecureIdentState, out *Output) {
 	case reply.ShouldSendSignature:
 		s.sendSignature(p.Challenge, reply.IPKind, out)
 	case reply.IsSignaturePending:
-		s.ident.isSignaturePending = true
-		s.ident.pendingChallenge = p.Challenge
-		s.ident.pendingKind = reply.IPKind
+		s.ident.pending = &pendingSignature{p.Challenge, reply.IPKind}
 	}
 }
 
@@ -245,9 +258,9 @@ func (s *Session) onPublicKey(p client.PublicKey, out *Output) {
 		return
 	}
 	s.ident.peerKey = bytes.Clone(p.Key)
-	if s.ident.isSignaturePending {
-		s.ident.isSignaturePending = false
-		s.sendSignature(s.ident.pendingChallenge, s.ident.pendingKind, out)
+	if pending := s.ident.pending; pending != nil {
+		s.ident.pending = nil
+		s.sendSignature(pending.challenge, pending.kind, out)
 	}
 }
 
