@@ -9,26 +9,6 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
 
-// buildIdentLink is buildLink with both sides advertising file identifiers.
-func buildIdentLink(t *testing.T) *link {
-	t.Helper()
-	l := &link{t: t, now: start}
-	l.tamper = func(p wire.Packet) wire.Packet {
-		switch h := p.(type) {
-		case client.Hello:
-			h.Misc2.HasFileIdentifiers = true
-			return h
-		case client.HelloAnswer:
-			h.Misc2.HasFileIdentifiers = true
-			return h
-		}
-		return p
-	}
-	l.open(buildConfig(t, 1), buildConfig(t, 2))
-	l.tamper = nil
-	return l
-}
-
 func sentOf[T wire.Packet](t *testing.T, l *link) T {
 	t.Helper()
 	for _, p := range l.sent {
@@ -42,7 +22,10 @@ func sentOf[T wire.Packet](t *testing.T, l *link) T {
 }
 
 func TestFileRequestUsesFileIdentifier(t *testing.T) {
-	l := buildIdentLink(t)
+	l := buildLink(t)
+	if !l.a.s.Capabilities().HasFileIdentifiers || !l.b.s.Capabilities().HasFileIdentifiers {
+		t.Fatal("file identifiers not advertised")
+	}
 	size := piece.PartSize + 1000
 	file, tree := addTreeShare(l.b, size)
 	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false}))
@@ -72,7 +55,7 @@ func TestFileRequestUsesFileIdentifier(t *testing.T) {
 }
 
 func TestSourceRequestUsesFileIdentifier(t *testing.T) {
-	l := buildIdentLink(t)
+	l := buildLink(t)
 	file, _ := addShare(l.b, 1, piece.BlockSize, false)
 	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}))
 	l.sent = nil
@@ -86,7 +69,7 @@ func TestSourceRequestUsesFileIdentifier(t *testing.T) {
 }
 
 func TestMismatchedIdentifierIsNoFile(t *testing.T) {
-	l := buildIdentLink(t)
+	l := buildLink(t)
 	size := piece.PartSize + 1000
 	file, _ := addTreeShare(l.b, size)
 	for _, id := range []client.FileIdentifier{
@@ -102,7 +85,7 @@ func TestMismatchedIdentifierIsNoFile(t *testing.T) {
 }
 
 func TestIdentifierWithoutSizeOrRootMatches(t *testing.T) {
-	l := buildIdentLink(t)
+	l := buildLink(t)
 	size := piece.PartSize + 1000
 	file, _ := addTreeShare(l.b, size)
 	l.run(l.a, Output{Send: []wire.Packet{client.MultiPacketExt2{
@@ -116,7 +99,7 @@ func TestIdentifierWithoutSizeOrRootMatches(t *testing.T) {
 }
 
 func TestIdentifierAnswerWithWrongSizeCloses(t *testing.T) {
-	l := buildIdentLink(t)
+	l := buildLink(t)
 	size := piece.PartSize + 1000
 	file, _ := addShare(l.b, 1, size, false)
 	l.tamper = func(p wire.Packet) wire.Packet {
@@ -133,7 +116,7 @@ func TestIdentifierAnswerWithWrongSizeCloses(t *testing.T) {
 }
 
 func TestIdentifierRequestWantsMissingTree(t *testing.T) {
-	l := buildIdentLink(t)
+	l := buildLink(t)
 	size := 3 * piece.BlockSize
 	file, _ := addShare(l.b, 1, size, false)
 	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
@@ -146,7 +129,7 @@ func TestIdentifierRequestWantsMissingTree(t *testing.T) {
 }
 
 func TestHashSetRequest2(t *testing.T) {
-	l := buildIdentLink(t)
+	l := buildLink(t)
 	size := piece.PartSize + 1
 	file, _ := addShare(l.b, 1, size, false)
 	l.run(l.a, Output{Send: []wire.Packet{client.HashSetRequest2{File: client.FileIdentifier{Hash: file, Size: uint64(size)}, IsMD4Wanted: true, IsAICHWanted: true}}})

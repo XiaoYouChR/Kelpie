@@ -53,6 +53,7 @@ func (s *Session) buildHello() client.Hello {
 			KadVersion:         s.cfg.KadVersion,
 			HasLargeFiles:      true,
 			HasExtMultiPacket:  true,
+			HasFileIdentifiers: true,
 			HasSourceExchange2: true,
 			CanCrypt:           true,
 			IsCryptRequested:   true,
