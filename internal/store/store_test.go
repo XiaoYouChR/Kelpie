@@ -118,6 +118,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		PartHashes:    []wire.Hash{mustHash(t, "0A1B2C3D4E5F60718293A4B5C6D7E8F9"), mustHash(t, "1F2E3D4C5B6A79880716253443526170"), mustHash(t, "AABBCCDDEEFF00112233445566778899")},
 		VerifiedParts: []bool{true, false, true},
 		WrittenBlocks: []Block{{Part: 1, Index: 7}},
+		PartialBlocks: []PartialBlock{{Part: 1, Index: 8, Size: 1000}},
 		Uploaded:      123456,
 		Created:       lastSeen,
 	}

@@ -59,19 +59,26 @@ type creditFile struct {
 }
 
 type transferFile struct {
-	Hash          hashText    `json:"hash"`
-	Size          int64       `json:"size"`
-	File          string      `json:"file"`
-	PartHashes    []hashText  `json:"partHashes"`
-	VerifiedParts []bool      `json:"verifiedParts"`
-	WrittenBlocks []blockFile `json:"writtenBlocks"`
-	Uploaded      uint64      `json:"uploaded"`
-	Created       time.Time   `json:"created"`
+	Hash          hashText           `json:"hash"`
+	Size          int64              `json:"size"`
+	File          string             `json:"file"`
+	PartHashes    []hashText         `json:"partHashes"`
+	VerifiedParts []bool             `json:"verifiedParts"`
+	WrittenBlocks []blockFile        `json:"writtenBlocks"`
+	PartialBlocks []partialBlockFile `json:"partialBlocks"`
+	Uploaded      uint64             `json:"uploaded"`
+	Created       time.Time          `json:"created"`
 }
 
 type blockFile struct {
 	Part  int `json:"part"`
 	Index int `json:"index"`
+}
+
+type partialBlockFile struct {
+	Part  int   `json:"part"`
+	Index int   `json:"index"`
+	Size  int64 `json:"size"`
 }
 
 // hashText is a wire.Hash written as uppercase hex, with "" for the zero hash
@@ -129,6 +136,7 @@ func toFile(state State) stateFile {
 			PartHashes:    []hashText{},
 			VerifiedParts: transfer.VerifiedParts,
 			WrittenBlocks: []blockFile{},
+			PartialBlocks: []partialBlockFile{},
 			Uploaded:      transfer.Uploaded,
 			Created:       transfer.Created,
 		}
@@ -137,6 +145,9 @@ func toFile(state State) stateFile {
 		}
 		for _, block := range transfer.WrittenBlocks {
 			entry.WrittenBlocks = append(entry.WrittenBlocks, blockFile(block))
+		}
+		for _, block := range transfer.PartialBlocks {
+			entry.PartialBlocks = append(entry.PartialBlocks, partialBlockFile(block))
 		}
 		file.Transfers = append(file.Transfers, entry)
 	}
@@ -176,6 +187,9 @@ func parse(raw []byte) (State, error) {
 		}
 		for _, block := range entry.WrittenBlocks {
 			transfer.WrittenBlocks = append(transfer.WrittenBlocks, Block(block))
+		}
+		for _, block := range entry.PartialBlocks {
+			transfer.PartialBlocks = append(transfer.PartialBlocks, PartialBlock(block))
 		}
 		state.Transfers[wire.Hash(entry.Hash)] = transfer
 	}

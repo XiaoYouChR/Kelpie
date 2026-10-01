@@ -715,3 +715,28 @@ func TestSlotEndKeepsPartOfBlock(t *testing.T) {
 		t.Fatalf("status %v, disk matches %v", got, string(h.disk) == string(data))
 	}
 }
+
+// The written head of a block cut off by a slot end survives a restart, as
+// aMule's .part.met gap list keeps it.
+func TestResumeKeepsPartOfBlock(t *testing.T) {
+	data := buildData(piece.BlockSize + 1000)
+	file := buildFile(data)
+	h := buildHarness(t, data, transfer.Options{File: file})
+	h.connect(1, 1, piece.Set{true})
+	block := h.transfer.Request(1, 1)[0]
+	head := piece.Block{Begin: block.Begin, End: block.Begin + 400}
+	h.run(h.transfer.OnBlockReceived(1, head, data[head.Begin:head.End], h.now))
+
+	state := h.transfer.ToState()
+	if len(state.WrittenBlocks) != 0 || !slices.Equal(state.PartialBlocks, []store.PartialBlock{{Part: 0, Index: 0, Size: 400}}) {
+		t.Fatalf("state = written %v, partial %v", state.WrittenBlocks, state.PartialBlocks)
+	}
+	resumed := buildHarness(t, data, transfer.Options{File: file, State: &state})
+	if got := resumed.transfer.Progress(start).Received; got != 400 {
+		t.Fatalf("resumed received = %d, want 400", got)
+	}
+	resumed.connect(1, 1, piece.Set{true})
+	if got := resumed.transfer.Request(1, 3); len(got) == 0 || got[0] != (piece.Block{Begin: head.End, End: block.End}) {
+		t.Fatalf("resumed transfer asked for %v, want the tail after the head first", got)
+	}
+}

@@ -76,6 +76,7 @@ type Transfer struct {
 	PartHashes    []wire.Hash
 	VerifiedParts []bool
 	WrittenBlocks []Block
+	PartialBlocks []PartialBlock
 	Uploaded      uint64
 	Created       time.Time
 }
@@ -84,6 +85,14 @@ type Transfer struct {
 type Block struct {
 	Part  int
 	Index int
+}
+
+// PartialBlock is the first Size bytes of a block, written before the slot
+// delivering it ended, as aMule's .part.met gap list keeps them.
+type PartialBlock struct {
+	Part  int
+	Index int
+	Size  int64
 }
 
 func buildState() State {

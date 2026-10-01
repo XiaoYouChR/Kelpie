@@ -22,9 +22,9 @@ func (b Block) index() int {
 	return int(b.Begin % PartSize / BlockSize)
 }
 
-// ResumeData is the part of a Picker that survives a restart. Blocks not
-// completely written are lost and requested again: a partly received block
-// keeps its bytes only while running.
+// ResumeData is the part of a Picker that survives a restart, as aMule's
+// .part.met keeps its gap list. A WrittenBlocks entry is a whole block or,
+// for a block cut off when a slot ended, its leading piece [Begin, Begin+n).
 type ResumeData struct {
 	VerifiedParts []int
 	WrittenBlocks []Block
@@ -76,8 +76,9 @@ func BuildPicker[P comparable](size int64, resume ResumeData, random *rand.Rand)
 		p.parts[part].isVerified = true
 	}
 	for _, block := range resume.WrittenBlocks {
-		if block.Begin < 0 || block.Begin >= size || block != p.BlockAt(block.Begin) {
-			return nil, fmt.Errorf("resume data: block [%d, %d) is not a block of this file", block.Begin, block.End)
+		if block.Begin < 0 || block.Begin >= size || p.BlockAt(block.Begin).Begin != block.Begin ||
+			block.End <= block.Begin || block.End > p.BlockAt(block.Begin).End {
+			return nil, fmt.Errorf("resume data: [%d, %d) is not the start of a block of this file", block.Begin, block.End)
 		}
 		if !p.parts[block.Part()].isVerified {
 			state := p.blockState(block)
@@ -94,9 +95,12 @@ func (p *Picker[P]) ToResumeData() ResumeData {
 		if part.isVerified {
 			resume.VerifiedParts = append(resume.VerifiedParts, i)
 		}
+		// Disk workers may finish writes out of order, so a block's
+		// received prefix is on disk only once every write of it is done.
 		for j, state := range part.blocks {
-			if block := p.blockOf(i, j); state.written == block.End-block.Begin {
-				resume.WrittenBlocks = append(resume.WrittenBlocks, block)
+			if state.written > 0 && state.written == state.received {
+				block := p.blockOf(i, j)
+				resume.WrittenBlocks = append(resume.WrittenBlocks, Block{Begin: block.Begin, End: block.Begin + state.written})
 			}
 		}
 	}
