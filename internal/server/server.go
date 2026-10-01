@@ -389,10 +389,6 @@ func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) Out
 		out.Events = append(out.Events, MessageReceived{Text: p.Text})
 	case packet.ServerStatus:
 		sender.Users, sender.Files = p.Users, p.Files
-	case packet.ServerIdent:
-		if p.Name != "" {
-			sender.Name, sender.Description = p.Name, p.Description
-		}
 	}
 	if sender != s.current {
 		return out

@@ -245,8 +245,7 @@ func TestServerMessagesAndStatus(t *testing.T) {
 		t.Fatalf("events = %+v", out.Events)
 	}
 	s.OnPacket(first, packet.ServerStatus{Users: 7, Files: 8}, start)
-	s.OnPacket(first, packet.ServerIdent{Name: "renamed"}, start)
-	if c := s.current; c.Users != 7 || c.Files != 8 || c.Name != "renamed" {
+	if c := s.current; c.Users != 7 || c.Files != 8 {
 		t.Fatalf("entry = %+v", c.Entry)
 	}
 }

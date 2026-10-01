@@ -271,7 +271,7 @@ func TestMetLoadsInServerList(t *testing.T) {
 		t.Fatalf("got %d entries", len(entries))
 	}
 	for i, e := range entries {
-		if e.Endpoint != servers[i].Addr() || e.UDPFlags&packet.UDPFlagGetSources2 == 0 || e.Name == "" {
+		if e.Endpoint != servers[i].Addr() || e.UDPFlags&packet.UDPFlagGetSources2 == 0 {
 			t.Errorf("entry %d = %+v", i, e)
 		}
 	}
