@@ -304,7 +304,7 @@ func matchTrace(lines []map[string]any, event, source string) bool {
 }
 
 func runTwoEngineDownload(t *testing.T, w *world, size int) {
-	a, b := w.addNode("10.0.0.1"), w.addNode("10.0.0.2")
+	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
 	a.start()
 	b.start()
 	f := buildTestFile("one.bin", size, 1)
@@ -342,7 +342,7 @@ func TestChannelsOfOne(t *testing.T) {
 
 func TestDownloadWithKadOwningUDP(t *testing.T) {
 	w := buildWorld(t)
-	a, b := w.addNode("10.0.0.1"), w.addNode("10.0.0.2")
+	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
 	a.config.EnableKad, b.config.EnableKad = true, true
 	a.start()
 	b.start()
@@ -355,7 +355,7 @@ func TestDownloadWithKadOwningUDP(t *testing.T) {
 
 func TestTransferBusy(t *testing.T) {
 	w := buildWorld(t)
-	b := w.addNode("10.0.0.2")
+	b := w.addNode("198.51.100.2")
 	b.start()
 	f := buildTestFile("busy.bin", 1000, 3)
 	b.download(1, f)
@@ -373,7 +373,7 @@ func TestTransferBusy(t *testing.T) {
 
 func TestAdmissionErrors(t *testing.T) {
 	w := buildWorld(t)
-	b := w.addNode("10.0.0.2")
+	b := w.addNode("198.51.100.2")
 	b.start()
 	f := buildTestFile("taken.bin", 1000, 4)
 
@@ -414,7 +414,7 @@ func TestAdmissionErrors(t *testing.T) {
 
 func TestDiskFull(t *testing.T) {
 	w := buildWorld(t)
-	a, b := w.addNode("10.0.0.1"), w.addNode("10.0.0.2")
+	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
 	a.start()
 	b.start()
 	f := buildTestFile("full.bin", 600_000, 5)
@@ -428,8 +428,8 @@ func TestDiskFull(t *testing.T) {
 
 func TestDownloadFromTwoSeedersViaServer(t *testing.T) {
 	w := buildWorld(t)
-	srv := w.startFakeServer("10.0.0.100")
-	a1, a2, b := w.addNode("10.0.0.1"), w.addNode("10.0.0.3"), w.addNode("10.0.0.2")
+	srv := w.startFakeServer("198.51.100.100")
+	a1, a2, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.3"), w.addNode("198.51.100.2")
 	for _, n := range []*node{a1, a2, b} {
 		n.setServer(srv)
 		n.start()
@@ -459,7 +459,7 @@ func TestDownloadFromTwoSeedersViaServer(t *testing.T) {
 
 func TestCorruptSeederIsBanned(t *testing.T) {
 	w := buildWorld(t)
-	bad, good, b := w.addNode("10.0.0.1"), w.addNode("10.0.0.3"), w.addNode("10.0.0.2")
+	bad, good, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.3"), w.addNode("198.51.100.2")
 	bad.start()
 	good.start()
 	b.start()
@@ -513,7 +513,7 @@ func hasBan(lines []map[string]any, source string) bool {
 
 func TestStopAndResumeAcrossRestart(t *testing.T) {
 	w := buildWorld(t)
-	a, b := w.addNode("10.0.0.1"), w.addNode("10.0.0.2")
+	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
 	a.start()
 	b.config.RateLimits = RateLimitsCommand{Download: 1 << 20}
 	b.start()
@@ -547,7 +547,7 @@ func TestStopAndResumeAcrossRestart(t *testing.T) {
 func TestRateLimitCapsDownload(t *testing.T) {
 	const limit = 200_000
 	w := buildWorld(t)
-	a, b := w.addNode("10.0.0.1"), w.addNode("10.0.0.2")
+	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
 	a.start()
 	b.start()
 	f := buildTestFile("slow.bin", 1_500_000, 9)
@@ -569,7 +569,7 @@ func TestRateLimitCapsDownload(t *testing.T) {
 
 func TestGoed2kStateResumes(t *testing.T) {
 	w := buildWorld(t)
-	b := w.addNode("10.0.0.2")
+	b := w.addNode("198.51.100.2")
 	fixture, err := os.ReadFile("../store/testdata/goed2k-v3.json")
 	if err != nil {
 		t.Fatal(err)
@@ -617,7 +617,7 @@ func TestGoed2kStateResumes(t *testing.T) {
 
 func TestCloseEndsOpenRuns(t *testing.T) {
 	w := buildWorld(t)
-	b := w.addNode("10.0.0.2")
+	b := w.addNode("198.51.100.2")
 	b.start()
 	f := buildTestFile("open.bin", 1000, 10)
 	b.download(1, f)
@@ -633,7 +633,7 @@ func TestCloseEndsOpenRuns(t *testing.T) {
 
 func TestStartFailsOnCorruptState(t *testing.T) {
 	w := buildWorld(t)
-	b := w.addNode("10.0.0.2")
+	b := w.addNode("198.51.100.2")
 	if err := os.WriteFile(filepath.Join(b.folder, "state.json"), []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}

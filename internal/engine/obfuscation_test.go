@@ -35,7 +35,7 @@ func (b *lockedBuffer) String() string {
 // link, which carries no user hash, so that connection stays plain.
 func TestExchangedSourceIsObfuscated(t *testing.T) {
 	w := buildWorld(t)
-	a, b, c := w.addNode("10.0.0.1"), w.addNode("10.0.0.2"), w.addNode("10.0.0.3")
+	a, b, c := w.addNode("198.51.100.1"), w.addNode("198.51.100.2"), w.addNode("198.51.100.3")
 	a.config.RateLimits.Upload = 500_000
 	log := &lockedBuffer{}
 	b.config.PacketLog = log

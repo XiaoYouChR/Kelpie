@@ -115,6 +115,10 @@ type Tick struct {
 	// IsFirewalled is true when peers cannot connect to us (LowID).
 	IsFirewalled bool
 	IsKadRunning bool
+	// PublicIP is our address as the server or peers see it; invalid while
+	// unknown. Port is our TCP listen port.
+	PublicIP netip.Addr
+	Port     uint16
 }
 
 type source struct {
@@ -184,15 +188,36 @@ func (t *Transfer) isBanned(found Source) bool {
 		found.Endpoint.IsValid() && t.bannedEndpoints[found.Endpoint]
 }
 
-func isUsable(found Source) bool {
+func (t *Transfer) isUsable(found Source) bool {
 	switch {
 	case found.Buddy.IsValid():
-		return found.UserHash != (wire.Hash{})
+		return found.UserHash != (wire.Hash{}) && isPublic(found.Buddy.Addr())
 	case found.ClientID != 0:
 		return wire.IsLowID(found.ClientID) && found.Server.IsValid()
 	default:
-		return found.Endpoint.IsValid() && found.Endpoint.Port() != 0
+		return found.Endpoint.IsValid() && found.Endpoint.Port() != 0 && isPublic(found.Endpoint.Addr()) && !t.isSelf(found.Endpoint)
 	}
+}
+
+// isPublic follows aMule's IsGoodIP with FilterLanIPs on
+// (NetworkFunctions.cpp:99-151): no "this network" 0/8, loopback, link-local,
+// multicast, 240/4 (which holds 255.255.255.255) or private LAN address.
+// aMule's other reserved ranges are left out: several, like 39/8, have since
+// been allocated.
+func isPublic(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if addr.Is4() && (addr.As4()[0] == 0 || addr.As4()[0] >= 240) {
+		return false
+	}
+	return addr.IsGlobalUnicast() && !addr.IsPrivate()
+}
+
+// isSelf follows aMule CPartFile::CanAddSource (PartFile.cpp:1745-1766):
+// while LowID any source at our public IP is ourselves seen through our NAT;
+// while HighID it is us only on our own port.
+func (t *Transfer) isSelf(endpoint netip.AddrPort) bool {
+	return endpoint.Addr().Unmap() == t.tick.PublicIP.Unmap() &&
+		(t.tick.IsFirewalled || endpoint.Port() == t.tick.Port)
 }
 
 // OnSourcesFound adds sources from one channel, skipping duplicates, banned
@@ -211,7 +236,7 @@ func (t *Transfer) OnSourcesFound(found []Source, channel Channel, now time.Time
 func (t *Transfer) addSource(found Source, channel Channel, now time.Time) []Action {
 	// A LowID source can only be reached by a callback, which a firewalled
 	// client cannot get (aMule CPartFile::CanAddSource, PartFile.cpp:1769).
-	if !isUsable(found) || t.isBanned(found) || found.ClientID != 0 && t.tick.IsFirewalled {
+	if !t.isUsable(found) || t.isBanned(found) || found.ClientID != 0 && t.tick.IsFirewalled {
 		return nil
 	}
 	if s := t.matchingSource(found); s != nil {

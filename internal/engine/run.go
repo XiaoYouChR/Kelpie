@@ -265,6 +265,8 @@ func (e *Engine) runTransfers(now time.Time) {
 			Server:        e.serverAddr,
 			IsFirewalled:  e.isFirewalled(),
 			IsKadRunning:  e.kad != nil,
+			PublicIP:      e.publicIP,
+			Port:          uint16(e.tcpPort),
 		})
 		for _, action := range actions {
 			switch action.(type) {

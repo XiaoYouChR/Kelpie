@@ -37,7 +37,7 @@ func buildFile(data []byte, sources ...netip.AddrPort) link.File {
 }
 
 func endpoint(i int) netip.AddrPort {
-	return netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, byte(i >> 8), byte(i)}), 4662)
+	return netip.AddrPortFrom(netip.AddrFrom4([4]byte{198, 51, byte(i >> 8), byte(i)}), 4662)
 }
 
 func userHash(i int) wire.Hash {
@@ -625,5 +625,48 @@ func TestEndedSlotIsReaskedAfterReaskTime(t *testing.T) {
 	}
 	if got := at(fileReaskTime); countActions[transfer.Connect](got) != 1 {
 		t.Fatalf("no Connect at the reask interval: %+v", got)
+	}
+}
+
+func TestBadSourceAddressesAreDropped(t *testing.T) {
+	data := buildData(1000)
+	self := netip.MustParseAddr("203.0.113.7")
+	bad := []string{
+		"10.1.2.3:4662", "172.16.0.1:4662", "192.168.1.2:4662", "[fd00::1]:4662",
+		"127.0.0.1:4662", "[::1]:4662", "169.254.1.1:4662", "[fe80::1]:4662",
+		"224.0.0.1:4662", "[ff02::1]:4662", "0.0.0.0:4662", "[::]:4662",
+		"0.1.2.3:4662", "255.1.2.3:4662", "255.255.255.255:4662", "[::ffff:192.168.1.2]:4662",
+		"203.0.113.7:4662",
+	}
+	channels := []transfer.Channel{transfer.ChannelServer, transfer.ChannelGlobalServer, transfer.ChannelKad, transfer.ChannelExchange}
+	for _, channel := range channels {
+		h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+		h.tick(transfer.Tick{PublicIP: self, Port: 4662})
+		var found []transfer.Source
+		for _, endpoint := range bad {
+			found = append(found, transfer.Source{Endpoint: netip.MustParseAddrPort(endpoint)})
+		}
+		found = append(found,
+			transfer.Source{Buddy: netip.MustParseAddrPort("192.168.1.9:4672"), BuddyID: userHash(1), UserHash: userHash(1)},
+			transfer.Source{Endpoint: netip.MustParseAddrPort("203.0.113.7:4663")},
+			transfer.Source{Endpoint: netip.MustParseAddrPort("[2001:db8::1]:4662")},
+		)
+		got := traces(h.transfer.OnSourcesFound(found, channel, start), transfer.EventFound)
+		if len(got) != 2 || got[0].Source != "203.0.113.7:4663" || got[1].Source != "[2001:db8::1]:4662" {
+			t.Fatalf("%s: found %+v, want only another client behind our IP and the public IPv6 source", channel, got)
+		}
+	}
+
+	link := buildFile(data, netip.MustParseAddrPort("192.168.1.2:4662"), endpoint(1))
+	h := buildHarness(t, data, transfer.Options{File: link})
+	if got := countActions[transfer.Connect](h.tick(transfer.Tick{ConnectBudget: 5})); got != 1 {
+		t.Fatalf("Connect for link sources = %d, want 1", got)
+	}
+
+	firewalled := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	firewalled.tick(transfer.Tick{PublicIP: self, Port: 4662, IsFirewalled: true})
+	found := []transfer.Source{{Endpoint: netip.MustParseAddrPort("203.0.113.7:5000")}}
+	if got := traces(firewalled.transfer.OnSourcesFound(found, transfer.ChannelServer, start), transfer.EventFound); len(got) != 0 {
+		t.Fatalf("our public IP while firewalled: found %+v", got)
 	}
 }
