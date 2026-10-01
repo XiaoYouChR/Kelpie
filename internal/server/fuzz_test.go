@@ -74,7 +74,7 @@ func FuzzOnPacket(f *testing.F) {
 	f.Fuzz(func(t *testing.T, script []byte) {
 		s := BuildServer(config, entries)
 		now := start
-		s.OnTick(now, wanted)
+		s.OnTick(now, wanted, noIP)
 		s.OnConnected(first)
 		for len(script) >= 3 {
 			via := script[0]
@@ -89,10 +89,10 @@ func FuzzOnPacket(f *testing.F) {
 					s.OnPacket(first, p, now)
 				}
 			} else if p, err := serverwire.ParseUDP(raw[0], raw[1], raw[2:]); err == nil {
-				s.OnUDPPacket(netip.AddrPortFrom(entries[int(via/2)%len(entries)].Endpoint.Addr(), 4665), p, now)
+				s.OnPacket(netip.AddrPortFrom(entries[int(via/2)%len(entries)].Endpoint.Addr(), 4665), p, now)
 			}
 			now = now.Add(time.Duration(via) * time.Second)
-			s.OnTick(now, wanted)
+			s.OnTick(now, wanted, noIP)
 		}
 	})
 }

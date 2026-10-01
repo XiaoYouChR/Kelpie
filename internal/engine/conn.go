@@ -419,11 +419,7 @@ func (e *Engine) closeConn(c *conn, reason string) {
 		if c.remote == e.serverAddr {
 			e.serverAddr = netip.AddrPort{}
 		}
-		if c.net == nil {
-			e.runServer(e.server.OnConnectFailed(c.remote, now))
-		} else {
-			e.runServer(e.server.OnDisconnected(c.remote, now))
-		}
+		e.runServer(e.server.OnDisconnected(c.remote, now))
 		return
 	}
 	e.queue.OnConnectionGone(c.id)
@@ -600,7 +596,7 @@ func (e *Engine) requestTree(file wire.Hash) {
 func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	c.isHandshaken = true
 	caps := c.session.Capabilities()
-	if ev.YourIP.Is4() && !e.server.IsHighID() {
+	if ev.YourIP.Is4() && wire.IsLowID(e.server.ClientID()) {
 		e.publicIP = ev.YourIP
 	}
 	if caps.Port != 0 {

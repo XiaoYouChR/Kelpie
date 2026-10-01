@@ -33,54 +33,48 @@ type hostResolved struct {
 	addr netip.Addr
 }
 
-// runServer performs the server's Output in its documented order.
-func (e *Engine) runServer(out server.Output) {
-	for _, addr := range out.Close {
-		if c := e.serverConnByEndpoint(addr); c != nil {
-			e.closeConn(c, "server closed")
-		}
-	}
-	for _, d := range out.Connect {
-		e.openConn(d.Server, true, wire.Hash{}, d.ObfuscationPort)
-	}
-	if c := e.serverConnByEndpoint(out.To); c != nil {
-		for _, p := range out.Send {
-			e.sendPacket(c, p, wire.Hash{}, 0)
-		}
-	}
-	for _, d := range out.SendUDP {
-		data := wire.BuildPacketDatagram(nil, d.Packet)
-		if d.Key != 0 {
-			data = obfuscation.BuildServerDatagram(data, d.Key, e.ports.Rand.Uint32())
-		}
-		e.sendDatagram(d.To, data)
-	}
-	for _, callback := range out.ConnectPeers {
-		if e.connByEndpoint(callback.Endpoint) == nil && len(e.conns) < maxConnections {
-			canObfuscate := callback.CanObfuscate && !e.hasOtherUser(callback.Endpoint, callback.UserHash)
-			e.openPeerConn(callback.Endpoint, callback.UserHash, canObfuscate)
-		}
-	}
-	for _, host := range out.Resolve {
-		e.startLeaf(func() { e.runLookup(host) })
-	}
-	for _, event := range out.Events {
-		switch ev := event.(type) {
+// runServer performs the server's actions in order.
+func (e *Engine) runServer(actions []server.Action) {
+	for _, action := range actions {
+		switch a := action.(type) {
+		case server.Close:
+			if c := e.serverConnByEndpoint(a.Server); c != nil {
+				e.closeConn(c, "server closed")
+			}
+		case server.Dial:
+			e.openConn(a.Server, true, wire.Hash{}, a.ObfuscationPort)
+		case server.Send:
+			if c := e.serverConnByEndpoint(a.To); c != nil {
+				e.sendPacket(c, a.Packet, wire.Hash{}, 0)
+			}
+		case server.Datagram:
+			data := wire.BuildPacketDatagram(nil, a.Packet)
+			if a.Key != 0 {
+				data = obfuscation.BuildServerDatagram(data, a.Key, e.ports.Rand.Uint32())
+			}
+			e.sendDatagram(a.To, data)
+		case server.Callback:
+			if e.connByEndpoint(a.Endpoint) == nil && len(e.conns) < maxConnections {
+				canObfuscate := a.CanObfuscate && !e.hasOtherUser(a.Endpoint, a.UserHash)
+				e.openPeerConn(a.Endpoint, a.UserHash, canObfuscate)
+			}
+		case server.Resolve:
+			e.startLeaf(func() { e.runLookup(a.Host) })
 		case server.SourcesFound:
 			channel := transfer.ChannelServer
-			if ev.IsGlobal {
+			if a.IsGlobal {
 				channel = transfer.ChannelGlobalServer
 			}
-			if r := e.downloadByHash(ev.File); r != nil {
-				e.addSources(r, toServerSources(ev.Sources), channel)
+			if r := e.downloadByHash(a.File); r != nil {
+				e.addSources(r, toServerSources(a.Sources), channel)
 			}
 		case server.IDChanged:
-			e.serverAddr = ev.Server
-			if !wire.IsLowID(ev.ClientID) {
-				e.publicIP = wire.ToAddr(ev.ClientID)
+			e.serverAddr = a.Server
+			if !wire.IsLowID(a.ClientID) {
+				e.publicIP = wire.ToAddr(a.ClientID)
 			}
 		case server.MessageReceived:
-			log.Printf("engine: server message: %s", ev.Text)
+			log.Printf("engine: server message: %s", a.Text)
 		}
 	}
 }
@@ -185,10 +179,7 @@ func toServerSources(found []server.Source) []transfer.Source {
 }
 
 func (e *Engine) requestServerCallback(clientID uint32) {
-	out, ok := e.server.RequestCallback(server.Source{ClientID: clientID, IsLowID: true, Server: e.serverAddr}, e.now())
-	if ok {
-		e.runServer(out)
-	}
+	e.runServer(e.server.RequestCallback(clientID, e.now()))
 }
 
 func toKadCallback(a transfer.RequestKadCallback, file wire.Hash) kad.Callback {
@@ -280,7 +271,7 @@ func (e *Engine) onDatagram(from netip.AddrPort, data []byte) {
 	switch frame.Protocol {
 	case wire.ProtocolEDonkey:
 		if p, err := serverwire.ParseUDP(frame.Protocol, frame.Opcode, frame.Body); err == nil {
-			e.runServer(e.server.OnUDPPacket(from, p, now))
+			e.runServer(e.server.OnPacket(from, p, now))
 		}
 	case wire.ProtocolEMule:
 		p, err := client.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)

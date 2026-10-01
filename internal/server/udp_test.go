@@ -13,9 +13,9 @@ import (
 
 const getSources2 = serverwire.UDPFlagGetSources | serverwire.UDPFlagGetSources2
 
-func searches(out Output) []Datagram {
+func searches(out kinds) []Datagram {
 	var got []Datagram
-	for _, d := range out.SendUDP {
+	for _, d := range out.Datagram {
 		if _, ok := d.Packet.(serverwire.GlobGetSources2); ok {
 			got = append(got, d)
 		}
@@ -23,9 +23,9 @@ func searches(out Output) []Datagram {
 	return got
 }
 
-func pings(out Output) []Datagram {
+func pings(out kinds) []Datagram {
 	var got []Datagram
-	for _, d := range out.SendUDP {
+	for _, d := range out.Datagram {
 		if _, ok := d.Packet.(serverwire.GlobServStatReq); ok {
 			got = append(got, d)
 		}
@@ -52,7 +52,7 @@ func TestUDPSearchBatchingAndRotation(t *testing.T) {
 	var log []sentTo
 	now := start
 	for range 3600 {
-		for _, d := range searches(s.OnTick(now, wanted)) {
+		for _, d := range searches(byKind(s.OnTick(now, wanted, noIP))) {
 			log = append(log, sentTo{now, d.To, d.Packet.(serverwire.GlobGetSources2).Files})
 		}
 		now = now.Add(time.Second)
@@ -119,10 +119,10 @@ func TestUDPSearchAsksLateServerAtOnce(t *testing.T) {
 	var asked []netip.AddrPort
 	now := start
 	for range 60 {
-		out := s.OnTick(now, wanted)
+		out := byKind(s.OnTick(now, wanted, noIP))
 		for _, d := range pings(out) {
 			if d.To == ep("1.0.0.3:4665") {
-				s.OnUDPPacket(d.To, serverwire.GlobServStatRes{Challenge: d.Packet.(serverwire.GlobServStatReq).Challenge, UDPFlags: getSources2}, now)
+				byKind(s.OnPacket(d.To, serverwire.GlobServStatRes{Challenge: d.Packet.(serverwire.GlobServStatReq).Challenge, UDPFlags: getSources2}, now))
 			}
 		}
 		for _, d := range searches(out) {
@@ -145,7 +145,7 @@ func TestUDPSearchSkipsLargeFilesWithoutSupport(t *testing.T) {
 	s, _ := loggedIn(t, entries, highID, 0, wanted)
 	got := map[netip.AddrPort]int{}
 	for now := start; now.Before(start.Add(10 * time.Second)); now = now.Add(time.Second) {
-		for _, d := range searches(s.OnTick(now, wanted)) {
+		for _, d := range searches(byKind(s.OnTick(now, wanted, noIP))) {
 			got[d.To] = len(d.Packet.(serverwire.GlobGetSources2).Files)
 		}
 	}
@@ -163,7 +163,7 @@ func TestUDPSearchSkipsFilesWithEnoughSources(t *testing.T) {
 	s, _ := loggedIn(t, entries, highID, 0, wanted)
 	var asked []wire.Hash
 	for now := start; now.Before(start.Add(10 * time.Second)); now = now.Add(time.Second) {
-		for _, d := range searches(s.OnTick(now, wanted)) {
+		for _, d := range searches(byKind(s.OnTick(now, wanted, noIP))) {
 			for _, f := range d.Packet.(serverwire.GlobGetSources2).Files {
 				asked = append(asked, f.Hash)
 			}
@@ -178,7 +178,7 @@ func TestUDPSearchNeedsServerConnection(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}, {Endpoint: ep("1.0.0.2:4661"), UDPFlags: getSources2}}
 	s := BuildServer(config, entries)
 	for now := start; now.Before(start.Add(time.Minute)); now = now.Add(time.Second) {
-		if out := s.OnTick(now, downloads(3)); len(out.SendUDP) > 0 {
+		if out := byKind(s.OnTick(now, downloads(3), noIP)); len(out.Datagram) > 0 {
 			t.Fatal("UDP traffic without a server connection")
 		}
 	}
@@ -197,7 +197,7 @@ func TestStatusPings(t *testing.T) {
 	var reqs []Datagram
 	now := start
 	for range 60 {
-		for _, d := range pings(s.OnTick(now, wanted)) {
+		for _, d := range pings(byKind(s.OnTick(now, wanted, noIP))) {
 			at, reqs = append(at, now), append(reqs, d)
 		}
 		now = now.Add(time.Second)
@@ -217,17 +217,17 @@ func TestStatusPings(t *testing.T) {
 	if reqs[1].To != ep("1.0.0.2:4665") {
 		t.Fatalf("second ping to %v", reqs[1].To)
 	}
-	s.OnUDPPacket(ep("1.0.0.2:4665"), serverwire.GlobServStatRes{Challenge: challenge + 1, UDPFlags: getSources2}, now)
+	byKind(s.OnPacket(ep("1.0.0.2:4665"), serverwire.GlobServStatRes{Challenge: challenge + 1, UDPFlags: getSources2}, now))
 	if s.servers[1].UDPFlags != 0 {
 		t.Fatal("accepted a wrong challenge")
 	}
-	s.OnUDPPacket(ep("1.0.0.2:4665"), serverwire.GlobServStatRes{Challenge: challenge, Users: 42, UDPFlags: getSources2}, now)
+	byKind(s.OnPacket(ep("1.0.0.2:4665"), serverwire.GlobServStatRes{Challenge: challenge, Users: 42, UDPFlags: getSources2}, now))
 	if l := s.servers[1]; l.Users != 42 || l.Failures != 0 || l.UDPFlags != getSources2 {
 		t.Fatalf("server after answer = %+v", l.Entry)
 	}
 	var searched []netip.AddrPort
 	for range 5 {
-		for _, d := range searches(s.OnTick(now, wanted)) {
+		for _, d := range searches(byKind(s.OnTick(now, wanted, noIP))) {
 			searched = append(searched, d.To)
 		}
 		now = now.Add(time.Second)
@@ -237,11 +237,11 @@ func TestStatusPings(t *testing.T) {
 	}
 
 	// After UDPSERVSTATREASKTIME the silent server is dead and no longer pinged.
-	s.OnUDPPacket(ep("1.0.0.1:4665"), serverwire.GlobServStatRes{Challenge: reqs[0].Packet.(serverwire.GlobServStatReq).Challenge}, now)
+	byKind(s.OnPacket(ep("1.0.0.1:4665"), serverwire.GlobServStatRes{Challenge: reqs[0].Packet.(serverwire.GlobServStatReq).Challenge}, now))
 	now = start.Add(udpStatReaskTime + time.Minute)
 	var later []netip.AddrPort
 	for range 120 {
-		for _, d := range pings(s.OnTick(now, wanted)) {
+		for _, d := range pings(byKind(s.OnTick(now, wanted, noIP))) {
 			later = append(later, d.To)
 		}
 		now = now.Add(time.Second)
@@ -260,14 +260,14 @@ func TestGlobFoundSources(t *testing.T) {
 		{Hash: fileHash(9), Sources: []serverwire.Source{{ClientID: high, Port: 4662}}},
 		{Hash: fileHash(1), Sources: []serverwire.Source{{ClientID: 78, Port: 4662}}},
 	}}
-	out := s.OnUDPPacket(ep("1.0.0.2:4665"), res, start)
-	want := []Event{SourcesFound{File: fileHash(0), IsGlobal: true, Sources: []Source{
+	out := byKind(s.OnPacket(ep("1.0.0.2:4665"), res, start))
+	want := []Action{SourcesFound{File: fileHash(0), IsGlobal: true, Sources: []Source{
 		{Endpoint: ep("5.6.7.8:4662"), ClientID: high, Server: ep("1.0.0.2:4661")},
 	}}}
 	if !reflect.DeepEqual(out.Events, want) {
 		t.Fatalf("events = %+v", out.Events)
 	}
-	if out := s.OnUDPPacket(ep("9.9.9.9:4665"), res, start); len(out.Events) != 0 {
+	if out := byKind(s.OnPacket(ep("9.9.9.9:4665"), res, start)); len(out.Events) != 0 {
 		t.Fatal("accepted sources from an unknown sender")
 	}
 }
@@ -284,7 +284,7 @@ func TestUDPSearchVersionOne(t *testing.T) {
 	var counts []int
 	asked := map[wire.Hash]bool{}
 	for now := start; now.Before(start.Add(10 * time.Second)); now = now.Add(time.Second) {
-		for _, d := range s.OnTick(now, wanted).SendUDP {
+		for _, d := range byKind(s.OnTick(now, wanted, noIP)).Datagram {
 			if g, ok := d.Packet.(serverwire.GlobGetSources); ok && d.To == ep("1.0.0.2:4665") {
 				counts = append(counts, len(g.Files))
 				for _, h := range g.Files {
@@ -301,12 +301,13 @@ func TestUDPSearchVersionOne(t *testing.T) {
 	}
 }
 
-// sentTo collects what n ticks a second apart send to the server at ip.
-func sentTo(s *Server, ip string, from time.Time, n int) ([]Datagram, time.Time) {
+// sentTo collects what n ticks a second apart, with our public IP publicIP,
+// send to the server at ip.
+func sentTo(s *Server, ip string, publicIP netip.Addr, from time.Time, n int) ([]Datagram, time.Time) {
 	var got []Datagram
 	now := from
 	for range n {
-		for _, d := range s.OnTick(now, downloads(1)).SendUDP {
+		for _, d := range byKind(s.OnTick(now, downloads(1), publicIP)).Datagram {
 			if d.To.Addr() == netip.MustParseAddr(ip) {
 				got = append(got, d)
 			}
@@ -325,9 +326,9 @@ func TestObfuscatedStatusPing(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}, {Endpoint: ep("1.0.0.2:4661")}}
 	s, _ := loggedIn(t, entries, highID, 0, downloads(1))
 	s.config.Random = rand.New(rand.NewPCG(1, 2))
-	s.SetPublicIP(wire.ToAddr(highID))
+	publicIP := wire.ToAddr(highID)
 
-	sent, now := sentTo(s, "1.0.0.2", start, 10)
+	sent, now := sentTo(s, "1.0.0.2", publicIP, start, 10)
 	if len(sent) != 1 || sent[0].To != ep("1.0.0.2:4673") || sent[0].Key != 0 {
 		t.Fatalf("sent %+v, want one ping to port + 12", sent)
 	}
@@ -339,7 +340,7 @@ func TestObfuscatedStatusPing(t *testing.T) {
 		t.Fatalf("key for the answer %#x, want the challenge %#x", key, ping.Challenge)
 	}
 	flags := getSources2 | serverwire.UDPFlagUDPObfuscation
-	s.OnUDPPacket(ep("1.0.0.2:4673"), serverwire.GlobServStatRes{Challenge: ping.Challenge, UDPFlags: flags, UDPObfuscationPort: 4670, UDPKey: 0xBEEF}, now)
+	byKind(s.OnPacket(ep("1.0.0.2:4673"), serverwire.GlobServStatRes{Challenge: ping.Challenge, UDPFlags: flags, UDPObfuscationPort: 4670, UDPKey: 0xBEEF}, now))
 	if l := s.servers[1]; l.UDPFlags != flags || l.Failures != 0 || l.isCryptPinging {
 		t.Fatalf("server after answer %+v", l.Entry)
 	}
@@ -349,19 +350,19 @@ func TestObfuscatedStatusPing(t *testing.T) {
 		}
 	}
 
-	sent, now = sentTo(s, "1.0.0.2", now, 3)
+	sent, now = sentTo(s, "1.0.0.2", publicIP, now, 3)
 	if len(sent) != 1 || sent[0].To != ep("1.0.0.2:4670") || sent[0].Key != 0xBEEF {
 		t.Fatalf("source request %+v, want it obfuscated", sent)
 	}
 
-	s.SetPublicIP(netip.MustParseAddr("9.8.7.5"))
+	movedIP := netip.MustParseAddr("9.8.7.5")
+	if sent, _ = sentTo(s, "1.0.0.2", movedIP, start.Add(udpStatMinReaskTime-time.Minute), 55); len(sent) != 0 {
+		t.Fatalf("sent %+v before 20 min", sent)
+	}
 	if key := s.UDPKeyByAddr(ep("1.0.0.2:4670")); key != 0 {
 		t.Fatalf("key %#x for another public IP", key)
 	}
-	if sent, _ = sentTo(s, "1.0.0.2", start.Add(udpStatMinReaskTime-time.Minute), 55); len(sent) != 0 {
-		t.Fatalf("sent %+v before 20 min", sent)
-	}
-	if sent, _ = sentTo(s, "1.0.0.2", start.Add(udpStatMinReaskTime), 15); len(sent) != 1 || sent[0].To != ep("1.0.0.2:4673") {
+	if sent, _ = sentTo(s, "1.0.0.2", movedIP, start.Add(udpStatMinReaskTime), 15); len(sent) != 1 || sent[0].To != ep("1.0.0.2:4673") {
 		t.Fatalf("sent %+v 20 min after the ping, want a new ping", sent)
 	}
 }
@@ -372,9 +373,8 @@ func TestObfuscatedPingFallsBackToPlain(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}, {Endpoint: ep("1.0.0.2:4661")}}
 	s, _ := loggedIn(t, entries, highID, 0, downloads(1))
 	s.config.Random = rand.New(rand.NewPCG(1, 2))
-	s.SetPublicIP(wire.ToAddr(highID))
 
-	sent, now := sentTo(s, "1.0.0.2", start, 60)
+	sent, now := sentTo(s, "1.0.0.2", wire.ToAddr(highID), start, 60)
 	if len(sent) != 2 || sent[0].To != ep("1.0.0.2:4673") || sent[1].To != ep("1.0.0.2:4665") || sent[1].Key != 0 {
 		t.Fatalf("sent %+v, want an obfuscated ping, then a plain one", sent)
 	}
@@ -382,7 +382,7 @@ func TestObfuscatedPingFallsBackToPlain(t *testing.T) {
 	if !ok || s.servers[1].Failures != 1 || s.UDPKeyByAddr(ep("1.0.0.2:4665")) != 0 {
 		t.Fatalf("plain ping %+v, failures %d", sent[1].Packet, s.servers[1].Failures)
 	}
-	s.OnUDPPacket(ep("1.0.0.2:4665"), serverwire.GlobServStatRes{Challenge: req.Challenge, UDPFlags: getSources2}, now)
+	byKind(s.OnPacket(ep("1.0.0.2:4665"), serverwire.GlobServStatRes{Challenge: req.Challenge, UDPFlags: getSources2}, now))
 	if l := s.servers[1]; l.UDPFlags != getSources2 || l.Failures != 0 {
 		t.Fatalf("server after answer %+v", l.Entry)
 	}

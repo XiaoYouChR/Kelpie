@@ -86,6 +86,27 @@ type Source struct {
 	CanObfuscate bool
 }
 
+// Action is something the engine must do, or learn, in slice order. A
+// server connection is named by the server's endpoint, even when dialled
+// on its obfuscation port; reports about a closed one are ignored.
+type Action interface{ isAction() }
+
+// Close closes the connection to Server.
+type Close struct{ Server netip.AddrPort }
+
+// Dial opens a connection to Server. A non-zero ObfuscationPort means
+// dialling that port and obfuscating the connection.
+type Dial struct {
+	Server          netip.AddrPort
+	ObfuscationPort uint16
+}
+
+// Send sends Packet on the connection to To.
+type Send struct {
+	To     netip.AddrPort
+	Packet wire.Packet
+}
+
 // Datagram is one UDP packet for a server's UDP port. A non-zero Key
 // means obfuscating it with that server UDP key; To is then the server's
 // UDP obfuscation port.
@@ -93,30 +114,6 @@ type Datagram struct {
 	To     netip.AddrPort
 	Packet wire.Packet
 	Key    uint32
-}
-
-// Output is what the engine must do, in field order: close server
-// connections, open new ones, send to the server at To, connect to peers
-// that asked for a callback, and resolve host names, each answered with
-// OnResolved. A server connection is named by the server's
-// endpoint, even when dialled on its obfuscation port; reports about a
-// closed one are ignored.
-type Output struct {
-	Close        []netip.AddrPort
-	Connect      []Dial
-	To           netip.AddrPort
-	Send         []wire.Packet
-	SendUDP      []Datagram
-	ConnectPeers []Callback
-	Resolve      []string
-	Events       []Event
-}
-
-// Dial is a server connection to open. A non-zero ObfuscationPort means
-// dialling that port and obfuscating the connection.
-type Dial struct {
-	Server          netip.AddrPort
-	ObfuscationPort uint16
 }
 
 // Callback is a peer that asked, through the server, for us to connect.
@@ -128,7 +125,8 @@ type Callback struct {
 	CanObfuscate bool
 }
 
-type Event interface{ isEvent() }
+// Resolve looks Host up; the answer goes to OnResolved.
+type Resolve struct{ Host string }
 
 // SourcesFound comes from the connected server, or from another server
 // over UDP when IsGlobal.
@@ -146,14 +144,15 @@ type IDChanged struct {
 
 type MessageReceived struct{ Text string }
 
-// CallbackFailed says the server could not reach the LowID peer of the
-// last RequestCallback.
-type CallbackFailed struct{}
-
-func (SourcesFound) isEvent()    {}
-func (IDChanged) isEvent()       {}
-func (MessageReceived) isEvent() {}
-func (CallbackFailed) isEvent()  {}
+func (Close) isAction()           {}
+func (Dial) isAction()            {}
+func (Send) isAction()            {}
+func (Datagram) isAction()        {}
+func (Callback) isAction()        {}
+func (Resolve) isAction()         {}
+func (SourcesFound) isAction()    {}
+func (IDChanged) isAction()       {}
+func (MessageReceived) isAction() {}
 
 // listed is an Entry with what this process learned about it.
 type listed struct {
@@ -254,28 +253,23 @@ func (s *Server) Entries() []Entry {
 	return entries
 }
 
-func (s *Server) IsConnected() bool { return s.current != nil }
-
-// SetPublicIP tells our public IPv4 address, invalid while unknown. Server
-// UDP keys belong to it.
-func (s *Server) SetPublicIP(ip netip.Addr) { s.publicIP = ip }
-
-func (s *Server) IsHighID() bool { return s.IsConnected() && !wire.IsLowID(s.clientID) }
-
 // ClientID is the id the connected server gave us; 0 while not logged in.
 func (s *Server) ClientID() uint32 {
-	if !s.IsConnected() {
+	if s.current == nil {
 		return 0
 	}
 	return s.clientID
 }
 
-func (s *Server) OnTick(now time.Time, wanted []Wanted) Output {
+// OnTick takes the files the engine shares or downloads and our public
+// IPv4 address, invalid while unknown; server UDP keys belong to it.
+func (s *Server) OnTick(now time.Time, wanted []Wanted, publicIP netip.Addr) []Action {
 	s.wanted = wanted
-	var out Output
+	s.publicIP = publicIP
+	var out []Action
 	for _, a := range slices.Clone(s.attempts) {
 		if now.Sub(a.since) > connectTimeout {
-			out.Close = append(out.Close, a.server.Endpoint)
+			out = append(out, Close{a.server.Endpoint})
 			s.setFailed(a.server.Endpoint)
 		}
 	}
@@ -289,9 +283,9 @@ func (s *Server) OnTick(now time.Time, wanted []Wanted) Output {
 	return out
 }
 
-func (s *Server) OnConnected(server netip.AddrPort) Output {
+func (s *Server) OnConnected(server netip.AddrPort) []Action {
 	if s.attemptIndex(server) < 0 {
-		return Output{}
+		return nil
 	}
 	login := serverwire.Login{
 		UserHash:     s.config.UserHash,
@@ -301,23 +295,14 @@ func (s *Server) OnConnected(server netip.AddrPort) Output {
 		Flags:        loginFlags,
 		EmuleVersion: wire.ToEmuleVersion(s.config.Version),
 	}
-	return Output{To: server, Send: []wire.Packet{login}}
+	return []Action{Send{server, login}}
 }
 
-func (s *Server) OnConnectFailed(server netip.AddrPort, now time.Time) Output {
-	if s.attemptIndex(server) < 0 {
-		return Output{}
-	}
-	s.setFailed(server)
-	var out Output
-	s.runConnect(now, &out)
-	return out
-}
-
-// OnDisconnected handles the end of a server connection at any stage.
-// Losing a server before login counts against it; losing it afterwards
-// moves on to the next server, as eMule's reconnect does.
-func (s *Server) OnDisconnected(server netip.AddrPort, now time.Time) Output {
+// OnDisconnected handles the end of a server connection at any stage, a
+// failed dial included. Losing a server before login counts against it;
+// losing it afterwards moves on to the next server, as eMule's reconnect
+// does.
+func (s *Server) OnDisconnected(server netip.AddrPort, now time.Time) []Action {
 	switch {
 	case s.current != nil && s.current.Endpoint == server:
 		s.tried[s.current] = true
@@ -325,9 +310,9 @@ func (s *Server) OnDisconnected(server netip.AddrPort, now time.Time) Output {
 	case s.attemptIndex(server) >= 0:
 		s.setFailed(server)
 	default:
-		return Output{}
+		return nil
 	}
-	var out Output
+	var out []Action
 	s.runConnect(now, &out)
 	return out
 }
@@ -335,7 +320,7 @@ func (s *Server) OnDisconnected(server netip.AddrPort, now time.Time) Output {
 // OnResolved takes the address host resolved to; an invalid addr means
 // the lookup failed, and the old address, if any, stays. A server in use
 // keeps its address until the next lookup.
-func (s *Server) OnResolved(host string, addr netip.Addr, now time.Time) Output {
+func (s *Server) OnResolved(host string, addr netip.Addr, now time.Time) []Action {
 	for _, l := range s.servers {
 		if l.Host != host || !l.isResolving {
 			continue
@@ -348,7 +333,7 @@ func (s *Server) OnResolved(host string, addr netip.Addr, now time.Time) Output 
 			l.Endpoint = endpoint
 		}
 	}
-	var out Output
+	var out []Action
 	s.runConnect(now, &out)
 	return out
 }
@@ -357,15 +342,15 @@ func (s *Server) OnResolved(host string, addr netip.Addr, now time.Time) Output 
 // before UDP packets (ServerUDPSocket.cpp:420-450); aMule also looks one up
 // before each connection, which Kelpie folds into the same cycle: a server
 // is not connected while its lookup is out.
-func (s *Server) runResolve(now time.Time, out *Output) {
+func (s *Server) runResolve(now time.Time, out *[]Action) {
 	for _, l := range s.servers {
 		isFresh := !l.resolvedAt.IsZero() && now.Sub(l.resolvedAt) < dnsSolveTime
 		if l.Host == "" || l.isResolving || isFresh || l == s.current {
 			continue
 		}
 		l.isResolving = true
-		if !slices.Contains(out.Resolve, l.Host) {
-			out.Resolve = append(out.Resolve, l.Host)
+		if !slices.Contains(*out, Action(Resolve{l.Host})) {
+			*out = append(*out, Resolve{l.Host})
 		}
 	}
 }
@@ -379,10 +364,15 @@ func (s *Server) serverByEndpoint(endpoint netip.AddrPort) *listed {
 	return nil
 }
 
-// OnPacket takes a packet from the server at from, logged in or still
-// logging in.
-func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) Output {
-	var out Output
+// OnPacket takes a packet from a server: over TCP from the server at from,
+// logged in or still logging in, or over UDP from any listed server's UDP
+// endpoint.
+func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) []Action {
+	switch p.(type) {
+	case serverwire.GlobServStatRes, serverwire.GlobFoundSources:
+		return s.onDatagram(from, p, now)
+	}
+	var out []Action
 	sender := s.current
 	if i := s.attemptIndex(from); i >= 0 {
 		sender = s.attempts[i].server
@@ -394,7 +384,7 @@ func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) Out
 	case serverwire.IDChange:
 		s.onIDChange(sender, p, now, &out)
 	case serverwire.ServerMessage:
-		out.Events = append(out.Events, MessageReceived{Text: p.Text})
+		out = append(out, MessageReceived{Text: p.Text})
 	case serverwire.ServerStatus:
 		sender.Users, sender.Files = p.Users, p.Files
 	}
@@ -408,7 +398,7 @@ func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) Out
 		s.addSources(p.Hash, p.Sources, sender.Endpoint, false, &out)
 	case serverwire.CallbackRequested:
 		if p.Addr.IsValid() && p.Addr.Port() != 0 {
-			out.ConnectPeers = append(out.ConnectPeers, Callback{
+			out = append(out, Callback{
 				Endpoint:     p.Addr,
 				UserHash:     p.UserHash,
 				CanObfuscate: wire.CanObfuscate(p.CryptOptions, p.UserHash),
@@ -416,29 +406,27 @@ func (s *Server) OnPacket(from netip.AddrPort, p wire.Packet, now time.Time) Out
 		}
 	case serverwire.CallbackRequestedIPv6:
 		if p.Addr.IsValid() && p.Addr.Port() != 0 {
-			out.ConnectPeers = append(out.ConnectPeers, Callback{Endpoint: p.Addr})
+			out = append(out, Callback{Endpoint: p.Addr})
 		}
-	case serverwire.CallbackFailed:
-		out.Events = append(out.Events, CallbackFailed{})
 	}
 	return out
 }
 
-// RequestCallback asks the connected server to have a LowID source connect
-// to us. It is possible only when we are HighID and the source came from
-// the server we are connected to.
-func (s *Server) RequestCallback(source Source, now time.Time) (Output, bool) {
-	if !s.IsHighID() || !source.IsLowID || source.Server != s.current.Endpoint {
-		return Output{}, false
+// RequestCallback asks the connected server to have the LowID source
+// clientID, which that server named, connect to us. It is possible only
+// while we are HighID.
+func (s *Server) RequestCallback(clientID uint32, now time.Time) []Action {
+	if wire.IsLowID(s.ClientID()) {
+		return nil
 	}
 	s.lastSent = now
-	return Output{To: s.current.Endpoint, Send: []wire.Packet{serverwire.CallbackRequest{ClientID: source.ClientID}}}, true
+	return []Action{Send{s.current.Endpoint, serverwire.CallbackRequest{ClientID: clientID}}}
 }
 
 // onIDChange logs in to the first attempt that gets an id and closes the
 // other one, which aMule's StopConnectionTry does without counting a
 // failure.
-func (s *Server) onIDChange(sender *listed, p serverwire.IDChange, now time.Time, out *Output) {
+func (s *Server) onIDChange(sender *listed, p serverwire.IDChange, now time.Time, out *[]Action) {
 	if p.ClientID == 0 {
 		return
 	}
@@ -450,7 +438,7 @@ func (s *Server) onIDChange(sender *listed, p serverwire.IDChange, now time.Time
 	if sender != s.current {
 		for _, a := range s.attempts {
 			if a.server != sender {
-				out.Close = append(out.Close, a.server.Endpoint)
+				*out = append(*out, Close{a.server.Endpoint})
 			}
 		}
 		s.attempts = nil
@@ -463,14 +451,14 @@ func (s *Server) onIDChange(sender *listed, p serverwire.IDChange, now time.Time
 		s.nextOffer = now
 	}
 	s.clientID = p.ClientID
-	out.Events = append(out.Events, IDChanged{Server: s.current.Endpoint, ClientID: p.ClientID})
+	*out = append(*out, IDChanged{Server: s.current.Endpoint, ClientID: p.ClientID})
 	s.runSession(now, out)
 }
 
 // addSources reports what server found for a wanted file. A LowID source
 // is reachable only by a callback through the server that named it, so it
 // is kept only from the connected server, and only while we are HighID.
-func (s *Server) addSources(file wire.Hash, found []serverwire.Source, server netip.AddrPort, isGlobal bool, out *Output) {
+func (s *Server) addSources(file wire.Hash, found []serverwire.Source, server netip.AddrPort, isGlobal bool, out *[]Action) {
 	if !s.isWanted(file) {
 		return
 	}
@@ -483,7 +471,7 @@ func (s *Server) addSources(file wire.Hash, found []serverwire.Source, server ne
 		}
 	}
 	if len(sources) > 0 {
-		out.Events = append(out.Events, SourcesFound{File: file, Sources: sources, IsGlobal: isGlobal})
+		*out = append(*out, SourcesFound{File: file, Sources: sources, IsGlobal: isGlobal})
 	}
 }
 
@@ -531,7 +519,7 @@ func (s *Server) setFailed(server netip.AddrPort) {
 // pass without obfuscation" follows at once. When the plain pass runs out
 // and no attempt is left, eMule waits CS_RETRYCONNECTTIME so a short list
 // is not hammered.
-func (s *Server) runConnect(now time.Time, out *Output) {
+func (s *Server) runConnect(now time.Time, out *[]Action) {
 	if s.current != nil || now.Before(s.retryAt) {
 		return
 	}
@@ -558,7 +546,7 @@ func (s *Server) runConnect(now time.Time, out *Output) {
 		if !s.isPlainPass && next.canObfuscateTCP() {
 			dial.ObfuscationPort = next.TCPObfuscationPort
 		}
-		out.Connect = append(out.Connect, dial)
+		*out = append(*out, dial)
 	}
 }
 
@@ -598,24 +586,27 @@ func isBetter(a, b *listed) bool {
 	) < 0
 }
 
-func (s *Server) runSession(now time.Time, out *Output) {
-	out.To = s.current.Endpoint
-	n := len(out.Send)
+func (s *Server) runSession(now time.Time, out *[]Action) {
+	n := len(*out)
 	s.runSourceRequests(now, out)
 	s.runOffer(now, out)
-	if len(out.Send) == n && now.Sub(s.lastSent) >= keepAliveTime {
+	if len(*out) == n && now.Sub(s.lastSent) >= keepAliveTime {
 		// eMule's keep-alive is an empty OP_OFFERFILES.
-		out.Send = append(out.Send, serverwire.OfferFiles{})
+		s.send(serverwire.OfferFiles{}, out)
 	}
-	if len(out.Send) > n {
+	if len(*out) > n {
 		s.lastSent = now
 	}
+}
+
+func (s *Server) send(p wire.Packet, out *[]Action) {
+	*out = append(*out, Send{s.current.Endpoint, p})
 }
 
 // runSourceRequests sends one frame of up to 15 OP_GETSOURCES, longest
 // waiting file first, and no file more often than SERVERREASKTIME. The
 // per-file times survive reconnects, as in eMule.
-func (s *Server) runSourceRequests(now time.Time, out *Output) {
+func (s *Server) runSourceRequests(now time.Time, out *[]Action) {
 	if now.Before(s.nextSourceFrame) {
 		return
 	}
@@ -634,9 +625,9 @@ func (s *Server) runSourceRequests(now time.Time, out *Output) {
 	for _, w := range due[:min(len(due), sourceFilesPerFrame)] {
 		request := serverwire.GetSources{Hash: w.File, Size: w.Size}
 		if s.current.tcpFlags&serverwire.FlagTCPObfuscation != 0 {
-			out.Send = append(out.Send, serverwire.GetSourcesObfu(request))
+			s.send(serverwire.GetSourcesObfu(request), out)
 		} else {
-			out.Send = append(out.Send, request)
+			s.send(request, out)
 		}
 		s.askedAt[w.File] = now
 	}
@@ -647,7 +638,7 @@ func (s *Server) runSourceRequests(now time.Time, out *Output) {
 // connection, at most once per ED2KREPUBLISHTIME and capped like eMule's
 // SendListToServer. A file offered while partial is offered again once
 // complete.
-func (s *Server) runOffer(now time.Time, out *Output) {
+func (s *Server) runOffer(now time.Time, out *[]Action) {
 	if now.Before(s.nextOffer) {
 		return
 	}
@@ -670,7 +661,7 @@ func (s *Server) runOffer(now time.Time, out *Output) {
 	if len(files) == 0 {
 		return
 	}
-	out.Send = append(out.Send, serverwire.OfferFiles{Files: files})
+	s.send(serverwire.OfferFiles{Files: files}, out)
 	s.nextOffer = now.Add(offerTime)
 }
 
