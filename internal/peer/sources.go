@@ -40,8 +40,6 @@ type sourceState struct {
 	lastRequest time.Time
 	lastAnswer  time.Time
 	asked       map[wire.Hash]bool
-	// answers maps a file the peer asked about to the version it asked in.
-	answers map[wire.Hash]byte
 }
 
 // RequestSources asks the peer for other sources of an added file, if it
@@ -67,20 +65,23 @@ func (s *Session) RequestSources(file wire.Hash, now time.Time) Output {
 	return out
 }
 
-// SendSources answers the peer's pending source request for file.
-func (s *Session) SendSources(file wire.Hash, sources []Source) Output {
-	var out Output
-	version, ok := s.sx.answers[file]
-	if !ok {
-		return out
+// onSourcesRequest answers a source request for a file we offer, at most
+// once per SOURCECLIENTREASKS.
+func (s *Session) onSourcesRequest(p client.RequestSources2, now time.Time, out *Output) {
+	if _, ok := s.cfg.ShareByHash(p.Hash); !ok {
+		return
 	}
-	delete(s.sx.answers, file)
+	if !s.sx.lastAnswer.IsZero() && now.Sub(s.sx.lastAnswer) < sourceInterval {
+		return
+	}
+	s.sx.lastAnswer = now
+	version := p.Version
 	isExtended := version == client.ExtendedSourcesVersion && s.features.hasExtendedSources
 	if !isExtended {
 		version = min(version, client.SourceExchange2Version)
 	}
-	answer := client.AnswerSources2{Version: version, Hash: file}
-	for _, src := range sources {
+	answer := client.AnswerSources2{Version: version, Hash: p.Hash}
+	for _, src := range s.cfg.SourcesByHash(p.Hash, s.up.parts[p.Hash]) {
 		if len(answer.Sources) == maxSources {
 			break
 		}
@@ -93,19 +94,6 @@ func (s *Session) SendSources(file wire.Hash, sources []Source) Output {
 	if len(answer.Sources) > 0 {
 		out.send(answer)
 	}
-	return out
-}
-
-func (s *Session) onSourcesRequest(p client.RequestSources2, shares shareByHash, now time.Time, out *Output) {
-	if _, ok := shares(p.Hash); !ok {
-		return
-	}
-	if !s.sx.lastAnswer.IsZero() && now.Sub(s.sx.lastAnswer) < sourceInterval {
-		return
-	}
-	s.sx.lastAnswer = now
-	s.sx.answers[p.Hash] = p.Version
-	out.add(SourcesRequested{File: p.Hash, Parts: s.up.parts[p.Hash]})
 }
 
 func (s *Session) onSourcesAnswer(p client.AnswerSources2, out *Output) {

@@ -101,9 +101,9 @@ func (s *Session) requestTree(file wire.Hash, share Share, out *Output) {
 // onRecoveryRequest follows ProcessAICHRequest (DownloadClient.cpp:1666-1716):
 // the data for a part longer than one block under the root we have, or the
 // bare hash to say no.
-func (s *Session) onRecoveryRequest(p client.AICHRequest, shares shareByHash, out *Output) {
+func (s *Session) onRecoveryRequest(p client.AICHRequest, out *Output) {
 	answer := client.AICHAnswer{Hash: p.Hash}
-	share, ok := shares(p.Hash)
+	share, ok := s.cfg.ShareByHash(p.Hash)
 	part := int(p.Part)
 	switch {
 	case !ok:

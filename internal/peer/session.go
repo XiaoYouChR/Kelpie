@@ -24,7 +24,8 @@ const (
 	downloadTimeout = 100 * time.Second
 )
 
-// Config is our side of the handshake, fixed for the session's lifetime.
+// Config is our side of the connection, fixed for the session's lifetime:
+// what our handshake tells the peer, and what we offer it.
 type Config struct {
 	Self identity.Self
 	// Version is Kelpie's "major.minor.update".
@@ -47,6 +48,12 @@ type Config struct {
 	Buddy netip.AddrPort
 	// HasDirectCallback: we take Kad callback requests ourselves, over UDP.
 	HasDirectCallback bool
+	// ShareByHash looks up a file we offer.
+	ShareByHash func(file wire.Hash) (Share, bool)
+	// SourcesByHash names other peers that have file, for a Source Exchange
+	// answer; parts is what the asking peer said it has of file, nil when it
+	// did not say.
+	SourcesByHash func(file wire.Hash, parts piece.Set) []Source
 }
 
 // Capabilities is what the peer told us about itself in the handshake.
@@ -131,7 +138,7 @@ func buildSession(cfg Config, remote netip.AddrPort, now time.Time) *Session {
 		timeout:    connectionTimeout,
 		down:       downloadState{files: map[wire.Hash]*download{}},
 		up:         uploadState{parts: map[wire.Hash]piece.Set{}, sizes: map[wire.Hash]int64{}, blocks: map[uploadBlock]bool{}},
-		sx:         sourceState{asked: map[wire.Hash]bool{}, answers: map[wire.Hash]byte{}},
+		sx:         sourceState{asked: map[wire.Hash]bool{}},
 	}
 }
 
@@ -141,9 +148,8 @@ func (s *Session) UserHash() wire.Hash        { return s.userHash }
 // IsUploading tells whether the peer holds an upload slot with us.
 func (s *Session) IsUploading() bool { return s.up.isUploading }
 
-// OnPacket reacts to one packet from the peer. shares tells which of our
-// files we offer, for the packets that ask about them.
-func (s *Session) OnPacket(p wire.Packet, shares shareByHash, now time.Time) Output {
+// OnPacket reacts to one packet from the peer.
+func (s *Session) OnPacket(p wire.Packet, now time.Time) Output {
 	s.lastActive = now
 	var out Output
 	if !s.isHandshaken {
@@ -198,38 +204,38 @@ func (s *Session) OnPacket(p wire.Packet, shares shareByHash, now time.Time) Out
 		s.onRecoveryAnswer(p, &out)
 
 	case client.FileRequest:
-		s.onFileRequest(p, shares, &out)
+		s.onFileRequest(p, &out)
 	case client.SetRequestFileID:
-		s.onStatusRequest(p.Hash, shares, &out)
+		s.onStatusRequest(p.Hash, &out)
 	case client.MultiPacket:
-		s.onMultiPacket(client.FileIdentifier{Hash: p.Hash}, p.Requests, false, shares, now, &out)
+		s.onMultiPacket(client.FileIdentifier{Hash: p.Hash}, p.Requests, false, now, &out)
 	case client.MultiPacketExt:
-		s.onMultiPacket(client.FileIdentifier{Hash: p.Hash, Size: p.Size}, p.Requests, false, shares, now, &out)
+		s.onMultiPacket(client.FileIdentifier{Hash: p.Hash, Size: p.Size}, p.Requests, false, now, &out)
 	case client.MultiPacketExt2:
-		s.onMultiPacket(p.File, p.Requests, true, shares, now, &out)
+		s.onMultiPacket(p.File, p.Requests, true, now, &out)
 	case client.HashSetRequest:
-		s.onHashSetRequest(p.Hash, shares, &out)
+		s.onHashSetRequest(p.Hash, &out)
 	case client.HashSetRequest2:
-		s.onHashSetRequest2(p, shares, &out)
+		s.onHashSetRequest2(p, &out)
 	case client.StartUploadRequest:
-		s.onUploadRequest(p.Hash, shares, &out)
+		s.onUploadRequest(p.Hash, &out)
 	case client.RequestParts:
-		s.onPartsRequest(p.Hash, toBlocks32(p), shares, &out)
+		s.onPartsRequest(p.Hash, toBlocks32(p), &out)
 	case client.RequestParts64:
-		s.onPartsRequest(p.Hash, toBlocks64(p), shares, &out)
+		s.onPartsRequest(p.Hash, toBlocks64(p), &out)
 	case client.CancelTransfer:
 		s.onUploadCancelled(&out)
 	case client.AICHFileHashRequest:
-		if share, ok := shares(p.Hash); ok {
+		if share, ok := s.cfg.ShareByHash(p.Hash); ok {
 			if answer, ok := s.onRootRequest(p.Hash, share, &out); ok {
 				out.send(answer)
 			}
 		}
 	case client.AICHRequest:
-		s.onRecoveryRequest(p, shares, &out)
+		s.onRecoveryRequest(p, &out)
 
 	case client.RequestSources2:
-		s.onSourcesRequest(p, shares, now, &out)
+		s.onSourcesRequest(p, now, &out)
 	case client.AnswerSources2:
 		s.onSourcesAnswer(p, &out)
 	}

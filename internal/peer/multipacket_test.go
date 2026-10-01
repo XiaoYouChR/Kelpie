@@ -63,8 +63,8 @@ func TestSourceRequestUsesFileIdentifier(t *testing.T) {
 	if _, ok := sentOf[client.MultiPacketExt2](t, l).Requests[0].(client.RequestSources2); !ok {
 		t.Fatal("no source request")
 	}
-	if lastOf[SourcesRequested](t, l.b).File != file {
-		t.Fatal("request not seen")
+	if len(l.b.sourceRequests) != 1 || l.b.sourceRequests[0].file != file {
+		t.Fatalf("source requests %+v", l.b.sourceRequests)
 	}
 }
 

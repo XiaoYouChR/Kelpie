@@ -105,13 +105,6 @@ type BlocksRequested struct {
 // UploadCancelled: the peer no longer wants anything uploaded.
 type UploadCancelled struct{}
 
-// SourcesRequested asks the engine to SendSources for File. Parts is as in
-// UploadRequested, so that the answer lists only sources the peer needs.
-type SourcesRequested struct {
-	File  wire.Hash
-	Parts piece.Set
-}
-
 type SourcesFound struct {
 	File    wire.Hash
 	Sources []Source
@@ -132,5 +125,4 @@ func (BlockReceived) isEvent()      {}
 func (UploadRequested) isEvent()    {}
 func (BlocksRequested) isEvent()    {}
 func (UploadCancelled) isEvent()    {}
-func (SourcesRequested) isEvent()   {}
 func (SourcesFound) isEvent()       {}
