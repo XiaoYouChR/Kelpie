@@ -74,3 +74,4 @@ class Network:
     isHighId: bool
     isKadFirewalled: bool
     kadNodes: int
+    isBehindCarrierNat: bool

@@ -68,6 +68,8 @@ type Network struct {
 	IsHighID          bool
 	IsKadFirewalled   bool
 	KadNodes          int
+	// IsBehindCarrierNat follows docs/protocol.md "network".
+	IsBehindCarrierNat bool
 }
 
 type Code string

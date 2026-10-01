@@ -107,7 +107,7 @@ func TestSessionTranscript(t *testing.T) {
 	var config engine.Config
 	start := func(c engine.Config, e engine.Events) (Engine, error) {
 		config, events = c, e
-		e.SetNetwork(engine.Network{IsServerConnected: true, IsKadFirewalled: true, KadNodes: 812})
+		e.SetNetwork(engine.Network{IsServerConnected: true, IsKadFirewalled: true, KadNodes: 812, IsBehindCarrierNat: true})
 		return eng, nil
 	}
 	var out bytes.Buffer
@@ -328,7 +328,7 @@ func TestSlowConsumerCoalescesProgress(t *testing.T) {
 	got := parseLines(t, out.text())
 	want := []map[string]any{
 		{"type": "ready", "version": "v1", "protocol": 1.0},
-		{"type": "network", "isServerConnected": false, "isHighId": false, "isKadFirewalled": false, "kadNodes": 2.0},
+		{"type": "network", "isServerConnected": false, "isHighId": false, "isKadFirewalled": false, "kadNodes": 2.0, "isBehindCarrierNat": false},
 		buildProgressMessage(1, 3),
 		buildProgressMessage(2, 10),
 		{"type": "ended", "run": 1.0, "error": nil},
@@ -409,7 +409,7 @@ func TestEOFClosesEngineThenFlushes(t *testing.T) {
 	got := parseLines(t, out.Bytes())
 	want := []map[string]any{
 		{"type": "ready", "version": "v1", "protocol": 1.0},
-		{"type": "network", "isServerConnected": false, "isHighId": false, "isKadFirewalled": false, "kadNodes": 9.0},
+		{"type": "network", "isServerConnected": false, "isHighId": false, "isKadFirewalled": false, "kadNodes": 9.0, "isBehindCarrierNat": false},
 		buildProgressMessage(4, 7),
 		{"type": "ended", "run": 4.0, "error": nil},
 	}

@@ -306,6 +306,7 @@ def test_rate_limits_are_sent_in_hello_and_live(engine: Engine) -> None:
 def test_network_is_reported_while_the_engine_runs(engine: Engine) -> None:
     engine.setScript({"network": {
         "isServerConnected": True, "isHighId": False, "isKadFirewalled": True, "kadNodes": 812,
+        "isBehindCarrierNat": True,
     }})
 
     async def main():
@@ -315,7 +316,8 @@ def test_network_is_reported_while_the_engine_runs(engine: Engine) -> None:
             async for _ in current:
                 break
             assert kelpie.network == Network(
-                isServerConnected=True, isHighId=False, isKadFirewalled=True, kadNodes=812
+                isServerConnected=True, isHighId=False, isKadFirewalled=True, kadNodes=812,
+                isBehindCarrierNat=True,
             )
         await kelpie.close()
         assert kelpie.network is None

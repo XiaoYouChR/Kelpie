@@ -122,6 +122,7 @@ type Engine struct {
 
 	serverAddr netip.AddrPort
 	publicIP   netip.Addr
+	mappedIP   netip.Addr
 	network    Network
 	hasNetwork bool
 
@@ -603,6 +604,7 @@ func (e *Engine) refreshNetwork() {
 		IsServerConnected: e.server.IsServerConnected(),
 		IsHighID:          e.server.IsHighID(),
 	}
+	network.IsBehindCarrierNat = !network.IsHighID && matchCarrierNAT(e.mappedIP, e.publicIP)
 	if e.kad != nil {
 		network.IsKadFirewalled = e.kadStatus.IsFirewalled
 		network.KadNodes = e.kadStatus.Nodes
@@ -636,9 +638,29 @@ func (e *Engine) onNATOpened(m natOpened) {
 		return
 	}
 	e.unmapNAT = m.unmap
-	if m.ip.Is4() && !e.server.IsHighID() {
+	e.mappedIP = m.ip
+	if isPublicIPv4(m.ip) && !e.publicIP.IsValid() && !e.server.IsHighID() {
 		e.publicIP = m.ip
 	}
+}
+
+// sharedAddressSpace is RFC 6598's range for carrier-grade NAT.
+var sharedAddressSpace = netip.MustParsePrefix("100.64.0.0/10")
+
+// matchCarrierNAT is the rule in docs/protocol.md "network": the gateway that
+// mapped our ports has a non-public external address, or peers see us at
+// another address, so another NAT sits above it. Without a mapping it cannot
+// tell.
+func matchCarrierNAT(mapped, public netip.Addr) bool {
+	if !mapped.Is4() || mapped.IsUnspecified() {
+		return false
+	}
+	return !isPublicIPv4(mapped) || public.IsValid() && public != mapped
+}
+
+func isPublicIPv4(addr netip.Addr) bool {
+	return addr.Is4() && addr.IsGlobalUnicast() && !addr.IsPrivate() &&
+		!sharedAddressSpace.Contains(addr) && addr.As4()[0] != 0 && addr.As4()[0] < 240
 }
 
 func (e *Engine) closeNAT(unmap func(context.Context) error) {

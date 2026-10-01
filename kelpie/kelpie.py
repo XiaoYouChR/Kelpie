@@ -306,6 +306,7 @@ def parseNetwork(message: dict[str, Any]) -> Network:
         isHighId=message["isHighId"],
         isKadFirewalled=message["isKadFirewalled"],
         kadNodes=message["kadNodes"],
+        isBehindCarrierNat=message["isBehindCarrierNat"],
     )
 
 

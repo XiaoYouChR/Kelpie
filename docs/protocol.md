@@ -54,7 +54,7 @@ with a non-zero status.
  "peers": 12, "activePeers": 3}
 {"type": "ended", "run": 1, "error": null}
 {"type": "network", "isServerConnected": true, "isHighId": false,
- "isKadFirewalled": true, "kadNodes": 812}
+ "isKadFirewalled": true, "kadNodes": 812, "isBehindCarrierNat": false}
 ```
 
 - The first `progress` of a run is sent as soon as the run is admitted; after
@@ -65,6 +65,13 @@ with a non-zero status.
   ends with `error: null` when the file is complete and flushed to the device
   (fsync); any run ends with `error: null` after `stop` or `remove`.
 - `network` is sent after `ready` and whenever a field changes.
+- `isBehindCarrierNat` means port mapping cannot give a HighID because another
+  NAT, usually the carrier's, sits above the home gateway. It is true while
+  `isHighId` is false, the gateway mapped our ports (UPnP, NAT-PMP or PCP), and
+  the external IPv4 address the gateway reports is not public (100.64.0.0/10,
+  a private range, or another reserved range) or differs from the address a
+  peer last reported for us. Without a port mapping it is false: nothing tells
+  the cases apart.
 
 ## Run rules
 
