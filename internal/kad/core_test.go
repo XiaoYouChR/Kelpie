@@ -29,7 +29,7 @@ type harness struct {
 	answering map[netip.AddrPort]Node
 	sent      []datagram
 	found     []SourcesFound
-	requests  []request
+	requests  []Event
 }
 
 func buildHarness(t *testing.T) *harness {

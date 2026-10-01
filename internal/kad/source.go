@@ -22,7 +22,7 @@ type Publish struct {
 }
 
 // Wanted is the whole set of files the engine wants searched and
-// published. Each SetWanted replaces the previous set, so a dropped update
+// published. Each one posted replaces the previous set, so a dropped update
 // is repaired by the next one (ADR-0005).
 type Wanted struct {
 	Find    []Search
@@ -79,6 +79,11 @@ type Callback struct {
 	BuddyID wire.Hash
 	Hash    wire.Hash
 }
+
+func (Wanted) isMessage()     {}
+func (Callback) isMessage()   {}
+func (SourcesFound) isEvent() {}
+func (Status) isEvent()       {}
 
 // toSource reads a search result the way CSearch::ProcessResultFile and
 // CDownloadQueue::KademliaSearchFile (DownloadQueue.cpp:1600-1670) do. Type

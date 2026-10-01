@@ -68,7 +68,7 @@ const versionObfuscation = 6
 type output struct {
 	datagrams []datagram
 	found     []SourcesFound
-	requests  []request
+	requests  []Event
 }
 
 type find struct {
@@ -248,9 +248,9 @@ func (c *core) onFirewallAck(from netip.Addr) {
 	}
 }
 
-// onMessage reacts to what the engine sends Kad besides wanted files,
-// buddy state and its own datagrams.
-func (c *core) onMessage(m any) output {
+// onMessage reacts to what the engine posts besides wanted files, buddy
+// state and its own datagrams.
+func (c *core) onMessage(m Message) output {
 	switch m := m.(type) {
 	case Callback:
 		if m.Buddy.Addr().Is4() {
@@ -258,11 +258,11 @@ func (c *core) onMessage(m any) output {
 			// (BaseClient.cpp:1568).
 			c.sendPlain(m.Buddy, kadwire.CallbackReq{BuddyID: m.BuddyID, Hash: m.Hash, TCPPort: c.tcpPort})
 		}
-	case firewallAckReceived:
-		c.onFirewallAck(m.from)
-	case firewallAck:
-		if m.to.Addr().Is4() {
-			c.sendPlain(m.to, firewalledAck{})
+	case FirewallAckReceived:
+		c.onFirewallAck(m.From.Unmap())
+	case FirewallAck:
+		if m.To.Addr().Is4() {
+			c.sendPlain(m.To, firewalledAck{})
 		}
 	case FirewallUDP:
 		c.onFirewallUDP(m)

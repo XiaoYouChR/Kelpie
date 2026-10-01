@@ -111,7 +111,9 @@ type Engine struct {
 	server    *server.Server
 	kad       *kad.Kad
 	kadCancel context.CancelFunc
-	kadDone   chan struct{}
+	// kadDone carries Kad's last state once Run ends; it closes empty if
+	// Run failed.
+	kadDone   chan kad.State
 	kadStatus kad.Status
 	kadID     wire.Hash
 	buddy     buddy
@@ -395,12 +397,15 @@ func (e *Engine) startKad(nodes []kad.Node) {
 	e.kadID = e.kad.ID()
 	ctx, cancel := context.WithCancel(e.ctx)
 	e.kadCancel = cancel
-	e.kadDone = make(chan struct{})
+	e.kadDone = make(chan kad.State, 1)
 	go func() {
 		defer close(e.kadDone)
-		if err := e.kad.Run(ctx); err != nil {
+		state, err := e.kad.Run(ctx)
+		if err != nil {
 			log.Printf("engine: kad: %v", err)
+			return
 		}
+		e.kadDone <- state
 	}()
 }
 
@@ -517,11 +522,9 @@ func (e *Engine) run() {
 	defer close(e.hubDone)
 	ticker := e.ports.Clock.CreateTicker(tickInterval)
 	defer ticker.Stop()
-	var kadMessages <-chan any
-	var kadStatuses <-chan kad.Status
-	var kadStates <-chan store.Kad
+	var kadEvents <-chan kad.Event
 	if e.kad != nil {
-		kadMessages, kadStatuses, kadStates = e.kad.Messages(), e.kad.Statuses(), e.kad.States()
+		kadEvents = e.kad.Events()
 	}
 	for {
 		select {
@@ -533,12 +536,8 @@ func (e *Engine) run() {
 			e.onMessage(m)
 		case <-ticker.C():
 			e.onTick()
-		case m := <-kadMessages:
+		case m := <-kadEvents:
 			e.onKadMessage(m)
-		case s := <-kadStatuses:
-			e.kadStatus = s
-		case s := <-kadStates:
-			e.state.Kad = s
 		}
 		e.refreshRuns()
 		e.refreshNetwork()
@@ -594,7 +593,7 @@ func (e *Engine) onTick() {
 	e.runServer(e.server.OnTick(now, e.buildServerWanted(), e.publicIP))
 	e.runBuddy(now)
 	if e.kad != nil {
-		e.kad.SetWanted(e.buildKadWanted())
+		e.kad.Post(e.buildKadWanted())
 	}
 	for _, r := range e.runList {
 		e.refreshProgress(r, false)
@@ -692,11 +691,8 @@ func (e *Engine) stop() error {
 	e.closeSockets()
 	if e.kad != nil {
 		e.kadCancel()
-		<-e.kadDone
-		select {
-		case s := <-e.kad.States():
-			e.state.Kad = s
-		default:
+		if s, ok := <-e.kadDone; ok {
+			e.state.Kad = store.Kad(s)
 		}
 	}
 	close(e.saves)

@@ -21,7 +21,10 @@ import (
 func startKad(t *testing.T, k *Kad) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- k.Run(ctx) }()
+	go func() {
+		_, err := k.Run(ctx)
+		done <- err
+	}()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -42,14 +45,13 @@ func waitParked(t *testing.T, clk *clock.Fake, n int) {
 	}
 }
 
-// waitMessage waits for Kad's next outbox message of type T, skipping
-// the others.
-func waitMessage[T any](t *testing.T, k *Kad) T {
+// waitEvent waits for Kad's next event of type T, skipping the others.
+func waitEvent[T Event](t *testing.T, k *Kad) T {
 	t.Helper()
 	timeout := time.After(5 * time.Second)
 	for {
 		select {
-		case m := <-k.Messages():
+		case m := <-k.Events():
 			if v, ok := m.(T); ok {
 				return v
 			}
@@ -96,11 +98,11 @@ func TestKadSharesItsSocketWithTheEngine(t *testing.T) {
 
 	reask := []byte{wire.ProtocolEMule, 0x90, 1, 2, 3}
 	peer.WriteTo(reask, kadAddr)
-	if d := waitMessage[Datagram](t, k); d.Addr != netip.MustParseAddrPort("10.0.0.2:4672") || !bytes.Equal(d.Data, reask) {
+	if d := waitEvent[Datagram](t, k); d.Addr != netip.MustParseAddrPort("10.0.0.2:4672") || !bytes.Equal(d.Data, reask) {
 		t.Fatalf("forwarded %+v", d)
 	}
 
-	k.Send(Datagram{Addr: netip.MustParseAddrPort("10.0.0.2:4672"), Data: []byte{wire.ProtocolEMule, 0x91}})
+	k.Post(Datagram{Addr: netip.MustParseAddrPort("10.0.0.2:4672"), Data: []byte{wire.ProtocolEMule, 0x91}})
 	if from, data := readFrom(t, peer); from != kadAddr || !bytes.Equal(data, []byte{wire.ProtocolEMule, 0x91}) {
 		t.Fatalf("engine datagram arrived as %v %x", from, data)
 	}
@@ -110,13 +112,13 @@ func TestKadSharesItsSocketWithTheEngine(t *testing.T) {
 	if p, ok := parsePacket(data); !ok || p != (kadwire.Pong{UDPPort: 4672}) {
 		t.Fatalf("Kad answered a ping with %x", data)
 	}
-	for len(k.Messages()) > 0 {
-		if d, ok := (<-k.Messages()).(Datagram); ok {
+	for len(k.Events()) > 0 {
+		if d, ok := (<-k.Events()).(Datagram); ok {
 			t.Fatalf("Kad datagram forwarded to the engine: %+v", d)
 		}
 	}
 
-	k.RequestCallback(Callback{Buddy: netip.MustParseAddrPort("10.0.0.2:4672"), BuddyID: fileHash, Hash: fileHash})
+	k.Post(Callback{Buddy: netip.MustParseAddrPort("10.0.0.2:4672"), BuddyID: fileHash, Hash: fileHash})
 	if _, data := readFrom(t, peer); len(data) != 36 || data[0] != wire.ProtocolKad || data[1] != (kadwire.CallbackReq{}).Opcode() {
 		t.Fatalf("callback request %x", data)
 	}
@@ -155,13 +157,15 @@ func TestKadNetworkFindsPublishedSource(t *testing.T) {
 	waitParked(t, clk, count)
 
 	publisher, searcher := kads[1], kads[count-1]
-	publisher.SetWanted(Wanted{Publish: []Publish{{Hash: fileHash, Size: 1000}}})
+	publisher.Post(Wanted{Publish: []Publish{{Hash: fileHash, Size: 1000}}})
+	var status Status
+	var state State
 	want := Source{Type: sourceOpen, UserHash: publisher.cfg.UserHash, Addr: netip.AddrPortFrom(addrs[1], 4662), UDPPort: 4672, CryptOptions: connectOptions}
 	for step := 0; ; step++ {
 		// A search finding nothing waits an hour to ask again, so search
 		// only once the publisher has had time to publish.
 		if step == 300 {
-			searcher.SetWanted(Wanted{Find: []Search{{Hash: fileHash, Size: 1000}}})
+			searcher.Post(Wanted{Find: []Search{{Hash: fileHash, Size: 1000}}})
 		}
 		if step == 600 {
 			t.Fatal("searcher never found the publisher")
@@ -171,30 +175,31 @@ func TestKadNetworkFindsPublishedSource(t *testing.T) {
 		for i, k := range kads {
 			for j, addr := range addrs {
 				if i != j {
-					k.SendFirewallAck(addr)
+					k.Post(FirewallAckReceived{From: addr})
 				}
 			}
 		}
 		clk.Advance(time.Second)
 		waitParked(t, clk, count)
 		time.Sleep(time.Millisecond)
-		for len(searcher.Messages()) > 0 {
-			f, ok := (<-searcher.Messages()).(SourcesFound)
-			if !ok {
-				continue
+		for len(searcher.Events()) > 0 {
+			switch e := (<-searcher.Events()).(type) {
+			case Status:
+				status = e
+			case State:
+				state = e
+			case SourcesFound:
+				if e.Hash != fileHash || len(e.Sources) != 1 || e.Sources[0] != want {
+					t.Fatalf("found %+v, want %+v", e, want)
+				}
+				if status.Nodes < 2 || status.IsFirewalled {
+					t.Fatalf("searcher status %+v", status)
+				}
+				if state.ID == (wire.Hash{}) || len(state.Nodes) < 2 || state.IsFirewalled {
+					t.Fatalf("searcher state %+v", state)
+				}
+				return
 			}
-			if f.Hash != fileHash || len(f.Sources) != 1 || f.Sources[0] != want {
-				t.Fatalf("found %+v, want %+v", f, want)
-			}
-			status := <-searcher.Statuses()
-			if status.Nodes < 2 || status.IsFirewalled {
-				t.Fatalf("searcher status %+v", status)
-			}
-			state := <-searcher.States()
-			if state.ID == (wire.Hash{}) || len(state.Nodes) < 2 || state.IsFirewalled {
-				t.Fatalf("searcher state %+v", state)
-			}
-			return
 		}
 	}
 }
@@ -206,15 +211,16 @@ func TestKadHandsOverItsStateWhenItStops(t *testing.T) {
 		Transport: network.AddHost(netip.MustParseAddr("10.0.0.1")), Clock: clock.BuildFake(start),
 		Port: 4672, TCPPort: 4662, UserHash: userHash, Nodes: []Node{seed},
 	})
-	if built := <-k.States(); built.ID != k.ID() || built.UDPKey == 0 || len(built.Nodes) != 0 {
+	if built := (<-k.Events()).(State); built.ID != k.ID() || built.UDPKey == 0 || len(built.Nodes) != 0 {
 		t.Fatalf("built state %+v", built)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := k.Run(ctx); err != nil {
+	final, err := k.Run(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if final := <-k.States(); final.ID != k.ID() || len(final.Nodes) != 1 || final.Nodes[0].Addr != seed.Addr {
+	if final.ID != k.ID() || len(final.Nodes) != 1 || final.Nodes[0].Addr != seed.Addr {
 		t.Fatalf("final state %+v", final)
 	}
 }

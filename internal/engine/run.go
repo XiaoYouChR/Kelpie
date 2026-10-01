@@ -335,7 +335,7 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			case a.IsDirect:
 				e.requestDirectCallback(a.Buddy, a.UserHash, a.CanObfuscate)
 			default:
-				e.kad.RequestCallback(toKadCallback(a, r.file.Hash))
+				e.kad.Post(toKadCallback(a, r.file.Hash))
 			}
 		case transfer.RequestSources:
 			if c := e.conns[a.Peer]; c != nil && c.session != nil {

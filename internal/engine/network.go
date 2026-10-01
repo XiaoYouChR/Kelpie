@@ -233,7 +233,7 @@ func (e *Engine) onKadSources(found kad.SourcesFound) {
 
 func (e *Engine) sendDatagram(to netip.AddrPort, data []byte) {
 	if e.kad != nil {
-		e.kad.Send(kad.Datagram{Addr: to, Data: data})
+		e.kad.Post(kad.Datagram{Addr: to, Data: data})
 		return
 	}
 	e.udp.WriteTo(data, to)

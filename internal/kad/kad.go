@@ -4,19 +4,19 @@
 //
 // eMule serves Kad and eD2k UDP (reasks, server UDP) on one port, so Kad
 // owns that socket for both. Datagrams whose first byte is not a Kad
-// protocol byte (0xE4, 0xE5) go to the engine through Messages; the engine
-// sends its own datagrams through Send. Kad datagrams may be obfuscated
+// protocol byte (0xE4, 0xE5) go to the engine as Events; the engine posts
+// its own datagrams. Kad datagrams may be obfuscated
 // (obfuscation.ParseKadDatagram); a datagram Kad cannot read either way,
 // such as an obfuscated eD2k one, is forwarded unchanged. Servers start
 // obfuscated datagrams with any byte but 0xE3 (aMule
 // EncryptedDatagramSocket.cpp:451), so about 1 in 128 of them looks like
 // Kad and is lost here; aMule keeps server UDP on a socket of its own.
 //
-// Every method other than Run is safe to call from another goroutine and
-// never blocks, as a hub's sends to the other hub must (ADR-0005): the
-// engine's inputs share one mailbox and Kad's outputs one outbox, both
-// dropping when full; SetWanted, SetBuddy, Statuses and States hold only
-// the latest value.
+// Post and Events are safe to use from another goroutine and never block,
+// as a hub's sends to the other hub must (ADR-0005): posted messages share
+// one mailbox and events one outbox, both dropping when full, except that
+// Wanted and Buddy hold only the latest value, a Status is sent again until
+// it gets through, and a dropped State is replaced on the next tick.
 package kad
 
 import (
@@ -64,14 +64,31 @@ type Datagram struct {
 	Data []byte
 }
 
+// Message is what the engine posts to Kad: Wanted, Buddy, a Datagram to
+// send, Callback, FirewallAckReceived, FirewallAck, FirewallUDP and
+// UDPCheckEnded.
+type Message interface{ isMessage() }
+
+// Event is what Kad tells the engine: SourcesFound, the non-Kad Datagrams
+// it received, Status, State, and what Kad needs a TCP connection for,
+// which only the engine has: FirewallCheck, UDPCheck, BuddyFound,
+// BuddyRequested and CallbackRequested.
+type Event interface{ isEvent() }
+
+// State is the Kad part of the Durable State: first as BuildKad made it,
+// then each tick. Run returns the last one.
+type State store.Kad
+
+func (Datagram) isMessage() {}
+func (Datagram) isEvent()   {}
+func (State) isEvent()      {}
+
 type Kad struct {
-	cfg      Config
-	wanted   chan Wanted
-	buddies  chan Buddy
-	inbox    chan any
-	messages chan any
-	statuses chan Status
-	states   chan store.Kad
+	cfg     Config
+	wanted  chan Wanted
+	buddies chan Buddy
+	inbox   chan Message
+	events  chan Event
 }
 
 func BuildKad(cfg Config) *Kad {
@@ -89,67 +106,39 @@ func BuildKad(cfg Config) *Kad {
 		cfg.Rand = rand.New(rand.NewChaCha8(seed))
 	}
 	k := &Kad{
-		cfg:      cfg,
-		wanted:   make(chan Wanted, 1),
-		buddies:  make(chan Buddy, 1),
-		inbox:    make(chan any, queueSize),
-		messages: make(chan any, queueSize),
-		statuses: make(chan Status, 1),
-		states:   make(chan store.Kad, 1),
+		cfg:     cfg,
+		wanted:  make(chan Wanted, 1),
+		buddies: make(chan Buddy, 1),
+		inbox:   make(chan Message, queueSize),
+		events:  make(chan Event, queueSize),
 	}
-	k.states <- store.Kad{ID: cfg.State.ID, IsFirewalled: true, UDPKey: cfg.State.UDPKey, Nodes: cfg.State.Nodes}
+	k.events <- State{ID: cfg.State.ID, IsFirewalled: true, UDPKey: cfg.State.UDPKey, Nodes: cfg.State.Nodes}
 	return k
 }
 
 // ID is our Kad ID, fixed from BuildKad on.
 func (k *Kad) ID() wire.Hash { return k.cfg.State.ID }
 
-// SetWanted replaces the set of files to search and publish.
-func (k *Kad) SetWanted(w Wanted) { setLatest(k.wanted, w) }
+// Post hands Kad a message from the engine.
+func (k *Kad) Post(m Message) {
+	switch m := m.(type) {
+	case Wanted:
+		setLatest(k.wanted, m)
+	case Buddy:
+		setLatest(k.buddies, m)
+	default:
+		sendOrDrop(k.inbox, m)
+	}
+}
 
-// SetBuddy replaces what Kad knows of the engine's buddy link.
-func (k *Kad) SetBuddy(b Buddy) { setLatest(k.buddies, b) }
+func (k *Kad) Events() <-chan Event { return k.events }
 
-// Send queues an engine datagram for the shared UDP socket.
-func (k *Kad) Send(d Datagram) { k.post(d) }
-
-// RequestCallback asks a firewalled source's buddy to have the source
-// connect to our TCP port.
-func (k *Kad) RequestCallback(cb Callback) { k.post(cb) }
-
-// SendFirewallAck reports an OP_KAD_FWTCPCHECK_ACK the engine received over
-// TCP from from.
-func (k *Kad) SendFirewallAck(from netip.Addr) { k.post(firewallAckReceived{from.Unmap()}) }
-
-// RequestFirewallAck asks Kad to tell a node older than Kad version 7,
-// at its Kad endpoint to, that we reached its TCP port.
-func (k *Kad) RequestFirewallAck(to netip.AddrPort) { k.post(firewallAck{to}) }
-
-// RequestFirewallUDP asks Kad to answer a client's OP_FWCHECKUDPREQ.
-func (k *Kad) RequestFirewallUDP(r FirewallUDP) { k.post(r) }
-
-func (k *Kad) SendUDPCheckEnded(e UDPCheckEnded) { k.post(e) }
-
-func (k *Kad) post(m any) { sendOrDrop(k.inbox, m) }
-
-// Messages carries SourcesFound, the non-Kad Datagrams Kad received, and
-// what Kad needs a TCP connection for, which only the engine has:
-// FirewallCheck, UDPCheck, BuddyFound, BuddyRequested and
-// CallbackRequested.
-func (k *Kad) Messages() <-chan any { return k.messages }
-
-func (k *Kad) Statuses() <-chan Status { return k.statuses }
-
-// States carries the Kad part of the Durable State: first as BuildKad
-// made it, then each tick, and last as Run ends.
-func (k *Kad) States() <-chan store.Kad { return k.states }
-
-// Run serves Kad until ctx ends. It fails only if the UDP socket cannot be
-// opened.
-func (k *Kad) Run(ctx context.Context) error {
+// Run serves Kad until ctx ends and returns the last State. It fails only
+// if the UDP socket cannot be opened.
+func (k *Kad) Run(ctx context.Context) (State, error) {
 	conn, err := k.cfg.Transport.OpenUDP(k.cfg.Port)
 	if err != nil {
-		return err
+		return State{}, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	reads := make(chan Datagram)
@@ -178,26 +167,27 @@ func (k *Kad) Run(ctx context.Context) error {
 	ticker := k.cfg.Clock.CreateTicker(tickInterval)
 	defer ticker.Stop()
 
-	lastStatus := c.status()
-	setLatest(k.statuses, lastStatus)
+	var reported Status
+	isReported := false
 	for {
+		if status := c.status(); (!isReported || status != reported) && sendOrDrop(k.events, Event(status)) {
+			reported, isReported = status, true
+		}
 		var out output
-		isTick := false
 		select {
 		case <-ctx.Done():
-			setLatest(k.states, c.state())
-			return nil
+			return c.state(), nil
 		case d := <-reads:
 			if p, keys, isKad := c.parseDatagram(d); isKad {
 				if p != nil {
 					out = c.onPacket(d.Addr, p, keys, k.cfg.Clock.Now())
 				}
 			} else {
-				sendOrDrop(k.messages, any(d))
+				sendOrDrop(k.events, Event(d))
 			}
 		case <-ticker.C():
 			out = c.onTick(k.cfg.Clock.Now())
-			isTick = true
+			sendOrDrop(k.events, Event(c.state()))
 		case w := <-k.wanted:
 			c.setWanted(w, k.cfg.Clock.Now())
 		case b := <-k.buddies:
@@ -213,17 +203,10 @@ func (k *Kad) Run(ctx context.Context) error {
 			conn.WriteTo(c.buildDatagram(d), d.to)
 		}
 		for _, f := range out.found {
-			sendOrDrop(k.messages, any(f))
+			sendOrDrop(k.events, Event(f))
 		}
 		for _, r := range out.requests {
-			sendOrDrop(k.messages, any(r))
-		}
-		if status := c.status(); status != lastStatus {
-			lastStatus = status
-			setLatest(k.statuses, status)
-		}
-		if isTick {
-			setLatest(k.states, c.state())
+			sendOrDrop(k.events, r)
 		}
 	}
 }
@@ -258,15 +241,17 @@ func setLatest[T any](slot chan T, v T) {
 	}
 }
 
-func sendOrDrop[T any](queue chan T, v T) {
+func sendOrDrop[T any](queue chan T, v T) bool {
 	select {
 	case queue <- v:
+		return true
 	default:
+		return false
 	}
 }
 
-func (c *core) state() store.Kad {
-	state := store.Kad{ID: c.id, IsFirewalled: c.firewall.isFirewalled(), UDPKey: c.udpKey}
+func (c *core) state() State {
+	state := State{ID: c.id, IsFirewalled: c.firewall.isFirewalled(), UDPKey: c.udpKey}
 	for _, n := range c.table.nodes() {
 		state.Nodes = append(state.Nodes, toStoreNode(n))
 	}
