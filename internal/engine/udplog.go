@@ -10,6 +10,7 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
+	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
 	serverwire "github.com/XiaoYouChR/Kelpie/internal/wire/server"
 )
 
@@ -65,7 +66,7 @@ func (c *udpLogConn) WriteTo(b []byte, addr netip.AddrPort) (int, error) {
 }
 
 func (c *udpLogConn) send(kad *kadCount, direction string, addr netip.AddrPort, data []byte) {
-	if len(data) == 0 || data[0] != wire.ProtocolKad && data[0] != wire.ProtocolKadPacked {
+	if !kadwire.IsDatagram(data) {
 		c.log.Printf("udp %s %s %s %d", direction, addr, toDatagramName(data), len(data))
 		return
 	}
