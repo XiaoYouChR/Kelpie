@@ -2,8 +2,8 @@ package link_test
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/XiaoYouChR/Kelpie/internal/link"
@@ -28,8 +28,8 @@ func FuzzParse(f *testing.F) {
 	f.Fuzz(func(t *testing.T, text string) {
 		file, err := link.Parse(text)
 		if err != nil {
-			if !errors.Is(err, link.ErrInvalid) {
-				t.Fatalf("error %v does not wrap ErrInvalid", err)
+			if !strings.HasPrefix(err.Error(), "invalid ed2k file link: ") {
+				t.Fatalf("error %v is not an invalid link error", err)
 			}
 			return
 		}

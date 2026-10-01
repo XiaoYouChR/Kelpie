@@ -139,14 +139,12 @@ type Tick struct {
 }
 
 type source struct {
-	key     string
-	channel Channel
+	key string
 	Source
 	canReaskUDP bool
 	canExchange bool
 
-	state       sourceState
-	isConnected bool
+	state sourceState
 	// hasAnswered: the connected source answered our file request with its
 	// part status, so we asked it for a slot.
 	hasAnswered bool
@@ -157,7 +155,6 @@ type source struct {
 	// and this one leaves it alone (aMule's A4AF list).
 	a4afUntil time.Time
 	peer      uint64
-	rank      int
 
 	lastAsked       time.Time
 	callbackTimeout time.Time
@@ -214,25 +211,12 @@ func (t *Transfer) isBanned(found Source, now time.Time) bool {
 func (t *Transfer) isUsable(found Source) bool {
 	switch {
 	case found.Buddy.IsValid():
-		return found.UserHash != (wire.Hash{}) && isPublic(found.Buddy.Addr())
+		return found.UserHash != (wire.Hash{}) && wire.IsPublic(found.Buddy.Addr())
 	case found.ClientID != 0:
 		return wire.IsLowID(found.ClientID) && found.Server.IsValid()
 	default:
-		return found.Endpoint.IsValid() && found.Endpoint.Port() != 0 && isPublic(found.Endpoint.Addr()) && !t.isSelf(found.Endpoint)
+		return found.Endpoint.IsValid() && found.Endpoint.Port() != 0 && wire.IsPublic(found.Endpoint.Addr()) && !t.isSelf(found.Endpoint)
 	}
-}
-
-// isPublic follows aMule's IsGoodIP with FilterLanIPs on
-// (NetworkFunctions.cpp:99-151): no "this network" 0/8, loopback, link-local,
-// multicast, 240/4 (which holds 255.255.255.255) or private LAN address.
-// aMule's other reserved ranges are left out: several, like 39/8, have since
-// been allocated.
-func isPublic(addr netip.Addr) bool {
-	addr = addr.Unmap()
-	if addr.Is4() && (addr.As4()[0] == 0 || addr.As4()[0] >= 240) {
-		return false
-	}
-	return addr.IsGlobalUnicast() && !addr.IsPrivate()
 }
 
 // isSelf follows aMule CPartFile::CanAddSource (PartFile.cpp:1745-1766):
@@ -276,7 +260,7 @@ func (t *Transfer) addSource(found Source, channel Channel, now time.Time) []Act
 		s.CanObfuscate = s.CanObfuscate || found.CanObfuscate
 		return nil
 	}
-	s := t.addNew(found, channel)
+	s := t.addNew(found)
 	if s == nil {
 		return nil
 	}
@@ -287,7 +271,7 @@ func (t *Transfer) addSource(found Source, channel Channel, now time.Time) []Act
 
 // addNew makes room at the cap by dropping a failed source or one we cannot
 // reach; without one, the new source is refused.
-func (t *Transfer) addNew(found Source, channel Channel) *source {
+func (t *Transfer) addNew(found Source) *source {
 	if len(t.sources) >= maxSources {
 		i := slices.IndexFunc(t.sources, func(s *source) bool { return !t.isValid(s) })
 		if i < 0 {
@@ -295,7 +279,7 @@ func (t *Transfer) addNew(found Source, channel Channel) *source {
 		}
 		t.sources = slices.Delete(t.sources, i, i+1)
 	}
-	s := &source{key: buildKey(found), channel: channel, Source: found}
+	s := &source{key: buildKey(found), Source: found}
 	t.sources = append(t.sources, s)
 	return s
 }
@@ -316,8 +300,12 @@ func (t *Transfer) validSourceCount() int {
 	return count
 }
 
+func (t *Transfer) isConnected(s *source) bool {
+	return t.peers[s.peer] == s
+}
+
 func (t *Transfer) isValid(s *source) bool {
-	return s.state != stateFailed && (s.isConnected || t.canReach(s))
+	return s.state != stateFailed && (t.isConnected(s) || t.canReach(s))
 }
 
 // canReach mirrors requestConnect: callbacks need us reachable, and a server
@@ -368,7 +356,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Ac
 	s := t.connectedSource(hello)
 	var actions []Action
 	if s == nil {
-		s = t.addNew(found, ChannelIncoming)
+		s = t.addNew(found)
 		if s == nil {
 			return []Action{Close{Peer: peer, Reason: "too many sources"}}
 		}
@@ -376,11 +364,11 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Ac
 		event.Channel = ChannelIncoming
 		actions = append(actions, event)
 	}
-	if s.isConnected {
+	if t.isConnected(s) {
 		return append(actions, Close{Peer: peer, Reason: "duplicate"})
 	}
 	t.sources = slices.DeleteFunc(t.sources, func(other *source) bool {
-		return other != s && !other.isConnected && hello.UserHash != (wire.Hash{}) && other.UserHash == hello.UserHash
+		return other != s && !t.isConnected(other) && hello.UserHash != (wire.Hash{}) && other.UserHash == hello.UserHash
 	})
 
 	s.Endpoint = hello.Endpoint
@@ -390,7 +378,6 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Ac
 	s.canExchange = hello.CanExchange
 	s.CanObfuscate = hello.CanObfuscate
 	s.state = stateAsking
-	s.isConnected = true
 	s.hasAnswered = false
 	s.a4afUntil = time.Time{}
 	s.lastAsked = now
@@ -461,7 +448,6 @@ func (t *Transfer) OnQueued(peer uint64, rank int, now time.Time) []Action {
 
 func (t *Transfer) setQueued(s *source, rank int, now time.Time) TraceEvent {
 	s.state = stateQueued
-	s.rank = rank
 	s.lastAsked = now
 	event := t.buildTrace(now, s, EventQueued)
 	event.Rank = rank
@@ -504,19 +490,16 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 	delete(t.peers, peer)
 	t.picker.OnPeerGone(peer)
 	if peer == t.hashSetPeer {
-		t.isHashSetAsked = false
+		t.hashSetPeer = 0
 	}
-	s.isConnected = false
 	actions := append(t.onRecoveryPeerGone(peer, now), t.sendReceived(s, now)...)
 	switch {
 	case s.state == stateAsking && !s.hasAnswered:
 		return append(actions, t.setFailed(s, reason, now))
 	case s.state == stateAsking:
 		s.state = stateQueued
-		s.rank = 0
 	case s.state == stateDownloading:
 		s.state = stateQueued
-		s.rank = 0
 		s.lastAsked = now
 	}
 	event := t.buildTrace(now, s, EventClosed)
@@ -575,9 +558,9 @@ func (t *Transfer) OnTick(tick Tick) []Action {
 	t.tick = tick
 	t.removeExpired(tick.Now)
 	if tick.IsFirewalled {
-		t.sources = slices.DeleteFunc(t.sources, func(s *source) bool { return s.ClientID != 0 && !s.isConnected })
+		t.sources = slices.DeleteFunc(t.sources, func(s *source) bool { return s.ClientID != 0 && !t.isConnected(s) })
 	}
-	t.purgeNoNeeded(tick.Now)
+	t.removeNoNeeded(tick.Now)
 	budget := tick.ConnectBudget
 	for _, s := range slices.Clone(t.sources) {
 		actions = append(actions, t.runSource(s, tick, &budget)...)
@@ -615,11 +598,11 @@ func (t *Transfer) OnNoNeededParts(peer uint64) {
 	}
 }
 
-func (t *Transfer) purgeNoNeeded(now time.Time) {
+func (t *Transfer) removeNoNeeded(now time.Time) {
 	if float64(len(t.sources)) < maxSources*noNeededPurgeShare || now.Sub(t.lastPurge) <= noNeededPurgeTime {
 		return
 	}
-	i := slices.IndexFunc(t.sources, func(s *source) bool { return s.isNoNeeded && !s.isConnected && !now.Before(s.a4afUntil) })
+	i := slices.IndexFunc(t.sources, func(s *source) bool { return s.isNoNeeded && !t.isConnected(s) && !now.Before(s.a4afUntil) })
 	if i >= 0 {
 		t.sources = slices.Delete(t.sources, i, i+1)
 		t.lastPurge = now
@@ -643,7 +626,7 @@ func (t *Transfer) runSource(s *source, tick Tick, budget *int) []Action {
 	case stateAsking, stateDownloading:
 		return nil
 	}
-	if s.isConnected || now.Before(s.a4afUntil) {
+	if t.isConnected(s) || now.Before(s.a4afUntil) {
 		return nil
 	}
 

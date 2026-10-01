@@ -38,7 +38,7 @@ var allowed = map[string][]string{
 	"internal/piece":       {"internal/wire"},
 	"internal/server":      {"internal/wire", "internal/wire/server"},
 	"internal/store":       {"internal/piece", "internal/wire"},
-	"internal/transfer":    {"internal/aich", "internal/link", "internal/piece", "internal/store", "internal/wire", "internal/wire/client"},
+	"internal/transfer":    {"internal/aich", "internal/link", "internal/piece", "internal/wire", "internal/wire/client"},
 	"internal/transport":   {"internal/clock"},
 	"internal/upload":      {"internal/identity", "internal/piece", "internal/wire"},
 	"internal/wire":        {},
@@ -57,10 +57,6 @@ var allowed = map[string][]string{
 // fails once the edge is gone, so the cleanup that removes it removes the
 // entry too.
 var exceptions = map[edge]string{
-	// TODO: Transfer embeds and exports store.Transfer as its Durable State;
-	// a pure state machine should hand back its own value type and let the
-	// engine convert it for the store.
-	{"internal/transfer", "internal/store"}: "pure state machine imports the store leaf",
 	// TODO: loadServerLists/loadNodeLists and the trace file use os directly
 	// instead of the disk seam (engine.go:254,328,344).
 	{"internal/engine", "os"}: "engine bypasses the disk seam",

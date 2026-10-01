@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
@@ -145,10 +146,12 @@ func toFile(state State) stateFile {
 			entry.PartHashes = append(entry.PartHashes, hashText(part))
 		}
 		for _, block := range transfer.WrittenBlocks {
-			entry.WrittenBlocks = append(entry.WrittenBlocks, blockFile(block))
-		}
-		for _, block := range transfer.PartialBlocks {
-			entry.PartialBlocks = append(entry.PartialBlocks, partialBlockFile(block))
+			part, index := block.Part(), block.Index()
+			if block == piece.BlockOf(transfer.Size, part, index) {
+				entry.WrittenBlocks = append(entry.WrittenBlocks, blockFile{Part: part, Index: index})
+			} else {
+				entry.PartialBlocks = append(entry.PartialBlocks, partialBlockFile{Part: part, Index: index, Size: block.End - block.Begin})
+			}
 		}
 		file.Transfers = append(file.Transfers, entry)
 	}
@@ -179,7 +182,7 @@ func parse(raw []byte) (State, error) {
 		transfer := Transfer{
 			Size:          entry.Size,
 			File:          entry.File,
-			VerifiedParts: entry.VerifiedParts,
+			VerifiedParts: piece.Set(entry.VerifiedParts),
 			Uploaded:      entry.Uploaded,
 			Created:       entry.Created,
 		}
@@ -187,10 +190,11 @@ func parse(raw []byte) (State, error) {
 			transfer.PartHashes = append(transfer.PartHashes, wire.Hash(part))
 		}
 		for _, block := range entry.WrittenBlocks {
-			transfer.WrittenBlocks = append(transfer.WrittenBlocks, Block(block))
+			transfer.WrittenBlocks = append(transfer.WrittenBlocks, piece.BlockOf(entry.Size, block.Part, block.Index))
 		}
 		for _, block := range entry.PartialBlocks {
-			transfer.PartialBlocks = append(transfer.PartialBlocks, PartialBlock(block))
+			begin := piece.BlockOf(entry.Size, block.Part, block.Index).Begin
+			transfer.WrittenBlocks = append(transfer.WrittenBlocks, piece.Block{Begin: begin, End: begin + block.Size})
 		}
 		state.Transfers[wire.Hash(entry.Hash)] = transfer
 	}

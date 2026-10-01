@@ -202,7 +202,7 @@ func TestIdentityBothWays(t *testing.T) {
 		t.Fatalf("a identified %+v", id)
 	}
 	lastOf[Identified](t, l.b)
-	if !l.a.s.IsIdentified() || !l.b.s.IsIdentified() {
+	if !l.a.s.isIdentified() || !l.b.s.isIdentified() {
 		t.Fatal("not identified")
 	}
 }
@@ -224,7 +224,7 @@ func TestIdentityFailsForForgedKey(t *testing.T) {
 	if failed := lastOf[IdentityFailed](t, l.a); failed.UserHash != cb.Self.UserHash {
 		t.Fatalf("failed %+v", failed)
 	}
-	if len(eventsOf[Identified](l.a)) != 0 || l.a.s.IsIdentified() {
+	if len(eventsOf[Identified](l.a)) != 0 || l.a.s.isIdentified() {
 		t.Fatal("forged key identified")
 	}
 	// a signed over the key it was given, so b rejects a too.

@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
@@ -73,29 +74,17 @@ type Credit struct {
 	LastSeen   time.Time
 }
 
+// Transfer is one file's download progress. WrittenBlocks are the blocks
+// written to parts not yet verified; one cut off when the slot delivering it
+// ended is its leading bytes, as aMule's .part.met gap list keeps them.
 type Transfer struct {
 	Size          int64
 	File          string
 	PartHashes    []wire.Hash
-	VerifiedParts []bool
-	WrittenBlocks []Block
-	PartialBlocks []PartialBlock
+	VerifiedParts piece.Set
+	WrittenBlocks []piece.Block
 	Uploaded      uint64
 	Created       time.Time
-}
-
-// Block is one 184320-byte block written to a part that is not yet verified.
-type Block struct {
-	Part  int
-	Index int
-}
-
-// PartialBlock is the first Size bytes of a block, written before the slot
-// delivering it ended, as aMule's .part.met gap list keeps them.
-type PartialBlock struct {
-	Part  int
-	Index int
-	Size  int64
 }
 
 func buildState() State {

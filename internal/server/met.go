@@ -84,7 +84,7 @@ func ParseMet(data []byte) ([]Entry, error) {
 		case e.Host != "" && e.Endpoint.Port() != 0:
 			e.Endpoint = netip.AddrPortFrom(netip.Addr{}, e.Endpoint.Port())
 			entries = append(entries, e)
-		case isUsable(e.Endpoint):
+		case wire.IsDialable(e.Endpoint):
 			entries = append(entries, e)
 		}
 	}
@@ -117,9 +117,4 @@ func setMetTag(e *Entry, t wire.Tag) {
 	case t.ID == metUDPPortObfuscation:
 		e.UDPObfuscationPort = uint16(t.Uint)
 	}
-}
-
-func isUsable(ep netip.AddrPort) bool {
-	a := ep.Addr()
-	return a.Is4() && ep.Port() != 0 && !a.IsUnspecified() && !a.IsMulticast() && a != netip.AddrFrom4([4]byte{255, 255, 255, 255})
 }

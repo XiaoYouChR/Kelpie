@@ -2,10 +2,10 @@ package link_test
 
 import (
 	"encoding/json"
-	"errors"
 	"net/netip"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/XiaoYouChR/Kelpie/internal/link"
@@ -33,8 +33,8 @@ func TestParseSharedVectors(t *testing.T) {
 		t.Run(v.Link, func(t *testing.T) {
 			file, err := link.Parse(v.Link)
 			if !v.Valid {
-				if !errors.Is(err, link.ErrInvalid) {
-					t.Fatalf("Parse = %+v, %v; want ErrInvalid", file, err)
+				if err == nil || !strings.HasPrefix(err.Error(), "invalid ed2k file link: ") {
+					t.Fatalf("Parse = %+v, %v; want an invalid link error", file, err)
 				}
 				return
 			}

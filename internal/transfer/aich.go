@@ -129,9 +129,7 @@ func toVotePrefix(addr netip.Addr) netip.Prefix {
 // reported the trusted root and has no request pending, HighID first, at
 // random. Without one the part is thrown away whole.
 func (t *Transfer) requestRecovery(part int, now time.Time) []Action {
-	begin := int64(part) * piece.PartSize
-	end := min(begin+piece.PartSize, t.file.Size)
-	if !t.aich.isTrusted || t.aich.isBroken || end-begin <= piece.BlockSize {
+	if !t.aich.isTrusted || t.aich.isBroken || piece.BlockCount(t.file.Size, part) == 1 {
 		return t.removePart(part, now)
 	}
 	var highIDs, lowIDs []uint64
@@ -189,8 +187,8 @@ func (t *Transfer) OnRecovery(peer uint64, part int, root wire.AICHHash, entries
 	}
 	delete(t.aich.asked, part)
 	t.aich.verified[part] = hashes
-	begin := int64(part) * piece.PartSize
-	return []Action{HashBlocks{Part: part, Begin: begin, End: min(begin+piece.PartSize, t.file.Size)}}
+	partRange := piece.PartRange(t.file.Size, part)
+	return []Action{HashBlocks{Part: part, Begin: partRange.Begin, End: partRange.End}}
 }
 
 // OnRecoveryFailed: the peer could not give the recovery data it was asked
@@ -222,13 +220,12 @@ func (t *Transfer) OnBlocksHashed(part int, hashes []wire.AICHHash, now time.Tim
 	// is noted apart from who sent it.
 	isCorrupt := false
 	var senders []uint64
-	begin := int64(part) * piece.PartSize
 	for i, hash := range verified {
 		if i < len(hashes) && hashes[i] == hash {
 			continue
 		}
 		isCorrupt = true
-		for _, sender := range t.picker.OnBlockFailed(t.picker.BlockAt(begin + int64(i)*piece.BlockSize)) {
+		for _, sender := range t.picker.OnBlockFailed(piece.BlockOf(t.file.Size, part, i)) {
 			if !slices.Contains(senders, sender) {
 				senders = append(senders, sender)
 			}

@@ -334,7 +334,7 @@ func (s *Server) OnResolved(host string, addr netip.Addr, now time.Time) Output 
 		l.resolvedAt = now
 		endpoint := netip.AddrPortFrom(addr, l.Endpoint.Port())
 		isInUse := l == s.current || slices.ContainsFunc(s.attempts, func(a attempt) bool { return a.server == l })
-		if isUsable(endpoint) && !isInUse && s.serverByEndpoint(endpoint) == nil {
+		if wire.IsDialable(endpoint) && !isInUse && s.serverByEndpoint(endpoint) == nil {
 			l.Endpoint = endpoint
 		}
 	}

@@ -11,7 +11,6 @@ import (
 
 	"github.com/XiaoYouChR/Kelpie/internal/link"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
-	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
@@ -30,19 +29,13 @@ const (
 	StatusFailed
 )
 
-type Code string
-
-const (
-	CodeDiskFull  Code = "DISK_FULL"
-	CodeFileError Code = "FILE_ERROR"
-)
-
-// Outcome is the Transfer's state as its Run sees it. Code and Message are
-// set only for StatusFailed.
+// Outcome is the Transfer's state as its Run sees it. IsDiskFull and
+// Message are set only for StatusFailed; a failure that is not a full disk
+// is a file error.
 type Outcome struct {
-	Status  Status
-	Code    Code
-	Message string
+	Status     Status
+	IsDiskFull bool
+	Message    string
 }
 
 type Progress struct {
@@ -55,12 +48,25 @@ type Progress struct {
 	ActivePeers  int
 }
 
+// State is the Transfer's Durable State. It has the fields of store.Transfer,
+// so the engine converts one to the other. WrittenBlocks are those of parts
+// not yet verified, each a whole block or the leading bytes of one.
+type State struct {
+	Size          int64
+	File          string
+	PartHashes    []wire.Hash
+	VerifiedParts piece.Set
+	WrittenBlocks []piece.Block
+	Uploaded      uint64
+	Created       time.Time
+}
+
 type Options struct {
 	File link.File
 	// Path is the file the Transfer writes; State is dropped when it belongs
 	// to another path.
 	Path   string
-	State  *store.Transfer
+	State  *State
 	Mode   Mode
 	Random *rand.Rand
 }
@@ -84,9 +90,9 @@ type Transfer struct {
 	// next OnTick.
 	pending []Action
 	// unhashedParts are written parts waiting for the hash set.
-	unhashedParts     []int
+	unhashedParts []int
+	// hashSetPeer is the peer asked for the hash set; 0 when none is.
 	hashSetPeer       uint64
-	isHashSetAsked    bool
 	hashSetAskedPeers map[uint64]bool
 	aich              aichState
 
@@ -114,7 +120,7 @@ type Transfer struct {
 
 // Build creates the Transfer for options.File. Persisted state that does not
 // fit the file is dropped and the download starts over; a seed whose state is
-// not complete fails at once with FILE_ERROR.
+// not complete fails at once with a file error.
 func Build(options Options, now time.Time) *Transfer {
 	t := &Transfer{
 		file:              options.File,
@@ -130,7 +136,7 @@ func Build(options Options, now time.Time) *Transfer {
 		aich:              buildAICHState(options.File.AICHHash, options.Random),
 	}
 	if state := options.State; state != nil && state.File == options.Path && state.Size == options.File.Size {
-		picker, err := piece.BuildPicker[uint64](state.Size, toResumeData(state), options.Random)
+		picker, err := piece.BuildPicker[uint64](state.Size, state.VerifiedParts, state.WrittenBlocks, options.Random)
 		if err == nil {
 			t.picker = picker
 			t.created = state.Created
@@ -141,17 +147,17 @@ func Build(options Options, now time.Time) *Transfer {
 		}
 	}
 	if t.picker == nil {
-		t.picker, _ = piece.BuildPicker[uint64](options.File.Size, piece.ResumeData{}, options.Random)
+		t.picker, _ = piece.BuildPicker[uint64](options.File.Size, nil, nil, options.Random)
 	}
 
 	switch {
-	case t.picker.IsComplete():
+	case t.isComplete():
 		t.outcome = Outcome{Status: StatusComplete}
 		if t.mode == ModeSeed {
 			t.outcome = Outcome{Status: StatusRunning}
 		}
 	case t.mode == ModeSeed:
-		t.outcome = Outcome{Status: StatusFailed, Code: CodeFileError, Message: "the file is not complete"}
+		t.outcome = Outcome{Status: StatusFailed, Message: "the file is not complete"}
 	default:
 		for _, part := range t.picker.WrittenParts() {
 			t.pending = append(t.pending, t.requestPartHash(part)...)
@@ -163,28 +169,12 @@ func Build(options Options, now time.Time) *Transfer {
 	return t
 }
 
-func toResumeData(state *store.Transfer) piece.ResumeData {
-	resume := piece.ResumeData{}
-	for part, isVerified := range state.VerifiedParts {
-		if isVerified {
-			resume.VerifiedParts = append(resume.VerifiedParts, part)
-		}
-	}
-	for _, block := range state.WrittenBlocks {
-		partBegin := int64(block.Part) * piece.PartSize
-		begin := partBegin + int64(block.Index)*piece.BlockSize
-		end := min(begin+piece.BlockSize, partBegin+piece.PartSize, state.Size)
-		resume.WrittenBlocks = append(resume.WrittenBlocks, piece.Block{Begin: begin, End: end})
-	}
-	for _, block := range state.PartialBlocks {
-		begin := int64(block.Part)*piece.PartSize + int64(block.Index)*piece.BlockSize
-		resume.WrittenBlocks = append(resume.WrittenBlocks, piece.Block{Begin: begin, End: begin + block.Size})
-	}
-	return resume
-}
-
 func (t *Transfer) matchHashSet(hashes []wire.Hash) bool {
 	return len(hashes) > 0 && len(hashes) == piece.HashCount(t.file.Size) && piece.BuildFileHash(hashes) == t.file.Hash
+}
+
+func (t *Transfer) isComplete() bool {
+	return t.picker.VerifiedParts().IsFull()
 }
 
 func (t *Transfer) isRunning() bool {
@@ -199,28 +189,16 @@ func (t *Transfer) Outcome() Outcome {
 	return t.outcome
 }
 
-// ToState exports the Durable State for internal/store.
-func (t *Transfer) ToState() store.Transfer {
-	resume := t.picker.ToResumeData()
-	state := store.Transfer{
+func (t *Transfer) ToState() State {
+	return State{
 		Size:          t.file.Size,
 		File:          t.path,
 		PartHashes:    t.partHashes,
 		VerifiedParts: t.picker.VerifiedParts(),
-		WrittenBlocks: []store.Block{},
-		PartialBlocks: []store.PartialBlock{},
+		WrittenBlocks: t.picker.WrittenBlocks(),
 		Uploaded:      uint64(t.uploaded),
 		Created:       t.created,
 	}
-	for _, block := range resume.WrittenBlocks {
-		part, index := block.Part(), int(block.Begin%piece.PartSize/piece.BlockSize)
-		if block == t.picker.BlockAt(block.Begin) {
-			state.WrittenBlocks = append(state.WrittenBlocks, store.Block{Part: part, Index: index})
-		} else {
-			state.PartialBlocks = append(state.PartialBlocks, store.PartialBlock{Part: part, Index: index, Size: block.End - block.Begin})
-		}
-	}
-	return state
 }
 
 func (t *Transfer) Progress(now time.Time) Progress {
@@ -295,11 +273,7 @@ func (t *Transfer) OnDiskFailed(isDiskFull bool, message string) {
 	if !t.isRunning() {
 		return
 	}
-	code := CodeFileError
-	if isDiskFull {
-		code = CodeDiskFull
-	}
-	t.outcome = Outcome{Status: StatusFailed, Code: code, Message: message}
+	t.outcome = Outcome{Status: StatusFailed, IsDiskFull: isDiskFull, Message: message}
 }
 
 func (t *Transfer) requestPartHash(part int) []Action {
@@ -307,8 +281,8 @@ func (t *Transfer) requestPartHash(part int) []Action {
 		t.unhashedParts = append(t.unhashedParts, part)
 		return nil
 	}
-	begin := int64(part) * piece.PartSize
-	return []Action{HashPart{Part: part, Begin: begin, End: min(begin+piece.PartSize, t.file.Size)}}
+	partRange := piece.PartRange(t.file.Size, part)
+	return []Action{HashPart{Part: part, Begin: partRange.Begin, End: partRange.End}}
 }
 
 // expectedHash follows piece.HashCount: a file below PartSize is checked
@@ -332,7 +306,7 @@ func (t *Transfer) OnPartHashed(part int, hash wire.Hash, now time.Time) []Actio
 	}
 	if expected, _ := t.expectedHash(part); hash == expected {
 		t.picker.OnPartVerified(part)
-		if t.picker.IsComplete() {
+		if t.isComplete() {
 			t.outcome = Outcome{Status: StatusComplete}
 		}
 		return nil
@@ -344,7 +318,7 @@ func (t *Transfer) OnPartHashed(part int, hash wire.Hash, now time.Time) []Actio
 // hash, and starts hashing the parts that waited for them.
 func (t *Transfer) OnHashSet(peer uint64, hashes []wire.Hash) []Action {
 	if peer == t.hashSetPeer {
-		t.isHashSetAsked = false
+		t.hashSetPeer = 0
 	}
 	if !t.isDownloading() || len(t.partHashes) > 0 || !t.matchHashSet(hashes) {
 		return nil
@@ -364,13 +338,12 @@ func (t *Transfer) needsHashSet() bool {
 }
 
 func (t *Transfer) requestHashSet() []Action {
-	if !t.needsHashSet() || t.isHashSetAsked {
+	if !t.needsHashSet() || t.hashSetPeer != 0 {
 		return nil
 	}
 	for _, s := range t.sources {
-		if s.isConnected && !t.hashSetAskedPeers[s.peer] {
+		if t.isConnected(s) && !t.hashSetAskedPeers[s.peer] {
 			t.hashSetPeer = s.peer
-			t.isHashSetAsked = true
 			t.hashSetAskedPeers[s.peer] = true
 			return []Action{RequestHashSet{Peer: s.peer}}
 		}

@@ -76,7 +76,8 @@ func (t *Tree) Root() wire.AICHHash { return t.root }
 
 func (t *Tree) buildHash(n node) wire.AICHHash {
 	return buildNodeHash(n, func(leaf node) wire.AICHHash {
-		return t.leaves[int(leaf.begin/piece.PartSize)*blocksPerPart+int(leaf.begin%piece.PartSize/piece.BlockSize)]
+		block := piece.Block{Begin: leaf.begin}
+		return t.leaves[block.Part()*blocksPerPart+block.Index()]
 	})
 }
 
@@ -117,7 +118,7 @@ func MatchRecovery(root wire.AICHHash, size int64, part int, entries []client.AI
 	got := buildNodeHash(target, func(leaf node) wire.AICHHash { return byIdent[leaf.ident] })
 	for i := len(path) - 1; i >= 0; i-- {
 		sibling := path[i]
-		if sibling.isLeft {
+		if sibling.isLeft() {
 			got = buildPairHash(byIdent[sibling.ident], got)
 		} else {
 			got = buildPairHash(got, byIdent[sibling.ident])
@@ -136,15 +137,18 @@ func MatchRecovery(root wire.AICHHash, size int64, part int, entries []client.AI
 // node is [begin, begin+size) of the file. ident is aMule's hash identifier:
 // a leading 1 for the root, then 1 per left and 0 per right step.
 type node struct {
-	begin  int64
-	size   int64
-	isLeft bool
-	ident  uint32
+	begin int64
+	size  int64
+	ident uint32
 }
 
-// buildRoot: aMule counts the root as a left branch.
 func buildRoot(size int64) node {
-	return node{size: size, isLeft: true, ident: 1}
+	return node{size: size, ident: 1}
+}
+
+// isLeft holds for the root too, which aMule counts as a left branch.
+func (n node) isLeft() bool {
+	return n.ident&1 == 1
 }
 
 func (n node) isLeaf() bool {
@@ -160,11 +164,11 @@ func (n node) children() (node, node) {
 		unit = piece.PartSize
 	}
 	units := (n.size + unit - 1) / unit
-	if n.isLeft {
+	if n.isLeft() {
 		units++
 	}
 	left := units / 2 * unit
-	return node{n.begin, left, true, n.ident<<1 | 1}, node{n.begin + left, n.size - left, false, n.ident << 1}
+	return node{n.begin, left, n.ident<<1 | 1}, node{n.begin + left, n.size - left, n.ident << 1}
 }
 
 func (n node) leaves() []node {
@@ -178,11 +182,11 @@ func (n node) leaves() []node {
 // buildPath walks from the root down to part and returns the siblings
 // passed on the way, top first, and the part's node.
 func buildPath(size int64, part int) ([]node, node) {
-	begin := int64(part) * piece.PartSize
-	partSize := min(piece.PartSize, size-begin)
+	partRange := piece.PartRange(size, part)
+	begin := partRange.Begin
 	n := buildRoot(size)
 	var siblings []node
-	for n.begin != begin || n.size != partSize {
+	for n.begin != begin || n.size != partRange.End-begin {
 		left, right := n.children()
 		if begin < right.begin {
 			siblings = append(siblings, right)

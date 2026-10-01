@@ -680,8 +680,7 @@ func matchCarrierNAT(mapped, public netip.Addr) bool {
 }
 
 func isPublicIPv4(addr netip.Addr) bool {
-	return addr.Is4() && addr.IsGlobalUnicast() && !addr.IsPrivate() &&
-		!sharedAddressSpace.Contains(addr) && addr.As4()[0] != 0 && addr.As4()[0] < 240
+	return addr.Is4() && wire.IsPublic(addr) && !sharedAddressSpace.Contains(addr)
 }
 
 func (e *Engine) closeNAT(unmap func(context.Context) error) {
@@ -757,7 +756,7 @@ func (e *Engine) buildState() store.State {
 	}
 	for _, r := range e.runList {
 		if r.transfer != nil {
-			state.Transfers[r.file.Hash] = r.transfer.ToState()
+			state.Transfers[r.file.Hash] = store.Transfer(r.transfer.ToState())
 		}
 	}
 	state.Servers = toStoreServers(e.server.Entries())

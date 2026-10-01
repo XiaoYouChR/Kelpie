@@ -19,12 +19,16 @@ const largeFileSize = 4_290_048_000
 // peer's parts, but the upload slot, which eD2k grants per client and not per
 // file, is asked for one started file at a time.
 type downloadState struct {
-	files         map[wire.Hash]*download
+	files map[wire.Hash]*download
+	// started is the file whose slot we ask for; zero when none is.
 	started       wire.Hash
-	isStarted     bool
 	isStartSent   bool
 	isSlotGranted bool
 	lastData      time.Time
+}
+
+func (d *downloadState) isStarted() bool {
+	return d.started != wire.Hash{}
 }
 
 type download struct {
@@ -66,7 +70,7 @@ func (s *Session) Add(file wire.Hash, size int64, parts piece.Set) Output {
 // releases the blocks it had requested.
 func (s *Session) Remove(file wire.Hash) Output {
 	var out Output
-	if s.down.isStarted && s.down.started == file && s.down.isSlotGranted {
+	if s.down.isStarted() && s.down.started == file && s.down.isSlotGranted {
 		out.send(client.CancelTransfer{})
 	}
 	s.removeFile(file, &out)
@@ -77,10 +81,10 @@ func (s *Session) Remove(file wire.Hash) Output {
 // the previous one.
 func (s *Session) Start(file wire.Hash) Output {
 	var out Output
-	if s.down.files[file] == nil || s.down.isStarted && s.down.started == file {
+	if s.down.files[file] == nil || s.down.isStarted() && s.down.started == file {
 		return out
 	}
-	if s.down.isStarted {
+	if s.down.isStarted() {
 		if s.down.isSlotGranted {
 			out.send(client.CancelTransfer{})
 			s.down.isSlotGranted = false
@@ -88,7 +92,7 @@ func (s *Session) Start(file wire.Hash) Output {
 		s.cancelInFlight(s.down.started, &out)
 		s.down.isStartSent = false
 	}
-	s.down.started, s.down.isStarted = file, true
+	s.down.started = file
 	s.runStarted(&out)
 	return out
 }
@@ -154,7 +158,7 @@ func (s *Session) Request(file wire.Hash, blocks []piece.Block) Output {
 // Stop gives up every block in flight on a closing connection.
 func (s *Session) Stop() Output {
 	var out Output
-	if s.down.isStarted {
+	if s.down.isStarted() {
 		s.cancelInFlight(s.down.started, &out)
 	}
 	return out
@@ -164,7 +168,7 @@ func (s *Session) removeFile(file wire.Hash, out *Output) {
 	s.cancelInFlight(file, out)
 	delete(s.down.files, file)
 	delete(s.sx.asked, file)
-	if s.down.isStarted && s.down.started == file {
+	if s.down.isStarted() && s.down.started == file {
 		s.down = downloadState{files: s.down.files}
 	}
 }
@@ -308,7 +312,7 @@ func (s *Session) onNoFile(file wire.Hash, out *Output) {
 // still need is not asked for a slot (aMule DS_NONEEDEDPARTS,
 // DownloadClient.cpp:459-466).
 func (s *Session) runStarted(out *Output) {
-	if !s.down.isStarted {
+	if !s.down.isStarted() {
 		return
 	}
 	d := s.down.files[s.down.started]
@@ -343,7 +347,7 @@ func (s *Session) requestBlocks(d *download, out *Output) {
 
 func (s *Session) onQueueRank(rank uint32, out *Output) {
 	s.stopSlot(out)
-	if s.down.isStarted {
+	if s.down.isStarted() {
 		out.add(Queued{File: s.down.started, Rank: rank})
 	}
 }
@@ -355,7 +359,7 @@ func (s *Session) onSlotGranted(now time.Time, out *Output) {
 	s.down.isSlotGranted = true
 	s.down.lastData = now
 	var file wire.Hash
-	if s.down.isStarted {
+	if s.down.isStarted() {
 		file = s.down.started
 	}
 	out.add(SlotGranted{File: file})
@@ -369,7 +373,7 @@ func (s *Session) stopSlot(out *Output) {
 	s.down.isSlotGranted = false
 	s.down.isStartSent = false
 	var file wire.Hash
-	if s.down.isStarted {
+	if s.down.isStarted() {
 		file = s.down.started
 		s.cancelInFlight(file, out)
 	}
@@ -377,7 +381,7 @@ func (s *Session) stopSlot(out *Output) {
 }
 
 func (s *Session) hasBlocksInFlight() bool {
-	return s.down.isStarted && len(s.down.files[s.down.started].inFlight) > 0
+	return s.down.isStarted() && len(s.down.files[s.down.started].inFlight) > 0
 }
 
 func (s *Session) onPart(file wire.Hash, start int64, data []byte, now time.Time, out *Output) {

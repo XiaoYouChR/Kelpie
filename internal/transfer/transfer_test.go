@@ -10,7 +10,6 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/aich"
 	"github.com/XiaoYouChR/Kelpie/internal/link"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
-	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
@@ -210,11 +209,11 @@ func TestResumeFromPersistedState(t *testing.T) {
 func TestResumeHashesWrittenParts(t *testing.T) {
 	data := buildData(piece.PartSize + 100)
 	file := buildFile(data)
-	var blocks []store.Block
+	var blocks []piece.Block
 	for i := range piece.BlockCount(file.Size, 0) {
-		blocks = append(blocks, store.Block{Part: 0, Index: i})
+		blocks = append(blocks, piece.BlockOf(file.Size, 0, i))
 	}
-	state := store.Transfer{Size: file.Size, File: path, VerifiedParts: []bool{false, false}, WrittenBlocks: blocks, Created: start}
+	state := transfer.State{Size: file.Size, File: path, VerifiedParts: []bool{false, false}, WrittenBlocks: blocks, Created: start}
 	h := buildHarness(t, data, transfer.Options{File: file, State: &state})
 	copy(h.disk, data[:piece.PartSize])
 
@@ -295,10 +294,7 @@ func TestCorruptPartBansSenderAndIsDownloadedAgain(t *testing.T) {
 }
 
 func TestDiskFailure(t *testing.T) {
-	for _, test := range []struct {
-		isDiskFull bool
-		want       transfer.Code
-	}{{true, transfer.CodeDiskFull}, {false, transfer.CodeFileError}} {
+	for _, isDiskFull := range []bool{true, false} {
 		data := buildData(1000)
 		h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
 		h.connect(1, 1, piece.Set{true})
@@ -307,10 +303,10 @@ func TestDiskFailure(t *testing.T) {
 		if countActions[transfer.Write](actions) != 1 {
 			t.Fatalf("no Write for a received block: %+v", actions)
 		}
-		h.transfer.OnDiskFailed(test.isDiskFull, "no space left on device")
+		h.transfer.OnDiskFailed(isDiskFull, "no space left on device")
 		got := h.transfer.Outcome()
-		if got.Status != transfer.StatusFailed || got.Code != test.want {
-			t.Fatalf("isDiskFull=%v: outcome = %+v, want %s", test.isDiskFull, got, test.want)
+		if got.Status != transfer.StatusFailed || got.IsDiskFull != isDiskFull {
+			t.Fatalf("isDiskFull=%v: outcome = %+v", isDiskFull, got)
 		}
 		if h.transfer.Request(1, 1) != nil {
 			t.Fatal("failed transfer still hands out requests")
@@ -473,11 +469,11 @@ func TestSeedMode(t *testing.T) {
 	data := buildData(piece.PartSize + 100)
 	file := buildFile(data)
 	incomplete := buildHarness(t, data, transfer.Options{File: file, Mode: transfer.ModeSeed})
-	if got := incomplete.transfer.Outcome(); got.Status != transfer.StatusFailed || got.Code != transfer.CodeFileError {
+	if got := incomplete.transfer.Outcome(); got.Status != transfer.StatusFailed || got.IsDiskFull {
 		t.Fatalf("seed of an incomplete file: %+v", got)
 	}
 
-	state := store.Transfer{Size: file.Size, File: path, PartHashes: file.PartHashes, VerifiedParts: []bool{true, true}, Uploaded: 500, Created: start}
+	state := transfer.State{Size: file.Size, File: path, PartHashes: file.PartHashes, VerifiedParts: []bool{true, true}, Uploaded: 500, Created: start}
 	h := buildHarness(t, data, transfer.Options{File: file, Mode: transfer.ModeSeed, State: &state})
 	if got := h.transfer.Outcome(); got.Status != transfer.StatusRunning {
 		t.Fatalf("seed of a complete file: %+v", got)
@@ -737,8 +733,8 @@ func TestResumeKeepsPartOfBlock(t *testing.T) {
 	h.run(h.transfer.OnBlockReceived(1, head, data[head.Begin:head.End], h.now))
 
 	state := h.transfer.ToState()
-	if len(state.WrittenBlocks) != 0 || !slices.Equal(state.PartialBlocks, []store.PartialBlock{{Part: 0, Index: 0, Size: 400}}) {
-		t.Fatalf("state = written %v, partial %v", state.WrittenBlocks, state.PartialBlocks)
+	if !slices.Equal(state.WrittenBlocks, []piece.Block{head}) {
+		t.Fatalf("state = written %v, want the head %v", state.WrittenBlocks, head)
 	}
 	resumed := buildHarness(t, data, transfer.Options{File: file, State: &state})
 	if got := resumed.transfer.Progress(start).Received; got != 400 {

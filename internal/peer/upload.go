@@ -167,11 +167,12 @@ func (s *Session) onStatusRequest(file wire.Hash, shares Shares, out *Output) {
 		return
 	}
 	s.up.file = file
-	out.send(client.FileStatus{Hash: file, Parts: toStatus(share)})
+	out.send(client.FileStatus{Hash: file, Parts: ToStatus(share)})
 }
 
-// toStatus sends no parts for a complete file, as eMule does.
-func toStatus(share Share) wire.Bitfield {
+// ToStatus is our part status of share for OP_FILESTATUS and reasks: no
+// parts for a complete file, as eMule sends.
+func ToStatus(share Share) wire.Bitfield {
 	if share.Parts.IsFull() {
 		return wire.Bitfield{}
 	}
@@ -197,7 +198,7 @@ func (s *Session) onMultiPacket(id client.FileIdentifier, requests []wire.Packet
 			s.setRequestedParts(r, share)
 			answers = append(answers, client.FileNameAnswer{Hash: file, Name: share.Name})
 		case client.SetRequestFileID:
-			answers = append(answers, client.FileStatus{Hash: file, Parts: toStatus(share)})
+			answers = append(answers, client.FileStatus{Hash: file, Parts: ToStatus(share)})
 		case client.RequestSources2:
 			sourcesRequest = &r
 		case client.AICHFileHashRequest:
