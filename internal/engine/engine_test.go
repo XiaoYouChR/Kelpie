@@ -597,28 +597,33 @@ func TestRateLimitCapsDownload(t *testing.T) {
 	}
 }
 
+// goed2kLink is the Transfer saved in the goed2k fixture, for goed2kPath.
+const (
+	goed2kLink = "ed2k://|file|ubuntu.iso|25000000|2D2A61A79C0E0B4B4B7E6F7A4B9F1C55|/"
+	goed2kPath = "/Users/alice/Downloads/ubuntu 24.04 中文.iso"
+)
+
+func (n *node) setGoed2kState() {
+	n.w.t.Helper()
+	fixture, err := os.ReadFile("../store/testdata/goed2k-v3.json")
+	if err != nil {
+		n.w.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(n.folder, "state.json"), fixture, 0o644); err != nil {
+		n.w.t.Fatal(err)
+	}
+}
+
 func TestGoed2kStateResumes(t *testing.T) {
 	w := buildWorld(t)
 	b := w.addNode("198.51.100.2")
-	fixture, err := os.ReadFile("../store/testdata/goed2k-v3.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(b.folder, "state.json"), fixture, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	b.setGoed2kState()
 	e := b.start()
 	if got := e.self.UserHash.String(); got != "FD3887E9230E53F744E5CA8FAF1A6F31" {
 		t.Fatalf("user hash %s, want the goed2k one", got)
 	}
-	const path = "/Users/alice/Downloads/ubuntu 24.04 中文.iso"
-	b.disk.SetData(path, nil)
-	b.engine.Post(RunCommand{
-		ID:   1,
-		Mode: ModeDownload,
-		Link: "ed2k://|file|ubuntu.iso|25000000|2D2A61A79C0E0B4B4B7E6F7A4B9F1C55|/",
-		File: path,
-	})
+	b.disk.SetData(goed2kPath, nil)
+	b.engine.Post(RunCommand{ID: 1, Mode: ModeDownload, Link: goed2kLink, File: goed2kPath})
 	w.waitFor("first progress", func() bool {
 		_, ok := b.events.progressByRun(1)
 		return ok
@@ -642,6 +647,25 @@ func TestGoed2kStateResumes(t *testing.T) {
 	}
 	if saved.Version != 4 || saved.UserHash != "FD3887E9230E53F744E5CA8FAF1A6F31" || len(saved.PrivateKey) == 0 || len(saved.Credits) != 2 {
 		t.Fatalf("saved state %+v", saved)
+	}
+}
+
+// TestStateOfAnotherPathIsNotResumed: resume data belongs to the file it
+// was written for; a run to another path starts over (docs/protocol.md).
+func TestStateOfAnotherPathIsNotResumed(t *testing.T) {
+	w := buildWorld(t)
+	b := w.addNode("198.51.100.2")
+	b.setGoed2kState()
+	b.start()
+	const path = "/Users/alice/Downloads/elsewhere.iso"
+	b.disk.SetData(path, nil)
+	b.engine.Post(RunCommand{ID: 1, Mode: ModeDownload, Link: goed2kLink, File: path})
+	w.waitFor("first progress", func() bool {
+		_, ok := b.events.progressByRun(1)
+		return ok
+	})
+	if got := b.events.firstByRun(1).Received; got != 0 {
+		t.Fatalf("started at %d bytes, want 0", got)
 	}
 }
 
