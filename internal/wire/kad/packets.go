@@ -40,8 +40,10 @@ const (
 
 // Version is the Kad version we announce: 6 brought obfuscation and the UDP
 // firewall test, 7 KADEMLIA_FIREWALLED2_REQ and the TCP firewall
-// acknowledgement. Version 8 (HELLO_RES_ACK) is not spoken.
-const Version byte = 0x07
+// acknowledgement, 8 TAG_KADMISCOPTIONS and HELLO_RES_ACK. aMule stops at 8
+// (Constants.h:29); eMule's 9 is about keyword storage, which Kelpie does
+// not do.
+const Version byte = 0x08
 
 // Req.SearchType values: how many contacts the asker wants back.
 const (

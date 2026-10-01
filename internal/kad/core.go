@@ -122,7 +122,10 @@ type coreConfig struct {
 // It does no I/O and keeps no clock; each reaction returns the datagrams to
 // send and the sources found.
 type core struct {
-	id, userHash     wire.Hash
+	id, userHash wire.Hash
+	// version is the Kad version we announce, kadwire.Version but in tests
+	// that play an older node.
+	version          byte
 	tcpPort, udpPort uint16
 	udpKey           uint32
 	rng              *rand.Rand
@@ -161,7 +164,7 @@ type core struct {
 
 func buildCore(cfg coreConfig, now time.Time) *core {
 	return &core{
-		id: cfg.ID, userHash: cfg.UserHash, tcpPort: cfg.TCPPort, udpPort: cfg.UDPPort, udpKey: cfg.UDPKey, rng: cfg.Rand,
+		id: cfg.ID, userHash: cfg.UserHash, version: kadwire.Version, tcpPort: cfg.TCPPort, udpPort: cfg.UDPPort, udpKey: cfg.UDPKey, rng: cfg.Rand,
 		table:       buildTable(cfg.ID, now),
 		index:       index{files: map[wire.Hash]map[wire.Hash]indexed{}},
 		firewall:    firewall{isLastFirewalled: true, asked: map[netip.Addr]bool{}},
@@ -276,7 +279,7 @@ func (c *core) onMessage(m any) output {
 // they say something, so that a node does not add us while we are UDP
 // firewalled (KademliaUDPListener.cpp:126).
 func (c *core) buildHello(version byte, isAckWanted bool) kadwire.Hello {
-	h := kadwire.Hello{ID: c.id, TCPPort: c.tcpPort, Version: kadwire.Version}
+	h := kadwire.Hello{ID: c.id, TCPPort: c.tcpPort, Version: c.version}
 	if !c.udp.useExternPort {
 		h.Tags = append(h.Tags, wire.Tag{Type: wire.TagUint16, ID: kadwire.TagSourceUPort, Uint: uint64(c.udpPort)})
 	}
@@ -402,7 +405,7 @@ func (c *core) onPacket(from netip.AddrPort, p wire.Packet, k keys, now time.Tim
 func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 	switch p := p.(type) {
 	case kadwire.BootstrapReq:
-		c.send(from, kadwire.BootstrapRes{ID: c.id, TCPPort: c.tcpPort, Version: kadwire.Version, Contacts: c.buildContacts(c.id, bootstrapAnswer)})
+		c.send(from, kadwire.BootstrapRes{ID: c.id, TCPPort: c.tcpPort, Version: c.version, Contacts: c.buildContacts(c.id, bootstrapAnswer)})
 	case kadwire.BootstrapRes:
 		if c.rpcs.match(from, rpcBootstrap, wire.Hash{}) == nil {
 			return
