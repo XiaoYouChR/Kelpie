@@ -127,9 +127,8 @@ type Engine struct {
 	// callback.
 	directCallbacks map[netip.Addr]time.Time
 
-	serverAddr netip.AddrPort
-	publicIP   netip.Addr
-	mappedIP   netip.Addr
+	publicIP netip.Addr
+	mappedIP netip.Addr
 	// network is the Network last reported.
 	network Network
 

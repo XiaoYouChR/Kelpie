@@ -278,7 +278,7 @@ func (e *Engine) buildPeerConfig(c *conn) peer.Config {
 		PublicIP:    e.publicIP,
 		Port:        uint16(e.tcpPort),
 		UDPPort:     uint16(e.udpPort),
-		Server:      e.serverAddr,
+		Server:      e.server.Current(),
 		Pipeline:    pipeline,
 		Random:      e.ports.Rand,
 		ShareByHash: e.shareByHash,
@@ -421,9 +421,6 @@ func (e *Engine) closeConn(c *conn, reason string) {
 	close(c.out.items)
 	now := e.now()
 	if c.isServer {
-		if c.remote == e.serverAddr {
-			e.serverAddr = netip.AddrPort{}
-		}
 		e.runServer(e.server.OnDisconnected(c.remote, now))
 		return
 	}

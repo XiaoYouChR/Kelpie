@@ -279,7 +279,7 @@ func (e *Engine) runTransfers(now time.Time) {
 		actions := r.transfer.OnTick(transfer.Tick{
 			Now:           now,
 			ConnectBudget: budget,
-			Server:        e.serverAddr,
+			Server:        e.server.Current(),
 			IsFirewalled:  e.isFirewalled(),
 			PublicIP:      e.publicIP,
 			Port:          uint16(e.tcpPort),

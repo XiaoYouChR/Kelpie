@@ -176,10 +176,10 @@ func TestFirstLoginWins(t *testing.T) {
 		t.Fatalf("message while logging in = %+v", out.Events)
 	}
 	out = byKind(s.OnPacket(b, serverwire.IDChange{ClientID: highID}, start))
-	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a}) || !reflect.DeepEqual(out.Events, []Action{IDChanged{Server: b, ClientID: highID}}) {
+	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a}) || !reflect.DeepEqual(out.Events, []Action{IDChanged{ClientID: highID}}) {
 		t.Fatalf("login output = %+v", out)
 	}
-	if s.ClientID() == 0 || s.current.Endpoint != b {
+	if s.ClientID() == 0 || s.Current() != b {
 		t.Fatal("not logged in to b")
 	}
 	if out := byKind(s.OnDisconnected(a, start)); len(dialed(out)) > 0 || s.servers[0].Failures != 0 {
@@ -257,10 +257,10 @@ func TestLogin(t *testing.T) {
 func TestIDChangeGivesLowIDOrHighID(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}}
 	s, out := loggedIn(t, entries, 1234, 0, nil)
-	if s.ClientID() != 1234 {
-		t.Fatalf("LowID: id=%d", s.ClientID())
+	if s.ClientID() != 1234 || s.Current() != entries[0].Endpoint {
+		t.Fatalf("LowID: id=%d server=%s", s.ClientID(), s.Current())
 	}
-	if !reflect.DeepEqual(out.Events, []Action{IDChanged{Server: entries[0].Endpoint, ClientID: 1234}}) {
+	if !reflect.DeepEqual(out.Events, []Action{IDChanged{ClientID: 1234}}) {
 		t.Fatalf("events = %+v", out.Events)
 	}
 	s, _ = loggedIn(t, entries, highID, 0, nil)
@@ -268,7 +268,7 @@ func TestIDChangeGivesLowIDOrHighID(t *testing.T) {
 		t.Fatal("HighID not reported")
 	}
 	byKind(s.OnDisconnected(first, start))
-	if s.ClientID() != 0 {
+	if s.ClientID() != 0 || s.Current().IsValid() {
 		t.Fatal("still connected after disconnect")
 	}
 }

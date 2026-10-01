@@ -69,7 +69,6 @@ func (e *Engine) runServer(actions []server.Action) {
 				e.runTransferActions(r, r.transfer.OnSourcesFound(toServerSources(a.Sources), channel, e.now()))
 			}
 		case server.IDChanged:
-			e.serverAddr = a.Server
 			if !wire.IsLowID(a.ClientID) {
 				e.publicIP = wire.ToAddr(a.ClientID)
 			}

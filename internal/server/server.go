@@ -137,10 +137,7 @@ type SourcesFound struct {
 }
 
 // IDChanged reports the id the connected server gave us.
-type IDChanged struct {
-	Server   netip.AddrPort
-	ClientID uint32
-}
+type IDChanged struct{ ClientID uint32 }
 
 type MessageReceived struct{ Text string }
 
@@ -259,6 +256,14 @@ func (s *Server) ClientID() uint32 {
 		return 0
 	}
 	return s.clientID
+}
+
+// Current is the server we are logged in to; invalid while not logged in.
+func (s *Server) Current() netip.AddrPort {
+	if s.current == nil {
+		return netip.AddrPort{}
+	}
+	return s.current.Endpoint
 }
 
 // OnTick takes the files the engine shares or downloads and our public
@@ -451,7 +456,7 @@ func (s *Server) onIDChange(sender *listed, p serverwire.IDChange, now time.Time
 		s.nextOffer = now
 	}
 	s.clientID = p.ClientID
-	*out = append(*out, IDChanged{Server: s.current.Endpoint, ClientID: p.ClientID})
+	*out = append(*out, IDChanged{ClientID: p.ClientID})
 	s.runSession(now, out)
 }
 
