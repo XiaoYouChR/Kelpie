@@ -62,42 +62,75 @@ func TestUDPSearchBatchingAndRotation(t *testing.T) {
 			t.Fatalf("UDP searches %v apart", gap)
 		}
 	}
-	perServer := map[netip.AddrPort][]wire.Hash{}
 	for _, l := range log {
-		size := 0
-		for _, f := range l.files {
-			size += bytesPerFile
-			perServer[l.to] = append(perServer[l.to], f.Hash)
-		}
+		size := len(l.files) * bytesPerFile
 		if size-bytesPerFile >= maxUDPPacketData {
 			t.Fatalf("packet of %d bytes", size)
 		}
 	}
-	// The connected server, the one without known UDP flags and the failed
-	// one are not asked; each of the others gets 35 files, rotated.
-	if len(perServer) != 2 {
-		t.Fatalf("asked servers %v", perServer)
+	// The connected server and the one without known UDP flags are not
+	// asked; the one that failed over TCP is. Each series asks 35 files,
+	// rotated, and a server is asked again only UDPSERVERREASKTIME later.
+	var series []sentTo
+	for i, l := range log {
+		if i > 0 && l.to == log[i-1].to && l.at.Sub(log[i-1].at) < udpSearchTime {
+			last := &series[len(series)-1]
+			last.files = append(last.files, l.files...)
+			continue
+		}
+		series = append(series, l)
 	}
-	first, second := perServer[ep("1.0.0.2:4665")], perServer[ep("1.0.0.5:4665")]
-	if len(first) != maxRequestsPerServer || len(second) != maxRequestsPerServer {
-		t.Fatalf("files per server = %d, %d", len(first), len(second))
+	var order []netip.AddrPort
+	lastAsked := map[netip.AddrPort]time.Time{}
+	for _, l := range series {
+		order = append(order, l.to)
+		if len(l.files) != maxRequestsPerServer {
+			t.Fatalf("%d files asked of %v", len(l.files), l.to)
+		}
+		if at, ok := lastAsked[l.to]; ok && l.at.Sub(at) <= udpSearchTime {
+			t.Fatalf("%v asked again %v later", l.to, l.at.Sub(at))
+		}
+		lastAsked[l.to] = l.at
 	}
-	if first[0] != fileHash(0) || second[0] != fileHash(35) {
+	want := []netip.AddrPort{ep("1.0.0.2:4665"), ep("1.0.0.4:4665"), ep("1.0.0.5:4665")}
+	if !reflect.DeepEqual(order[:3], want) || !reflect.DeepEqual(order[3:6], want) {
+		t.Fatalf("asked %v", order)
+	}
+	if series[0].files[0].Hash != fileHash(0) || series[1].files[0].Hash != fileHash(35) {
 		t.Fatal("file list did not rotate between servers")
 	}
 	if len(log[0].files) != 26 || len(log[1].files) != 9 {
 		t.Fatalf("first server packets = %d + %d files", len(log[0].files), len(log[1].files))
 	}
-	if len(log) != 4 {
-		t.Fatalf("%d packets in the first hour, want one round of 4", len(log))
-	}
+}
 
-	// The next round waits UDPSERVERREASKTIME after the last one ended.
-	ended := log[len(log)-1].at
-	for now = start.Add(time.Hour); now.Sub(ended) <= udpSearchTime; now = now.Add(time.Second) {
-		if len(searches(s.OnTick(now, wanted))) > 0 {
-			t.Fatalf("new round %v after the last", now.Sub(ended))
+// A server whose OP_GLOBGETSOURCES2 support is learnt from its status answer
+// is asked at once, not after the servers asked before it wait out
+// UDPSERVERREASKTIME.
+func TestUDPSearchAsksLateServerAtOnce(t *testing.T) {
+	entries := []Entry{
+		{Endpoint: ep("1.0.0.1:4661")},
+		{Endpoint: ep("1.0.0.2:4661"), UDPFlags: getSources2},
+		{Endpoint: ep("1.0.0.3:4661")},
+	}
+	wanted := downloads(1)
+	s, _ := loggedIn(t, entries, highID, 0, wanted)
+	var asked []netip.AddrPort
+	now := start
+	for range 60 {
+		out := s.OnTick(now, wanted)
+		for _, d := range pings(out) {
+			if d.To == ep("1.0.0.3:4665") {
+				s.OnUDPPacket(d.To, packet.GlobServStatRes{Challenge: d.Packet.(packet.GlobServStatReq).Challenge, UDPFlags: getSources2}, now)
+			}
 		}
+		for _, d := range searches(out) {
+			asked = append(asked, d.To)
+		}
+		now = now.Add(time.Second)
+	}
+	if !reflect.DeepEqual(asked, []netip.AddrPort{ep("1.0.0.2:4665"), ep("1.0.0.3:4665")}) {
+		t.Fatalf("asked %v in the first minute", asked)
 	}
 }
 

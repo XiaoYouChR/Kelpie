@@ -134,11 +134,13 @@ const (
 type listed struct {
 	Entry
 	// isDead marks a server that left a status ping unanswered until its
-	// next turn; eMule drops it (DeadServerRetry). It only stops UDP use,
-	// so a blocked UDP port cannot empty the TCP list.
+	// next turn; it is not pinged again. It is still asked for sources, as
+	// aMule does: some servers answer source requests but not pings.
 	isDead    bool
 	challenge uint32
 	pingedAt  time.Time
+	// searchedAt is when the server was last asked for sources over UDP.
+	searchedAt time.Time
 }
 
 // Server owns the server list and the one server connection.
@@ -381,7 +383,8 @@ func (s *Server) runConnect(now time.Time, out *Output) {
 	out.Connect = next.Endpoint
 }
 
-// nextServer prefers high preference, then fewer failures, then more users.
+// nextServer prefers high preference, then fewer failures, then more users
+// and files: a bigger server knows more sources.
 func (s *Server) nextServer() *listed {
 	var best *listed
 	for _, l := range s.servers {
@@ -409,6 +412,7 @@ func isBetter(a, b *listed) bool {
 		cmp.Compare(rank(a.Preference), rank(b.Preference)),
 		cmp.Compare(a.Failures, b.Failures),
 		cmp.Compare(b.Users, a.Users),
+		cmp.Compare(b.Files, a.Files),
 	) < 0
 }
 
