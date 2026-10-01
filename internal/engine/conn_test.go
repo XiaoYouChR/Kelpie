@@ -22,11 +22,13 @@ import (
 // network, for tests that look at the packets an engine sends. It shares one
 // file and answers every upload request with a queue rank.
 type scriptedPeer struct {
-	w      *world
-	host   *transport.Host
-	cfg    peer.Config
-	share  peer.Share
-	file   wire.Hash
+	w     *world
+	host  *transport.Host
+	cfg   peer.Config
+	share peer.Share
+	file  wire.Hash
+	// others are more files the peer shares, set before it connects.
+	others map[wire.Hash]peer.Share
 	mu     sync.Mutex
 	conns  []*scriptedConn
 	accept chan *scriptedConn
@@ -136,6 +138,9 @@ func (p *scriptedPeer) run(netConn net.Conn, session *peer.Session, first peer.O
 }
 
 func (p *scriptedPeer) shareByHash(file wire.Hash) (peer.Share, bool) {
+	if share, ok := p.others[file]; ok {
+		return share, true
+	}
 	return p.share, file == p.file
 }
 

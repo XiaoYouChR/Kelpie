@@ -800,3 +800,35 @@ func TestNoNeededPartsSourcesArePurgedNearTheCap(t *testing.T) {
 		}
 	}
 }
+
+// A source another Transfer asks for a slot is left alone until the time the
+// engine gives, then asked as usual; connecting to it for this file ends the
+// hold.
+func TestA4AFSourceWaits(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
+	if got := h.tick(transfer.Tick{ConnectBudget: 1}); countActions[transfer.Connect](got) != 1 {
+		t.Fatalf("no Connect for the link source: %+v", got)
+	}
+	until := start.Add(10 * time.Minute)
+	h.transfer.SetA4AF(transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1)}, until)
+
+	at := func(d time.Duration) []transfer.Action {
+		return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 1})
+	}
+	if got := at(10*time.Minute - time.Second); len(got) != 0 {
+		t.Fatalf("source asked while another Transfer holds it: %+v", got)
+	}
+	got := at(10 * time.Minute)
+	if countActions[transfer.Connect](got) != 1 || got[0] != (transfer.Connect{Endpoint: endpoint(1), UserHash: userHash(1)}) {
+		t.Fatalf("source not asked once the hold ended, with its user hash: %+v", got)
+	}
+
+	h.transfer.SetA4AF(transfer.Source{UserHash: userHash(1)}, start.Add(time.Hour))
+	h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1)}, start.Add(11*time.Minute)))
+	h.transfer.OnPeerParts(1, piece.Set{true})
+	h.run(h.transfer.OnPeerGone(1, "idle", start.Add(11*time.Minute)))
+	if got := at(11*time.Minute + fileReaskTime); countActions[transfer.Connect](got) != 1 {
+		t.Fatalf("source connected for this Transfer still held: %+v", got)
+	}
+}

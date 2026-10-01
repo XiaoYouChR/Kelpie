@@ -134,6 +134,7 @@ type Engine struct {
 	sourceUsers     map[wire.Hash]map[wire.Hash]bool
 	sourceLowIDs    map[lowIDKey]map[wire.Hash]bool
 	uploadEndpoints map[uploadKey]uploadTarget
+	a4afClients     map[wire.Hash]*a4afClient
 	recentConnects  []time.Time
 	budgetCursor    int
 	lastSecond      time.Time
@@ -228,6 +229,7 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		sourceUsers:     map[wire.Hash]map[wire.Hash]bool{},
 		sourceLowIDs:    map[lowIDKey]map[wire.Hash]bool{},
 		uploadEndpoints: map[uploadKey]uploadTarget{},
+		a4afClients:     map[wire.Hash]*a4afClient{},
 	}
 	if config.PacketLog != nil {
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)

@@ -203,6 +203,7 @@ func (e *Engine) stopRun(r *run, err *Error) {
 	for _, c := range e.sortedConns() {
 		e.removeFile(c, h, "run ended")
 	}
+	e.releaseA4AF(h)
 	e.runQueueActions(e.queue.RemoveFile(h))
 	if r.transfer != nil {
 		e.refreshProgress(r, false)
@@ -305,6 +306,9 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 		}
 		switch a := action.(type) {
 		case transfer.Connect:
+			if e.deferConnect(r, a) {
+				continue
+			}
 			c := e.connByEndpoint(a.Endpoint)
 			if c == nil {
 				var obfuscateFor wire.Hash
@@ -315,6 +319,9 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			}
 			e.addFile(c, r)
 		case transfer.ReaskUDP:
+			if e.deferUDPReask(r, a.Endpoint) {
+				continue
+			}
 			e.sendDatagram(a.Endpoint, wire.BuildPacketDatagram(nil, client.ReaskFilePing{
 				Hash:               r.file.Hash,
 				HasParts:           true,
