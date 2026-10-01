@@ -156,7 +156,9 @@ def buildNetwork(status: dict, egress: str) -> str:
 
 @asynccontextmanager
 async def start(link: Link, setup: Setup) -> AsyncIterator[Callable[[], Awaitable[Sample]]]:
-    conf = setup.folder / "conf"
+    # The identity (cryptkey.dat, preferences.dat) lives in conf, so conf persists
+    # across runs like every engine's state folder.
+    conf = setup.stateFolder / "conf"
     for folder in (conf, setup.folder / "temp", setup.folder / "incoming"):
         folder.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(setup.serverMet, conf / "server.met")
@@ -176,6 +178,7 @@ async def start(link: Link, setup: Setup) -> AsyncIterator[Callable[[], Awaitabl
         "-p", f"{setup.udpPort}:{setup.udpPort}/udp",
         "-p", f"127.0.0.1:{API_PORT}:{API_PORT}/tcp",
         "-v", f"{setup.folder}:/work",
+        "-v", f"{conf}:/work/conf",
         "--entrypoint", "amuled", IMAGE, "-c", "/work/conf", "-o",
     )
     try:

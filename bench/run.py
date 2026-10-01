@@ -32,8 +32,10 @@ from models import EngineUnavailable, Link, Setup, loadLinks
 
 BENCH_FOLDER = Path(__file__).resolve().parent
 SAMPLE_SECONDS = 5
-TCP_PORT = 4662
-UDP_PORT = 4672
+# Each engine keeps its own port: aMule bans for two hours an IP:port that
+# comes back under another user hash, so engines sharing one port would get
+# each other's sources refused.
+PORTS = {"amule": (4664, 4674), "kelpie": (4682, 4682), "goed2kd": (4692, 4702)}
 PORT_WAIT_SECONDS = 300
 COLUMNS = ["engine", "class", "hash", "elapsed_s", "received_bytes", "rate_bps", "peers",
            "active_peers"]
@@ -78,6 +80,7 @@ async def run(arguments: argparse.Namespace) -> int:
     with out.open("w", newline="") as file:
         writer = csv.writer(file)
         writer.writerow(COLUMNS)
+        tcpPort, udpPort = PORTS[arguments.engine]
         for link in links:
             print(f"== {arguments.engine} {link.linkClass} {link.hash} {link.name}", flush=True)
             setup = Setup(
@@ -85,17 +88,17 @@ async def run(arguments: argparse.Namespace) -> int:
                 stateFolder=BENCH_FOLDER / "work" / f"{arguments.engine}-state",
                 serverMet=BENCH_FOLDER / "lists" / "server.met",
                 nodesDat=BENCH_FOLDER / "lists" / "nodes.dat",
-                tcpPort=TCP_PORT,
-                udpPort=UDP_PORT,
+                tcpPort=tcpPort,
+                udpPort=udpPort,
                 traceFile=out.with_name(f"{out.stem}.{link.hash}.trace.jsonl").resolve(),
                 logFile=out.with_name(f"{out.stem}.{link.hash}.log").resolve(),
                 isProxiedEgressAllowed=arguments.allow_proxied_egress,
             )
             # OrbStack keeps a removed container's UDP flows bound on the host for a minute or two.
             deadline = time.monotonic() + PORT_WAIT_SECONDS
-            while not matchPortsFree(TCP_PORT, UDP_PORT):
+            while not matchPortsFree(tcpPort, udpPort):
                 if time.monotonic() > deadline:
-                    print(f"ports {TCP_PORT}/tcp and {UDP_PORT}/udp stay busy", flush=True)
+                    print(f"ports {tcpPort}/tcp and {udpPort}/udp stay busy", flush=True)
                     return 2
                 await asyncio.sleep(5)
             shutil.rmtree(setup.folder, ignore_errors=True)
