@@ -302,6 +302,15 @@ func (GetSources) Opcode() byte   { return opGetSources }
 
 func (g GetSources) Build(b []byte) []byte { return buildSizedHash(b, g.Hash, g.Size) }
 
+// GetSourcesObfu is OP_GETSOURCES_OBFU: the server answers it with
+// OP_FOUNDSOURCES_OBFU, which carries what obfuscated connections need.
+type GetSourcesObfu GetSources
+
+func (GetSourcesObfu) Protocol() byte { return wire.ProtocolEDonkey }
+func (GetSourcesObfu) Opcode() byte   { return opGetSourcesObfu }
+
+func (g GetSourcesObfu) Build(b []byte) []byte { return buildSizedHash(b, g.Hash, g.Size) }
+
 func buildSizedHash(b []byte, hash wire.Hash, size uint64) []byte {
 	b = append(b, hash[:]...)
 	if size > 0xFFFFFFFF {

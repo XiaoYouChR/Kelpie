@@ -30,7 +30,7 @@ func (e *Engine) runServer(out server.Output) {
 		}
 	}
 	if out.Connect.IsValid() {
-		e.serverConn = e.openConn(out.Connect, true).id
+		e.serverConn = e.openConn(out.Connect, true, wire.Hash{}).id
 	}
 	if c := e.conns[e.serverConn]; c != nil {
 		for _, p := range out.Send {
@@ -42,7 +42,7 @@ func (e *Engine) runServer(out server.Output) {
 	}
 	for _, addr := range out.ConnectPeers {
 		if e.connByEndpoint(addr) == nil && len(e.conns) < maxConnections {
-			e.openConn(addr, false)
+			e.openConn(addr, false, wire.Hash{})
 		}
 	}
 	for _, event := range out.Events {
@@ -69,7 +69,7 @@ func (e *Engine) runServer(out server.Output) {
 func toServerSources(found []server.Source) []transfer.Source {
 	var sources []transfer.Source
 	for _, f := range found {
-		src := transfer.Source{Endpoint: f.Endpoint, UserHash: f.UserHash}
+		src := transfer.Source{Endpoint: f.Endpoint, UserHash: f.UserHash, CanObfuscate: f.CanObfuscate}
 		if f.IsLowID {
 			src = transfer.Source{ClientID: f.ClientID, Server: f.Server, UserHash: f.UserHash}
 		}

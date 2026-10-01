@@ -49,7 +49,9 @@ own format.
   client identity, and dual-stack addresses with IPv6 in Source Exchange
   between Kelpie peers and in server source answers following the emule-qt
   specification.
-- Later: Kad buddies, AICH, NAT-PMP and PCP. Obfuscation waits for a
-  measurement of ISP throttling. Kad stays IPv4.
+- Protocol obfuscation for client connections is in the first release too:
+  on the real network the fastest sources of the hot link (aMule seedboxes)
+  require it and close a plain connection right after our Hello.
+- Later: Kad buddies, AICH, NAT-PMP and PCP. Kad stays IPv4.
 - Code may be reused from `goed2k` (MIT) with attribution; eMule and aMule
   (GPL) contribute protocol knowledge only.

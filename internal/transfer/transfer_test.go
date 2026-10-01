@@ -482,3 +482,23 @@ func TestSeedMode(t *testing.T) {
 		t.Fatalf("persisted uploaded = %d", got)
 	}
 }
+
+// Sources that require obfuscation close a plain connection at once, so a
+// Connect carries what the engine needs to obfuscate: the user hash and the
+// support bit, which a later channel may add.
+func TestConnectCarriesObfuscation(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	h.run(h.transfer.OnSourcesFound([]transfer.Source{{Endpoint: endpoint(1)}}, transfer.ChannelServer, start))
+	h.run(h.transfer.OnSourcesFound([]transfer.Source{{Endpoint: endpoint(1), UserHash: userHash(1), CanObfuscate: true}}, transfer.ChannelKad, start))
+	var connects []transfer.Connect
+	for _, action := range h.tick(transfer.Tick{ConnectBudget: 1}) {
+		if c, ok := action.(transfer.Connect); ok {
+			connects = append(connects, c)
+		}
+	}
+	want := transfer.Connect{Endpoint: endpoint(1), UserHash: userHash(1), CanObfuscate: true}
+	if len(connects) != 1 || connects[0] != want {
+		t.Fatalf("connects %+v", connects)
+	}
+}

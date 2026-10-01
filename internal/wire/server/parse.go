@@ -17,6 +17,7 @@ const (
 	opGetServerList         byte = 0x14
 	opOfferFiles            byte = 0x15
 	opGetSources            byte = 0x19
+	opGetSourcesObfu        byte = 0x23
 	opCallbackRequest       byte = 0x1C
 	opCallbackRequestedIPv6 byte = 0x26
 	opServerList            byte = 0x32
@@ -54,6 +55,9 @@ func Parse(protocol, opcode byte, body []byte) (wire.Packet, error) {
 	case opGetSources:
 		hash, size := parseSizedHash(r)
 		p = GetSources{Hash: hash, Size: size}
+	case opGetSourcesObfu:
+		hash, size := parseSizedHash(r)
+		p = GetSourcesObfu{Hash: hash, Size: size}
 	case opCallbackRequest:
 		p = CallbackRequest{ClientID: r.Uint32()}
 	case opCallbackRequestedIPv6:

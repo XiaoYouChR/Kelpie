@@ -12,8 +12,13 @@ import (
 // performs I/O itself.
 type Action interface{ isAction() }
 
-// Connect opens a TCP connection to a source.
-type Connect struct{ Endpoint netip.AddrPort }
+// Connect opens a TCP connection to a source, obfuscated when the source
+// supports it and its user hash is known.
+type Connect struct {
+	Endpoint     netip.AddrPort
+	UserHash     wire.Hash
+	CanObfuscate bool
+}
 
 // ReaskUDP sends OP_REASKFILEPING to the source's UDP endpoint.
 type ReaskUDP struct{ Endpoint netip.AddrPort }

@@ -294,7 +294,11 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 		case transfer.Connect:
 			c := e.connByEndpoint(a.Endpoint)
 			if c == nil {
-				c = e.openConn(a.Endpoint, false)
+				var obfuscateFor wire.Hash
+				if a.CanObfuscate {
+					obfuscateFor = a.UserHash
+				}
+				c = e.openConn(a.Endpoint, false, obfuscateFor)
 			}
 			e.addFile(c, r)
 		case transfer.ReaskUDP:

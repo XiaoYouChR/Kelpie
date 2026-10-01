@@ -131,7 +131,8 @@ func TestLogin(t *testing.T) {
 	out := s.OnConnected(start)
 	want := packet.Login{
 		UserHash: userHash, Port: 4662, Name: "Kelpie", Version: 0x3C,
-		Flags:        packet.CapZlib | packet.CapNewTags | packet.CapUnicode | packet.CapLargeFiles,
+		Flags: packet.CapZlib | packet.CapNewTags | packet.CapUnicode | packet.CapLargeFiles |
+			packet.CapSupportCrypt | packet.CapRequestCrypt,
 		EmuleVersion: compatibleClient<<24 | 1<<17 | 2<<10 | 3<<7,
 	}
 	if len(out.Send) != 1 || !reflect.DeepEqual(out.Send[0], want) {
@@ -244,6 +245,21 @@ func TestLargeFileSourcesNeedServerSupport(t *testing.T) {
 	}
 }
 
+// OP_GETSOURCES gets plain OP_FOUNDSOURCES even after a login that
+// supports obfuscation; only OP_GETSOURCES_OBFU brings the user hashes that
+// obfuscated connections need.
+func TestObfuscationServerGetsObfuRequest(t *testing.T) {
+	wanted := downloads(1)
+	_, out := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, packet.FlagTCPObfuscation, wanted)
+	if got := sent[packet.GetSourcesObfu](out); len(got) != 1 || got[0].Hash != wanted[0].File || len(sent[packet.GetSources](out)) != 0 {
+		t.Fatalf("sent %+v", out.Send)
+	}
+	_, out = loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, 0, wanted)
+	if len(sent[packet.GetSources](out)) != 1 || len(sent[packet.GetSourcesObfu](out)) != 0 {
+		t.Fatalf("sent %+v", out.Send)
+	}
+}
+
 func TestFoundSources(t *testing.T) {
 	server := ep("1.0.0.1:4661")
 	v6 := netip.MustParseAddr("2001:db8::1")
@@ -266,8 +282,13 @@ func TestFoundSources(t *testing.T) {
 	}
 
 	obfu := packet.FoundSourcesObfu{Hash: fileHash(0), Sources: []packet.Source{{ClientID: 77, Port: 4662, CryptOptions: 0x80, UserHash: userHash}}}
-	if out := s.OnPacket(obfu, start); len(out.Events) != 1 || out.Events[0].(SourcesFound).Sources[0].UserHash != userHash {
+	if out := s.OnPacket(obfu, start); len(out.Events) != 1 || out.Events[0].(SourcesFound).Sources[0].UserHash != userHash ||
+		out.Events[0].(SourcesFound).Sources[0].CanObfuscate {
 		t.Fatalf("obfuscated variant: %+v", out.Events)
+	}
+	obfu.Sources[0].CryptOptions = 0x81
+	if out := s.OnPacket(obfu, start); !out.Events[0].(SourcesFound).Sources[0].CanObfuscate {
+		t.Fatalf("supports bit lost: %+v", out.Events)
 	}
 	if out := s.OnPacket(packet.FoundSources{Hash: fileHash(5), Sources: found.Sources}, start); len(out.Events) != 0 {
 		t.Fatal("sources for a file nobody wants")

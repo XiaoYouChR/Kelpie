@@ -4,14 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"maps"
 	"net"
 	"net/netip"
 	"slices"
+	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
+	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
 	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
@@ -29,15 +32,16 @@ const opKadFirewallAck byte = 0xA8
 
 // conn is one TCP connection: to a peer, or to the server.
 type conn struct {
-	id         uint64
-	ctx        context.Context
-	cancel     context.CancelFunc
-	net        net.Conn
-	remote     netip.AddrPort
-	isServer   bool
-	isOutgoing bool
-	out        *leafQueue[outItem]
-	session    *peer.Session
+	id           uint64
+	ctx          context.Context
+	cancel       context.CancelFunc
+	net          net.Conn
+	remote       netip.AddrPort
+	isServer     bool
+	isOutgoing   bool
+	isObfuscated bool
+	out          *leafQueue[outItem]
+	session      *peer.Session
 	// files are the downloads this connection serves, in the order they
 	// were added; the first one is the started one.
 	files        []wire.Hash
@@ -71,16 +75,29 @@ func (e *Engine) addConn(remote netip.AddrPort, isServer, isOutgoing bool) *conn
 }
 
 // openConn dials remote from a leaf; the hub learns the result from
-// connOpened.
-func (e *Engine) openConn(remote netip.AddrPort, isServer bool) *conn {
+// connOpened. A non-zero obfuscateFor is the peer's user hash, and the
+// connection is obfuscated with it.
+func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wire.Hash) *conn {
 	c := e.addConn(remote, isServer, true)
+	c.isObfuscated = obfuscateFor != wire.Hash{}
 	if !isServer {
 		e.recentConnects = append(e.recentConnects, e.now())
 	}
+	keyPart := [4]byte(binary.LittleEndian.AppendUint32(nil, e.ports.Rand.Uint32()))
 	e.startLeaf(func() {
 		ctx, cancel := context.WithTimeout(c.ctx, connectTimeout)
 		netConn, err := e.ports.Transport.OpenTCP(ctx, c.remote)
 		cancel()
+		if err == nil && obfuscateFor != (wire.Hash{}) {
+			var obfuscated *obfuscation.Conn
+			obfuscated, err = obfuscation.OpenOutgoing(netConn, obfuscateFor, keyPart)
+			if err != nil {
+				netConn.Close()
+				netConn = nil
+			} else {
+				netConn = obfuscated
+			}
+		}
 		if !e.send(c.ctx, connOpened{c.id, netConn, err}) && netConn != nil {
 			netConn.Close()
 		}
@@ -89,15 +106,28 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool) *conn {
 }
 
 func (e *Engine) runAcceptor() {
+	self := e.self.UserHash
 	for {
 		netConn, err := e.listener.Accept()
 		if err != nil {
 			return
 		}
-		if !e.send(e.ctx, connAccepted{netConn}) {
-			netConn.Close()
-			return
-		}
+		e.startLeaf(func() { e.runIncoming(netConn, self) })
+	}
+}
+
+// runIncoming waits for an accepted connection's first bytes, which tell
+// whether the peer obfuscates, before the hub sees the connection.
+func (e *Engine) runIncoming(netConn net.Conn, self wire.Hash) {
+	netConn.SetDeadline(time.Now().Add(connectTimeout))
+	conn, err := obfuscation.OpenIncoming(netConn, self)
+	if err != nil {
+		netConn.Close()
+		return
+	}
+	netConn.SetDeadline(time.Time{})
+	if !e.send(e.ctx, connAccepted{conn}) {
+		netConn.Close()
 	}
 }
 
@@ -277,7 +307,7 @@ func (e *Engine) closeConn(c *conn, reason string) {
 	}
 	c.isClosed = true
 	if e.packetLog != nil {
-		e.packetLog.Printf("close %s %s", c.remote, reason)
+		e.packetLog.Printf("close %s obfuscated=%t %s", c.remote, c.isObfuscated, reason)
 	}
 	delete(e.conns, c.id)
 	c.cancel()
@@ -615,7 +645,7 @@ func (e *Engine) runQueueActions(actions []upload.Action) {
 		case upload.Connect:
 			endpoint, ok := e.uploadEndpoints[uploadKey{a.Peer.User, a.Peer.IP}]
 			if ok && e.connByEndpoint(endpoint) == nil && len(e.conns) < maxConnections {
-				e.openConn(endpoint, false)
+				e.openConn(endpoint, false, wire.Hash{})
 			}
 		}
 	}
@@ -647,7 +677,7 @@ func (e *Engine) buildPeerSources(file wire.Hash, asking *conn) []peer.Source {
 func toExchangeSources(found []peer.Source) []transfer.Source {
 	var sources []transfer.Source
 	for _, f := range found {
-		src := transfer.Source{UserHash: f.UserHash}
+		src := transfer.Source{UserHash: f.UserHash, CanObfuscate: f.CanObfuscate}
 		switch {
 		case f.LowID != 0:
 			src.ClientID, src.Server = f.LowID, f.Server
@@ -664,7 +694,7 @@ func toExchangeSources(found []peer.Source) []transfer.Source {
 func toKadSources(found []kad.Source) []transfer.Source {
 	var sources []transfer.Source
 	for _, f := range found {
-		src := transfer.Source{UserHash: f.UserHash, UDPPort: f.UDPPort}
+		src := transfer.Source{UserHash: f.UserHash, UDPPort: f.UDPPort, CanObfuscate: f.CanObfuscate()}
 		if f.IsFirewalled() {
 			src.Buddy, src.BuddyID = f.Buddy, f.BuddyID
 		} else {

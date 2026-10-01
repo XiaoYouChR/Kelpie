@@ -87,6 +87,9 @@ type Source struct {
 	BuddyID  wire.Hash
 	UserHash wire.Hash
 	UDPPort  uint16
+	// CanObfuscate: the channel says the source supports protocol
+	// obfuscation, which needs its UserHash.
+	CanObfuscate bool
 }
 
 // Hello is what a connected peer told us about itself.
@@ -214,6 +217,7 @@ func (t *Transfer) addSource(found Source, channel Channel, now time.Time) []Act
 		if s.UDPPort == 0 {
 			s.UDPPort = found.UDPPort
 		}
+		s.CanObfuscate = s.CanObfuscate || found.CanObfuscate
 		return nil
 	}
 	s := t.addNew(found, channel)
@@ -555,7 +559,7 @@ func (t *Transfer) requestConnect(s *source, tick Tick, budget *int) []Action {
 		}
 		action = RequestServerCallback{ClientID: s.ClientID}
 	default:
-		action = Connect{Endpoint: s.Endpoint}
+		action = Connect{Endpoint: s.Endpoint, UserHash: s.UserHash, CanObfuscate: s.CanObfuscate}
 	}
 	if *budget <= 0 {
 		s.state = stateWaiting

@@ -51,6 +51,9 @@ type Source struct {
 	CryptOptions byte
 }
 
+// CanObfuscate reads the "supports" bit of TAG_ENCRYPTION.
+func (s Source) CanObfuscate() bool { return s.CryptOptions&0x01 != 0 }
+
 func (s Source) IsFirewalled() bool {
 	return s.Type == SourceFirewalled || s.Type == SourceFirewalledLarge
 }

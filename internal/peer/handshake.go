@@ -53,6 +53,8 @@ func (s *Session) buildHello() client.Hello {
 			HasLargeFiles:      true,
 			HasExtMultiPacket:  true,
 			HasSourceExchange2: true,
+			CanCrypt:           true,
+			IsCryptRequested:   true,
 		},
 		EmuleVersion: s.buildEmuleVersion(),
 		ModMisc:      modMisc,

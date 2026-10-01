@@ -28,6 +28,8 @@ type Source struct {
 	LowID    uint32
 	Server   netip.AddrPort
 	UserHash wire.Hash
+	// CanObfuscate is the "supports" bit of the record's crypt options.
+	CanObfuscate bool
 }
 
 type sourceState struct {
@@ -121,7 +123,7 @@ func (s *Session) onSourcesAnswer(p client.AnswerSources2, out *Output) {
 // read big-endian, so that an address ending in .0 is not mistaken for a
 // LowID. LowIDs are the same in both.
 func toSource(record client.Source, version byte) Source {
-	src := Source{Port: record.Port, Server: record.Server, UserHash: record.UserHash}
+	src := Source{Port: record.Port, Server: record.Server, UserHash: record.UserHash, CanObfuscate: record.CryptOptions&0x01 != 0}
 	if record.IPv6.Is6() && !record.IPv6.Is4In6() {
 		src.IPv6 = record.IPv6
 	}

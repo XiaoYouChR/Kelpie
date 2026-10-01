@@ -24,7 +24,12 @@ const (
 	maxOfferFiles       = 200                         // SendListToServer limit (SharedFileList.cpp)
 	largeFileSize       = 4290048000                  // OLD_MAX_EMULE_FILE_SIZE
 	edonkeyVersion      = 0x3C                        // EDONKEYVERSION
-	loginFlags          = packet.CapZlib | packet.CapNewTags | packet.CapUnicode | packet.CapLargeFiles
+	// CapSupportCrypt makes the server answer with OP_FOUNDSOURCES_OBFU,
+	// which carries the user hash an obfuscated connection needs.
+	loginFlags = packet.CapZlib | packet.CapNewTags | packet.CapUnicode | packet.CapLargeFiles |
+		packet.CapSupportCrypt | packet.CapRequestCrypt
+	// cryptSupported is the CryptOptions bit for "supports obfuscation".
+	cryptSupported byte = 0x01
 
 	// keepAliveTime stands in for eMule's ServerKeepAliveTimeout, which is
 	// off by default; an idle seeding Engine Process would otherwise lose
@@ -65,6 +70,9 @@ type Source struct {
 	IsLowID  bool
 	Server   netip.AddrPort
 	UserHash wire.Hash
+	// CanObfuscate: the source supports protocol obfuscation; obfuscation
+	// aware servers tell it along with the user hash it needs.
+	CanObfuscate bool
 }
 
 // Datagram is one UDP packet for a server's UDP port.
@@ -319,7 +327,12 @@ func (s *Server) onFoundSources(file wire.Hash, found []packet.Source, out *Outp
 }
 
 func (s *Server) toSource(f packet.Source, server netip.AddrPort) (Source, bool) {
-	src := Source{ClientID: f.ClientID, Server: server, UserHash: f.UserHash}
+	src := Source{
+		ClientID:     f.ClientID,
+		Server:       server,
+		UserHash:     f.UserHash,
+		CanObfuscate: f.CryptOptions&cryptSupported != 0 && f.CryptOptions&packet.CryptHasUserHash != 0,
+	}
 	switch {
 	case f.Port == 0 || f.ClientID == 0:
 		return src, false
@@ -432,7 +445,12 @@ func (s *Server) runSourceRequests(now time.Time, out *Output) {
 	}
 	slices.SortStableFunc(due, func(a, b Wanted) int { return s.askedAt[a.File].Compare(s.askedAt[b.File]) })
 	for _, w := range due[:min(len(due), sourceFilesPerFrame)] {
-		out.Send = append(out.Send, packet.GetSources{Hash: w.File, Size: w.Size})
+		request := packet.GetSources{Hash: w.File, Size: w.Size}
+		if s.tcpFlags&packet.FlagTCPObfuscation != 0 {
+			out.Send = append(out.Send, packet.GetSourcesObfu(request))
+		} else {
+			out.Send = append(out.Send, request)
+		}
 		s.askedAt[w.File] = now
 	}
 	s.nextSourceFrame = now.Add(sourceFrameTime)
