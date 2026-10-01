@@ -22,6 +22,7 @@ type State struct {
 	Kad       Kad
 	Credits   map[wire.Hash]Credit
 	Transfers map[wire.Hash]Transfer
+	Servers   []Server
 }
 
 type Identity struct {
@@ -41,6 +42,25 @@ type KadNode struct {
 	ID      wire.Hash
 	Addr    netip.AddrPort
 	Version byte
+}
+
+// Server is what the Engine Process learned about one listed eD2k server,
+// as aMule keeps it in its own server.met (ServerList.cpp:689-800). A
+// server listed by address is named by Endpoint, one listed by host name
+// by Host and Port.
+type Server struct {
+	Endpoint           netip.AddrPort
+	Host               string
+	Port               uint16
+	Failures           uint32
+	Ping               uint32
+	Users              uint32
+	Files              uint32
+	SoftFiles          uint32
+	UDPFlags           uint32
+	TCPObfuscationPort uint16
+	UDPObfuscationPort uint16
+	PingedAt           time.Time
 }
 
 type Credit struct {

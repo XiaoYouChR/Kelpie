@@ -9,6 +9,7 @@ import (
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
 	"github.com/XiaoYouChR/Kelpie/internal/server"
+	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
 	"github.com/XiaoYouChR/Kelpie/internal/upload"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -93,6 +94,53 @@ func (e *Engine) runLookup(host string) {
 		log.Printf("engine: server host %s: %v", host, err)
 	}
 	e.send(e.ctx, hostResolved{host, addr})
+}
+
+// updateLearned puts what an earlier Engine Process learned about each
+// listed server back on its entry; names and preferences stay as the lists
+// say. A saved server no list names any more is forgotten: Kelpie learns
+// servers only from the caller's lists.
+func updateLearned(entries []server.Entry, saved []store.Server) []server.Entry {
+	for i, e := range entries {
+		j := slices.IndexFunc(saved, func(s store.Server) bool {
+			if e.Host != "" {
+				return s.Host == e.Host && s.Port == e.Endpoint.Port()
+			}
+			return s.Host == "" && s.Endpoint == e.Endpoint
+		})
+		if j < 0 {
+			continue
+		}
+		s := saved[j]
+		entries[i].Failures, entries[i].Ping, entries[i].PingedAt = s.Failures, s.Ping, s.PingedAt
+		entries[i].Users, entries[i].Files, entries[i].SoftFiles = s.Users, s.Files, s.SoftFiles
+		entries[i].UDPFlags = s.UDPFlags
+		entries[i].TCPObfuscationPort, entries[i].UDPObfuscationPort = s.TCPObfuscationPort, s.UDPObfuscationPort
+	}
+	return entries
+}
+
+func toStoreServers(entries []server.Entry) []store.Server {
+	var servers []store.Server
+	for _, e := range entries {
+		s := store.Server{
+			Endpoint:           e.Endpoint,
+			Failures:           e.Failures,
+			Ping:               e.Ping,
+			Users:              e.Users,
+			Files:              e.Files,
+			SoftFiles:          e.SoftFiles,
+			UDPFlags:           e.UDPFlags,
+			TCPObfuscationPort: e.TCPObfuscationPort,
+			UDPObfuscationPort: e.UDPObfuscationPort,
+			PingedAt:           e.PingedAt,
+		}
+		if e.Host != "" {
+			s.Endpoint, s.Host, s.Port = netip.AddrPort{}, e.Host, e.Endpoint.Port()
+		}
+		servers = append(servers, s)
+	}
+	return servers
 }
 
 func (e *Engine) serverConnByEndpoint(addr netip.AddrPort) *conn {

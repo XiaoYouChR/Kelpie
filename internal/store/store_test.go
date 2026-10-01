@@ -121,6 +121,10 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		Uploaded:      123456,
 		Created:       lastSeen,
 	}
+	state.Servers = []Server{
+		{Endpoint: netip.MustParseAddrPort("45.82.80.155:5687"), Failures: 2, Ping: 80, Users: 5000, Files: 9000, SoftFiles: 10000, UDPFlags: 0x7FB, TCPObfuscationPort: 5688, UDPObfuscationPort: 5689, PingedAt: lastSeen},
+		{Host: "dyn.example", Port: 4661, Failures: 1},
+	}
 
 	if err := Save(folder, state); err != nil {
 		t.Fatal(err)

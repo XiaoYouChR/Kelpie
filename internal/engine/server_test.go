@@ -6,10 +6,14 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/fakeserver"
+	"github.com/XiaoYouChR/Kelpie/internal/server"
+	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
@@ -85,4 +89,58 @@ func TestServerByHostName(t *testing.T) {
 	a.config.ServerLists = []string{path}
 	a.start()
 	w.waitFor("server login", func() bool { return a.events.lastNetwork().IsServerConnected })
+}
+
+// What the status ping taught about a server is saved and put back on the
+// listed server at the next start, as aMule keeps it in its server.met.
+func TestServerStatsSurviveRestart(t *testing.T) {
+	w := buildWorld(t)
+	srv := w.startFakeServer("198.51.100.100")
+	a := w.addNode("198.51.100.1")
+	a.setServer(srv)
+	a.start()
+	w.waitFor("server login", func() bool { return a.events.lastNetwork().IsServerConnected })
+	settle := w.clock.Now().Add(10 * time.Second)
+	w.waitFor("status ping", func() bool { return !w.clock.Now().Before(settle) })
+	a.close()
+	first, err := store.Load(a.folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Servers) != 1 || first.Servers[0].Endpoint != srv.Addr() || first.Servers[0].PingedAt.IsZero() || first.Servers[0].Users == 0 {
+		t.Fatalf("saved servers = %+v", first.Servers)
+	}
+	a.start()
+	a.close()
+	second, err := store.Load(a.folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(second.Servers, first.Servers) {
+		t.Fatalf("after restart %+v, want %+v", second.Servers, first.Servers)
+	}
+}
+
+func TestUpdateLearnedKeepsListedNames(t *testing.T) {
+	at := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	entries := []server.Entry{
+		{Endpoint: netip.MustParseAddrPort("198.51.100.7:4661"), Name: "listed", Preference: server.PreferenceHigh},
+		{Endpoint: netip.AddrPortFrom(netip.Addr{}, 4661), Host: "dyn.example"},
+		{Endpoint: netip.MustParseAddrPort("198.51.100.8:4661")},
+	}
+	saved := []store.Server{
+		{Endpoint: netip.MustParseAddrPort("198.51.100.7:4661"), Failures: 3, UDPFlags: 0x21, PingedAt: at},
+		{Host: "dyn.example", Port: 4661, Users: 70},
+		{Host: "dyn.example", Port: 4242, Users: 99},
+		{Endpoint: netip.MustParseAddrPort("198.51.100.9:4661"), Users: 5},
+	}
+	got := updateLearned(entries, saved)
+	want := []server.Entry{
+		{Endpoint: netip.MustParseAddrPort("198.51.100.7:4661"), Name: "listed", Preference: server.PreferenceHigh, Failures: 3, UDPFlags: 0x21, PingedAt: at},
+		{Endpoint: netip.AddrPortFrom(netip.Addr{}, 4661), Host: "dyn.example", Users: 70},
+		{Endpoint: netip.MustParseAddrPort("198.51.100.8:4661")},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got  %+v\nwant %+v", got, want)
+	}
 }

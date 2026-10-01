@@ -154,7 +154,6 @@ type listed struct {
 	// aMule does: some servers answer source requests but not pings.
 	isDead    bool
 	challenge uint32
-	pingedAt  time.Time
 	// searchedAt is when the server was last asked for sources over UDP.
 	searchedAt time.Time
 	// tcpFlags are from the server's last OP_IDCHANGE.
@@ -229,6 +228,15 @@ func BuildServer(config Config, entries []Entry) *Server {
 		s.servers = append(s.servers, &listed{Entry: e})
 	}
 	return s
+}
+
+// Entries is every listed server with what this process learned about it.
+func (s *Server) Entries() []Entry {
+	entries := make([]Entry, 0, len(s.servers))
+	for _, l := range s.servers {
+		entries = append(entries, l.Entry)
+	}
+	return entries
 }
 
 func (s *Server) IsServerConnected() bool { return s.current != nil }

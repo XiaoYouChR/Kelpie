@@ -47,7 +47,7 @@ func (s *Server) OnUDPPacket(from netip.AddrPort, p wire.Packet, now time.Time) 
 			return out
 		}
 		l.challenge, l.Failures, l.isDead = 0, 0, false
-		l.Ping = uint32(now.Sub(l.pingedAt).Milliseconds())
+		l.Ping = uint32(now.Sub(l.PingedAt).Milliseconds())
 		l.Users, l.Files, l.SoftFiles, l.UDPFlags = p.Users, p.Files, p.SoftFiles, p.UDPFlags
 		l.TCPObfuscationPort, l.UDPObfuscationPort = p.TCPObfuscationPort, p.UDPObfuscationPort
 	case packet.GlobFoundSources:
@@ -83,7 +83,7 @@ func (s *Server) runStats(now time.Time, out *Output) {
 	for range s.servers {
 		l := s.servers[u.statCursor%len(s.servers)]
 		u.statCursor++
-		if l.isDead || !l.isResolved() || (!l.pingedAt.IsZero() && now.Sub(l.pingedAt) < udpStatReaskTime) {
+		if l.isDead || !l.isResolved() || (!l.PingedAt.IsZero() && now.Sub(l.PingedAt) < udpStatReaskTime) {
 			continue
 		}
 		u.lastStat = now
@@ -93,7 +93,7 @@ func (s *Server) runStats(now time.Time, out *Output) {
 		}
 		u.pings++
 		l.challenge = challengeBase + uint32(u.pings)
-		l.pingedAt = now
+		l.PingedAt = now
 		l.Failures++
 		out.SendUDP = append(out.SendUDP, Datagram{To: toUDP(l.Endpoint), Packet: packet.GlobServStatReq{Challenge: l.challenge}})
 		return

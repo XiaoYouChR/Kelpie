@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
@@ -37,6 +38,8 @@ type Entry struct {
 	UDPFlags           uint32
 	TCPObfuscationPort uint16
 	UDPObfuscationPort uint16
+	// PingedAt is when the server was last sent a status ping.
+	PingedAt time.Time
 }
 
 // server.met tags (eMule Opcodes.h ST_*).
