@@ -92,9 +92,9 @@ type Transfer struct {
 
 	lastPublish time.Time
 
-	sources         []*source
-	peers           map[uint64]*source
-	senders         map[uint64]*source
+	sources []*source
+	peers   map[uint64]*source
+	senders map[uint64]*source
 	// bannedHashes and bannedEndpoints map a banned source to when its ban
 	// ends.
 	bannedHashes    map[wire.Hash]time.Time
