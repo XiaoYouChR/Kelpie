@@ -124,7 +124,7 @@ func (s *Session) onSourcesRequest(p client.RequestSources2, shares Shares, now 
 	}
 	s.sx.lastAnswer = now
 	s.sx.answers[p.Hash] = p.Version
-	out.add(SourcesRequested{File: p.Hash})
+	out.add(SourcesRequested{File: p.Hash, Parts: s.up.parts[p.Hash]})
 }
 
 func (s *Session) onSourcesAnswer(p client.AnswerSources2, out *Output) {

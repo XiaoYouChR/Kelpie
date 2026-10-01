@@ -88,8 +88,12 @@ type BlockReceived struct {
 	Data  []byte
 }
 
-// UploadRequested: the peer wants to join our upload queue for File.
-type UploadRequested struct{ File wire.Hash }
+// UploadRequested: the peer wants to join our upload queue for File. Parts
+// is what its file request said it has of File; nil when it did not say.
+type UploadRequested struct {
+	File  wire.Hash
+	Parts piece.Set
+}
 
 // BlocksRequested asks the engine to read Blocks and SendBlock each one.
 type BlocksRequested struct {
@@ -100,8 +104,12 @@ type BlocksRequested struct {
 // UploadCancelled: the peer no longer wants anything uploaded.
 type UploadCancelled struct{}
 
-// SourcesRequested asks the engine to SendSources for File.
-type SourcesRequested struct{ File wire.Hash }
+// SourcesRequested asks the engine to SendSources for File. Parts is as in
+// UploadRequested, so that the answer lists only sources the peer needs.
+type SourcesRequested struct {
+	File  wire.Hash
+	Parts piece.Set
+}
 
 type SourcesFound struct {
 	File    wire.Hash

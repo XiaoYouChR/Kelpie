@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/identity"
+	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
@@ -111,7 +112,7 @@ func buildSession(cfg Config, remote netip.AddrPort, now time.Time) *Session {
 		remote:     netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port()),
 		lastActive: now,
 		down:       downloadState{files: map[wire.Hash]*download{}},
-		up:         uploadState{sizes: map[wire.Hash]int64{}, blocks: map[uploadBlock]bool{}},
+		up:         uploadState{parts: map[wire.Hash]piece.Set{}, sizes: map[wire.Hash]int64{}, blocks: map[uploadBlock]bool{}},
 		sx:         sourceState{asked: map[wire.Hash]bool{}, answers: map[wire.Hash]byte{}},
 	}
 }

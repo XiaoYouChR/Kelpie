@@ -87,12 +87,27 @@ func (p *scriptedPeer) endpoint() netip.AddrPort {
 // open connects to n and sends our Hello.
 func (p *scriptedPeer) open(n *node) {
 	p.w.t.Helper()
+	netConn, session, out := p.openSession(n)
+	p.run(netConn, session, out)
+}
+
+// download connects to n and queues for p's file, telling n it has parts.
+func (p *scriptedPeer) download(n *node, parts piece.Set) {
+	p.w.t.Helper()
+	netConn, session, out := p.openSession(n)
+	session.Add(p.file, p.share.Size, parts)
+	session.Start(p.file)
+	p.run(netConn, session, out)
+}
+
+func (p *scriptedPeer) openSession(n *node) (net.Conn, *peer.Session, peer.Output) {
+	p.w.t.Helper()
 	netConn, err := p.host.OpenTCP(context.Background(), n.endpoint())
 	if err != nil {
 		p.w.t.Fatal(err)
 	}
 	session, out := peer.BuildOutgoing(p.cfg, n.endpoint(), p.w.clock.Now())
-	p.run(netConn, session, out)
+	return netConn, session, out
 }
 
 func (p *scriptedPeer) run(netConn net.Conn, session *peer.Session, first peer.Output) {
@@ -199,5 +214,35 @@ func TestIncomingSourceIsNotReasked(t *testing.T) {
 	w.waitFor("a few seconds", func() bool { return !w.clock.Now().Before(settle) })
 	if !p.matchConn(1, func(c *scriptedConn) bool { return countFileRequests(c) == 0 }) {
 		t.Fatal("B asked the queued source again on its incoming connection")
+	}
+}
+
+// A seed answers Source Exchange with the peers queued for the file on it
+// that have a part the asker lacks.
+func TestSeedAnswersSourceExchange(t *testing.T) {
+	w := buildWorld(t)
+	a, c := w.addNode("198.51.100.1"), w.addNode("198.51.100.3")
+	a.config.RateLimits.Upload = 100_000
+	a.start()
+	c.start()
+	f := buildTestFile("sx.bin", 3*int(piece.PartSize), 13)
+	a.seed(1, f)
+	useful, useless := w.addScriptedPeer("198.51.100.5", f), w.addScriptedPeer("198.51.100.6", f)
+	useful.download(a, piece.Set{true, false, false})
+	useless.download(a, piece.Set{false, false, false})
+	for _, p := range []*scriptedPeer{useful, useless} {
+		w.waitFor("the peer to queue on the seed", func() bool {
+			return p.matchConn(0, func(c *scriptedConn) bool {
+				return hasEvent[peer.Queued](c) || hasEvent[peer.SlotGranted](c)
+			})
+		})
+	}
+
+	c.download(2, f, a.endpoint())
+	w.waitFor("C to learn the useful peer from the seed", func() bool {
+		return matchTrace(c.loadTrace(), "found", useful.endpoint().String())
+	})
+	if matchTrace(c.loadTrace(), "found", useless.endpoint().String()) {
+		t.Fatal("the seed named a peer with nothing C needs")
 	}
 }

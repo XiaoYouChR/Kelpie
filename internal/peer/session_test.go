@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -639,6 +640,22 @@ func TestClosingHandsOverInflatedPrefix(t *testing.T) {
 	}
 	if again := l.a.s.Stop(); len(again.Events) != 0 {
 		t.Fatal("prefix handed over twice")
+	}
+}
+
+func TestRequestsCarryPeerParts(t *testing.T) {
+	l := buildLink(t)
+	size := 3 * piece.PartSize
+	file, _ := addShare(l.b, 1, size, false)
+	parts := piece.Set{true, false, false}
+	l.run(l.a, l.a.s.Add(file, size, parts))
+	l.run(l.a, l.a.s.Start(file))
+	l.run(l.a, l.a.s.RequestSources(file, l.now))
+	if got := lastOf[UploadRequested](t, l.b).Parts; !slices.Equal(got, parts) {
+		t.Fatalf("upload request parts %v", got)
+	}
+	if got := lastOf[SourcesRequested](t, l.b).Parts; !slices.Equal(got, parts) {
+		t.Fatalf("source request parts %v", got)
 	}
 }
 

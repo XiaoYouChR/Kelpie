@@ -44,7 +44,11 @@ type conn struct {
 	session      *peer.Session
 	// files are the downloads this connection serves, in the order they
 	// were added; the first one is the started one.
-	files        []wire.Hash
+	files []wire.Hash
+	// uploadFile is the file the peer queued for with us, and uploadParts
+	// what it said it has of it, for answering Source Exchange.
+	uploadFile   wire.Hash
+	uploadParts  piece.Set
 	isHandshaken bool
 	isUploading  bool
 	isClosed     bool
@@ -469,14 +473,16 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		if r := e.downloadByHash(ev.File); r != nil && e.isReaskDue(r, c.session.UserHash()) {
 			e.addFile(c, r)
 		}
+		c.uploadFile, c.uploadParts = ev.File, ev.Parts
 		e.runQueueActions(e.queue.OnRequest(c.id, toUploadPeer(c), ev.File, now))
 	case peer.BlocksRequested:
 		e.onBlocksRequested(c, ev)
 	case peer.UploadCancelled:
 		c.isUploading = false
+		c.uploadFile = wire.Hash{}
 		e.queue.OnConnectionGone(c.id)
 	case peer.SourcesRequested:
-		e.runSession(c, c.session.SendSources(ev.File, e.buildPeerSources(ev.File, c)))
+		e.runSession(c, c.session.SendSources(ev.File, e.buildPeerSources(ev.File, c, ev.Parts)))
 	case peer.SourcesFound:
 		if r := e.downloadByHash(ev.File); r != nil {
 			e.addSources(r, toExchangeSources(ev.Sources), transfer.ChannelExchange)
@@ -688,15 +694,25 @@ func (e *Engine) runQueueActions(actions []upload.Action) {
 	}
 }
 
-// buildPeerSources answers Source Exchange with the peers connected for the
-// file, other than the one asking.
-func (e *Engine) buildPeerSources(file wire.Hash, asking *conn) []peer.Source {
+// buildPeerSources answers Source Exchange, other than with the peer asking.
+// For a download these are its connected sources; a seed, like aMule's
+// CKnownFile::CreateSrcInfoPacket (KnownFile.cpp:1038-1110), names the HighID
+// peers queued or downloading the file from us that have a part the asker
+// lacks.
+func (e *Engine) buildPeerSources(file wire.Hash, asking *conn, askerParts piece.Set) []peer.Source {
+	r := e.runByHash[file]
+	isSeed := r != nil && r.mode == ModeSeed
 	var sources []peer.Source
 	for _, c := range e.sortedConns() {
-		if c == asking || !c.isHandshaken || !slices.Contains(c.files, file) {
+		if c == asking || !c.isHandshaken {
 			continue
 		}
 		caps := c.session.Capabilities()
+		isLowID := caps.ClientID != 0 && wire.IsLowID(caps.ClientID)
+		if isSeed && (c.uploadFile != file || isLowID || !matchNeededSource(c.uploadParts, askerParts)) ||
+			!isSeed && !slices.Contains(c.files, file) {
+			continue
+		}
 		src := peer.Source{Port: caps.Port, UserHash: c.session.UserHash(), IPv6: caps.IPv6, CryptOptions: caps.CryptOptions}
 		switch {
 		case !wire.IsLowID(caps.ClientID) && c.remote.Addr().Is4():
@@ -709,6 +725,21 @@ func (e *Engine) buildPeerSources(file wire.Hash, asking *conn) []peer.Source {
 		sources = append(sources, src)
 	}
 	return sources
+}
+
+// matchNeededSource follows aMule: a source whose parts are unknown is sent
+// on hope, one whose parts are known must have a part the asker lacks, or any
+// part when the asker did not tell its own.
+func matchNeededSource(source, asker piece.Set) bool {
+	if source == nil {
+		return true
+	}
+	for i, has := range source {
+		if has && (i >= len(asker) || !asker[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 func toExchangeSources(found []peer.Source) []transfer.Source {

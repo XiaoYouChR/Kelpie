@@ -41,7 +41,9 @@ type uploadBlock struct {
 type uploadState struct {
 	// file is what the peer last asked about, for an OP_STARTUPLOADREQ that
 	// carries no hash.
-	file        wire.Hash
+	file wire.Hash
+	// parts holds, per file, what the peer's file request said it has.
+	parts       map[wire.Hash]piece.Set
 	isUploading bool
 	sizes       map[wire.Hash]int64
 	// blocks holds every block requested during this slot; true once sent,
@@ -130,7 +132,17 @@ func (s *Session) onFileRequest(p client.FileRequest, shares Shares, out *Output
 		return
 	}
 	s.up.file = p.Hash
+	s.setRequestedParts(p, share)
 	out.send(client.FileNameAnswer{Hash: p.Hash, Name: share.Name})
+}
+
+func (s *Session) setRequestedParts(p client.FileRequest, share Share) {
+	if !p.HasParts {
+		return
+	}
+	if parts, ok := toPartSet(p.Parts, share.Size); ok {
+		s.up.parts[p.Hash] = parts
+	}
 }
 
 func (s *Session) onStatusRequest(file wire.Hash, shares Shares, out *Output) {
@@ -165,6 +177,7 @@ func (s *Session) onMultiPacket(file wire.Hash, size uint64, requests []wire.Pac
 	for _, request := range requests {
 		switch r := request.(type) {
 		case client.FileRequest:
+			s.setRequestedParts(r, share)
 			answer.Answers = append(answer.Answers, client.FileNameAnswer{Hash: file, Name: share.Name})
 		case client.SetRequestFileID:
 			answer.Answers = append(answer.Answers, client.FileStatus{Hash: file, Parts: toStatus(share)})
@@ -194,7 +207,7 @@ func (s *Session) onUploadRequest(file wire.Hash, shares Shares, out *Output) {
 		return
 	}
 	s.up.file = file
-	out.add(UploadRequested{File: file})
+	out.add(UploadRequested{File: file, Parts: s.up.parts[file]})
 }
 
 func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, shares Shares, out *Output) {
