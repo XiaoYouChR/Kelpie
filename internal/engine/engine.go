@@ -32,12 +32,14 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
-// Ports are the engine's only ways out: sockets, files, time and randomness.
+// Ports are the engine's only ways out: sockets, files, time and randomness,
+// and the host's interface addresses as they were at start.
 type Ports struct {
-	Transport transport.Transport
-	Disk      disk.Disk
-	Clock     clock.Clock
-	Rand      *rand.Rand
+	Transport  transport.Transport
+	Disk       disk.Disk
+	Clock      clock.Clock
+	Rand       *rand.Rand
+	LocalAddrs []netip.Addr
 }
 
 const (
@@ -120,6 +122,7 @@ type Engine struct {
 
 	serverAddr netip.AddrPort
 	publicIP   netip.Addr
+	mappedIP   netip.Addr
 	network    Network
 	hasNetwork bool
 
@@ -152,10 +155,11 @@ func Start(config Config, events Events) (*Engine, error) {
 	var seed [32]byte
 	crand.Read(seed[:])
 	ports := Ports{
-		Transport: transport.Real{},
-		Disk:      disk.Real{},
-		Clock:     clock.Real{},
-		Rand:      rand.New(rand.NewChaCha8(seed)),
+		Transport:  transport.Real{},
+		Disk:       disk.Real{},
+		Clock:      clock.Real{},
+		Rand:       rand.New(rand.NewChaCha8(seed)),
+		LocalAddrs: probeLocalAddrs(),
 	}
 	var mapPorts openNAT
 	if config.EnableUPnP {
@@ -164,6 +168,25 @@ func Start(config Config, events Events) (*Engine, error) {
 		}
 	}
 	return build(config, ports, events, defaultCapacities, mapPorts)
+}
+
+// probeLocalAddrs lists the host's interface addresses; without them only
+// the public IP tells our own sources apart, so a failure is just logged.
+func probeLocalAddrs() []netip.Addr {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		log.Printf("engine: interface addresses: %v", err)
+		return nil
+	}
+	var local []netip.Addr
+	for _, a := range addrs {
+		if prefix, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(prefix.IP); ok {
+				local = append(local, ip.Unmap())
+			}
+		}
+	}
+	return local
 }
 
 // Build runs an Engine on the given ports; tests pass fakes. UPnP is never
@@ -562,6 +585,7 @@ func (e *Engine) onTick() {
 		}
 	}
 	e.runTransfers(now)
+	e.refreshUploadEndpoints()
 	e.runServer(e.server.OnTick(now, e.buildServerWanted()))
 	if e.kad != nil {
 		e.kad.SetWanted(e.buildKadWanted())
@@ -580,6 +604,7 @@ func (e *Engine) refreshNetwork() {
 		IsServerConnected: e.server.IsServerConnected(),
 		IsHighID:          e.server.IsHighID(),
 	}
+	network.IsBehindCarrierNat = !network.IsHighID && matchCarrierNAT(e.mappedIP, e.publicIP)
 	if e.kad != nil {
 		network.IsKadFirewalled = e.kadStatus.IsFirewalled
 		network.KadNodes = e.kadStatus.Nodes
@@ -613,9 +638,29 @@ func (e *Engine) onNATOpened(m natOpened) {
 		return
 	}
 	e.unmapNAT = m.unmap
-	if m.ip.Is4() && !e.server.IsHighID() {
+	e.mappedIP = m.ip
+	if isPublicIPv4(m.ip) && !e.publicIP.IsValid() && !e.server.IsHighID() {
 		e.publicIP = m.ip
 	}
+}
+
+// sharedAddressSpace is RFC 6598's range for carrier-grade NAT.
+var sharedAddressSpace = netip.MustParsePrefix("100.64.0.0/10")
+
+// matchCarrierNAT is the rule in docs/protocol.md "network": the gateway that
+// mapped our ports has a non-public external address, or peers see us at
+// another address, so another NAT sits above it. Without a mapping it cannot
+// tell.
+func matchCarrierNAT(mapped, public netip.Addr) bool {
+	if !mapped.Is4() || mapped.IsUnspecified() {
+		return false
+	}
+	return !isPublicIPv4(mapped) || public.IsValid() && public != mapped
+}
+
+func isPublicIPv4(addr netip.Addr) bool {
+	return addr.Is4() && addr.IsGlobalUnicast() && !addr.IsPrivate() &&
+		!sharedAddressSpace.Contains(addr) && addr.As4()[0] != 0 && addr.As4()[0] < 240
 }
 
 func (e *Engine) closeNAT(unmap func(context.Context) error) {

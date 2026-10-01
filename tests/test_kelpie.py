@@ -256,6 +256,24 @@ def test_crash_during_handshake_reports_stderr(engine: Engine) -> None:
     run(main())
 
 
+def test_silent_handshake_kills_the_engine_and_ends_the_run_with_start_failed(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("kelpie.kelpie.HANDSHAKE_TIMEOUT", 0.5)
+    engine.setScript({"silentOnHello": True})
+
+    async def main():
+        kelpie = engine.buildKelpie()
+        async with kelpie.runDownload(LINK_A, Path("/out/a.bin")) as current:
+            with pytest.raises(Error) as raised:
+                await collect(current)
+        assert raised.value.code == ErrorCode.START_FAILED
+        assert "did not answer hello within 0.5 s" in raised.value.message
+        assert kelpie.network is None
+
+    run(main())
+
+
 def test_engine_exit_ends_every_open_run_and_next_call_restarts(engine: Engine) -> None:
     engine.setScript({"runs": {HASH_B: [{"crash": "panic: boom"}]}})
 
@@ -306,6 +324,7 @@ def test_rate_limits_are_sent_in_hello_and_live(engine: Engine) -> None:
 def test_network_is_reported_while_the_engine_runs(engine: Engine) -> None:
     engine.setScript({"network": {
         "isServerConnected": True, "isHighId": False, "isKadFirewalled": True, "kadNodes": 812,
+        "isBehindCarrierNat": True,
     }})
 
     async def main():
@@ -315,7 +334,8 @@ def test_network_is_reported_while_the_engine_runs(engine: Engine) -> None:
             async for _ in current:
                 break
             assert kelpie.network == Network(
-                isServerConnected=True, isHighId=False, isKadFirewalled=True, kadNodes=812
+                isServerConnected=True, isHighId=False, isKadFirewalled=True, kadNodes=812,
+                isBehindCarrierNat=True,
             )
         await kelpie.close()
         assert kelpie.network is None

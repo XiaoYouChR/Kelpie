@@ -65,7 +65,8 @@ Limits change while running and survive Engine Process restarts.
 
 Whether a server connection is established, whether the server gave a HighID
 (other peers can connect to us) or a LowID, whether Kad sees us as firewalled,
-and how many Kad nodes are known, as last reported. It is absent while no
+how many Kad nodes are known, and whether a carrier NAT keeps us from a HighID,
+as last reported. It is absent while no
 Engine Process runs.
 
 ## Durable State

@@ -5,6 +5,7 @@ KELPIE_FAKE_SCRIPT names a JSON file:
   version           ready.version (default "v0.1.0")
   failed            answer hello with `failed` and this message, then exit 1
   crashOnHello      write this line to stderr and exit 2 without answering hello
+  silentOnHello     never answer hello
   network           sent after ready
   log               every received message is appended to this file as a JSON line
   runs              {hash: [step, ...]}; a step is {"progress": {...}}, {"ended": error|null}
@@ -14,6 +15,7 @@ KELPIE_FAKE_SCRIPT names a JSON file:
 import json
 import os
 import sys
+import time
 
 
 def send(message):
@@ -50,6 +52,8 @@ def main():
             case "hello":
                 if "crashOnHello" in script:
                     crash(script["crashOnHello"], 2)
+                if script.get("silentOnHello"):
+                    time.sleep(3600)
                 if "failed" in script:
                     send({"type": "failed", "error": {"code": "START_FAILED", "message": script["failed"]}})
                     sys.exit(1)

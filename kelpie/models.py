@@ -24,7 +24,13 @@ class Link:
         text = text.strip()
         if text[: len(SCHEME)].lower() != SCHEME:
             raise Error(ErrorCode.INVALID_LINK, f"not an eD2k link: {text}")
-        fields = text[len(SCHEME) :].split("|")
+        body = text[len(SCHEME) :]
+        # Browsers may encode every separator, as aMule's TextClient.cpp:537-540
+        # repairs. Only such a link is decoded: in a plain link %7C is part of
+        # the name.
+        if body[:3].lower() == "%7c":
+            body = body.replace("%7C", "|").replace("%7c", "|")
+        fields = body.split("|")
         if len(fields) < 5 or fields[0] != "" or fields[1].lower() != "file":
             raise Error(ErrorCode.INVALID_LINK, f"not an eD2k file link: {text}")
         name, size, hash = unquote(fields[2]), fields[3], fields[4]
@@ -68,3 +74,4 @@ class Network:
     isHighId: bool
     isKadFirewalled: bool
     kadNodes: int
+    isBehindCarrierNat: bool

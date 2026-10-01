@@ -406,3 +406,21 @@ func TestOldClientScoresHalf(t *testing.T) {
 	matchActions(t, q.OnRequest(5, modern, file, toTime(12)), SendRank{5, 3})
 	matchActions(t, q.OnRequest(5, modern, file, toTime(30)), SendRank{5, 1})
 }
+
+func TestHasPeerWhileWaitingOrHoldingASlot(t *testing.T) {
+	_, q := buildWorld()
+	startSlots(t, q)
+	q.OnRequest(3, buildPeer(3), file, toTime(2))
+	for _, n := range []int{1, 3} {
+		if p := buildPeer(n); !q.HasPeer(p.User, p.IP) {
+			t.Errorf("HasPeer(peer %d) = false", n)
+		}
+	}
+	q.OnConnectionGone(1)
+	q.RemoveFile(file)
+	for _, n := range []int{1, 3, 4} {
+		if p := buildPeer(n); q.HasPeer(p.User, p.IP) {
+			t.Errorf("HasPeer(peer %d) = true", n)
+		}
+	}
+}

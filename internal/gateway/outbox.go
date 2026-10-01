@@ -146,11 +146,12 @@ type endedLine struct {
 }
 
 type networkLine struct {
-	Type              string `json:"type"`
-	IsServerConnected bool   `json:"isServerConnected"`
-	IsHighID          bool   `json:"isHighId"`
-	IsKadFirewalled   bool   `json:"isKadFirewalled"`
-	KadNodes          int    `json:"kadNodes"`
+	Type               string `json:"type"`
+	IsServerConnected  bool   `json:"isServerConnected"`
+	IsHighID           bool   `json:"isHighId"`
+	IsKadFirewalled    bool   `json:"isKadFirewalled"`
+	KadNodes           int    `json:"kadNodes"`
+	IsBehindCarrierNat bool   `json:"isBehindCarrierNat"`
 }
 
 func toProgressLine(id engine.RunID, p engine.Progress) progressLine {
@@ -170,10 +171,11 @@ func toProgressLine(id engine.RunID, p engine.Progress) progressLine {
 
 func toNetworkLine(n engine.Network) networkLine {
 	return networkLine{
-		Type:              "network",
-		IsServerConnected: n.IsServerConnected,
-		IsHighID:          n.IsHighID,
-		IsKadFirewalled:   n.IsKadFirewalled,
-		KadNodes:          n.KadNodes,
+		Type:               "network",
+		IsServerConnected:  n.IsServerConnected,
+		IsHighID:           n.IsHighID,
+		IsKadFirewalled:    n.IsKadFirewalled,
+		KadNodes:           n.KadNodes,
+		IsBehindCarrierNat: n.IsBehindCarrierNat,
 	}
 }

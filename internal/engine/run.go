@@ -30,6 +30,9 @@ type run struct {
 	progress  Progress
 	// asked maps each user we sent the file request to the last time we did.
 	asked map[wire.Hash]time.Time
+	// isSyncing is set while a complete download is flushed to the device;
+	// the run ends when that is done.
+	isSyncing bool
 }
 
 // fileReaskTime is aMule's FILEREASKTIME (Constants.h:35), the transfer's
@@ -224,8 +227,9 @@ func (e *Engine) refreshRuns() {
 		case transfer.StatusFailed:
 			e.stopRun(r, &Error{Code: Code(outcome.Code), Message: outcome.Message})
 		case transfer.StatusComplete:
-			if r.mode == ModeDownload {
-				e.stopRun(r, nil)
+			if r.mode == ModeDownload && !r.isSyncing {
+				r.isSyncing = true
+				e.sendDiskJob(diskJob{kind: jobSync, run: r.id, file: r.handle})
 			}
 		}
 	}
@@ -273,6 +277,7 @@ func (e *Engine) runTransfers(now time.Time) {
 			IsKadRunning:  e.kad != nil,
 			PublicIP:      e.publicIP,
 			Port:          uint16(e.tcpPort),
+			LocalAddrs:    e.ports.LocalAddrs,
 		})
 		for _, action := range actions {
 			switch action.(type) {

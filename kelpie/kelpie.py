@@ -15,6 +15,7 @@ from .models import Link, Network, Progress, Settings
 PROTOCOL = 1
 MIN_ENGINE_VERSION = (0, 1, 0)
 CLOSE_TIMEOUT = 15
+HANDSHAKE_TIMEOUT = 30
 STREAM_LIMIT = 4 * 1024 * 1024
 VERSION_PATTERN = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
 
@@ -198,8 +199,17 @@ class Kelpie:
         stderr: deque[str] = deque(maxlen=20)
         stderrTask = asyncio.create_task(refreshStderr(process, stderr))
         routes: dict[int, Run] = {}
-        line = await process.stdout.readline()
-        failure = parseHandshake(line) if line else None
+        try:
+            async with asyncio.timeout(HANDSHAKE_TIMEOUT):
+                line = await process.stdout.readline()
+        except TimeoutError:
+            process.kill()
+            line = b""
+            failure = Error(
+                ErrorCode.START_FAILED, f"Engine Process did not answer hello within {HANDSHAKE_TIMEOUT} s"
+            )
+        else:
+            failure = parseHandshake(line) if line else None
         isReady = bool(line) and failure is None
         if isReady:
             self._process = process
@@ -306,6 +316,7 @@ def parseNetwork(message: dict[str, Any]) -> Network:
         isHighId=message["isHighId"],
         isKadFirewalled=message["isKadFirewalled"],
         kadNodes=message["kadNodes"],
+        isBehindCarrierNat=message["isBehindCarrierNat"],
     )
 
 

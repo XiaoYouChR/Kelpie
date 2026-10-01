@@ -36,7 +36,14 @@ func Parse(text string) (File, error) {
 	if len(text) < len(scheme) || !strings.EqualFold(text[:len(scheme)], scheme) {
 		return File{}, fmt.Errorf("%w: missing ed2k:// scheme", ErrInvalid)
 	}
-	fields := strings.Split(text[len(scheme):], "|")
+	body := text[len(scheme):]
+	// Browsers may encode every separator, as aMule's TextClient.cpp:537-540
+	// repairs. Only such a link is decoded: in a plain link %7C is part of
+	// the name.
+	if len(body) >= 3 && strings.EqualFold(body[:3], "%7C") {
+		body = strings.ReplaceAll(strings.ReplaceAll(body, "%7C", "|"), "%7c", "|")
+	}
+	fields := strings.Split(body, "|")
 	if len(fields) < 5 || fields[0] != "" || !strings.EqualFold(fields[1], "file") {
 		return File{}, fmt.Errorf("%w: not a file link", ErrInvalid)
 	}
