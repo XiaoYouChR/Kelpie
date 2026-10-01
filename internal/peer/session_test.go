@@ -81,7 +81,6 @@ func buildConfig(t testing.TB, last byte) Config {
 		Port:     4662,
 		UDPPort:  4672,
 		IPv6:     netip.MustParseAddr("2001:db8::" + string('0'+rune(last))),
-		Pipeline: 3,
 		Random:   rand.New(rand.NewPCG(uint64(last), 7)),
 	}
 }
@@ -415,28 +414,24 @@ func TestSlotGrantOnIncomingConnection(t *testing.T) {
 }
 
 func TestPipelineStaysFull(t *testing.T) {
-	l := &link{t: t, now: start}
-	ca, cb := buildConfig(t, 1), buildConfig(t, 2)
-	ca.Pipeline = 5
-	l.open(ca, cb)
+	l := buildLink(t)
 	size := 10 * piece.BlockSize
 	file, data := addShare(l.b, 1, size, false)
 	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false}))
 	l.run(l.b, l.b.s.StartUpload())
-	if w := lastOf[BlocksWanted](t, l.a); w.Count != 5 {
+	if w := lastOf[BlocksWanted](t, l.a); w.Count != 3 {
 		t.Fatalf("wanted %+v", w)
 	}
 	block := func(i int64) piece.Block {
 		return piece.Block{Begin: i * piece.BlockSize, End: (i + 1) * piece.BlockSize}
 	}
 	l.sent = nil
-	l.run(l.a, l.a.s.Request(file, []piece.Block{block(0), block(1), block(2), block(3), block(4)}))
-	if n := sentCount[client.RequestParts](l); n != 2 {
-		t.Fatalf("%d RequestParts for 5 blocks", n)
+	l.run(l.a, l.a.s.Request(file, []piece.Block{block(0), block(1), block(2)}))
+	if n := sentCount[client.RequestParts](l); n != 1 {
+		t.Fatalf("%d RequestParts for 3 blocks", n)
 	}
-	requested := lastOf[BlocksRequested](t, l.b)
-	if len(requested.Blocks) != 2 || len(eventsOf[BlocksRequested](l.b)) != 2 {
-		t.Fatalf("requested %+v", eventsOf[BlocksRequested](l.b))
+	if requested := lastOf[BlocksRequested](t, l.b); len(requested.Blocks) != 3 {
+		t.Fatalf("requested %+v", requested)
 	}
 
 	// eMule re-lists blocks still in flight; each is served once.
@@ -446,7 +441,9 @@ func TestPipelineStaysFull(t *testing.T) {
 		t.Fatal("duplicate request served again")
 	}
 
+	// A block a minute is a slow peer: one more block refills the three.
 	l.a.events = nil
+	l.now = l.now.Add(time.Minute)
 	b0 := block(0)
 	l.run(l.b, l.b.s.SendBlock(file, b0, data[b0.Begin:b0.End]))
 	if r := lastOf[BlockReceived](t, l.a); r.Block != b0 {
@@ -456,12 +453,34 @@ func TestPipelineStaysFull(t *testing.T) {
 		t.Fatalf("after one block wanted %+v", w)
 	}
 	l.b.events = nil
-	l.run(l.a, l.a.s.Request(file, []piece.Block{block(5)}))
-	if r := lastOf[BlocksRequested](t, l.b); len(r.Blocks) != 1 || r.Blocks[0] != block(5) {
+	l.run(l.a, l.a.s.Request(file, []piece.Block{block(3)}))
+	if r := lastOf[BlocksRequested](t, l.b); len(r.Blocks) != 1 || r.Blocks[0] != block(3) {
 		t.Fatalf("refill %+v", r)
 	}
 	l.run(l.a, l.a.s.Remove(file))
 	lastOf[UploadCancelled](t, l.b)
+}
+
+// A peer sending faster than 75 KiB/s gets six blocks in flight, as eMule
+// asks; three would leave it idle a round trip after each burst.
+func TestFastPeerGetsDeeperPipeline(t *testing.T) {
+	l := buildLink(t)
+	size := 10 * piece.BlockSize
+	file, data := addShare(l.b, 1, size, false)
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false}))
+	l.run(l.b, l.b.s.StartUpload())
+	block := func(i int64) piece.Block {
+		return piece.Block{Begin: i * piece.BlockSize, End: (i + 1) * piece.BlockSize}
+	}
+	l.run(l.a, l.a.s.Request(file, []piece.Block{block(0), block(1), block(2)}))
+
+	l.a.events = nil
+	l.now = l.now.Add(time.Second)
+	b0 := block(0)
+	l.run(l.b, l.b.s.SendBlock(file, b0, data[b0.Begin:b0.End]))
+	if w := lastOf[BlocksWanted](t, l.a); w.Count != 4 {
+		t.Fatalf("180 KiB in a second wanted %+v, want 4 to reach six", w)
+	}
 }
 
 func TestCompressedPartReassembly(t *testing.T) {

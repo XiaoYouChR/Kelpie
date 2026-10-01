@@ -60,7 +60,6 @@ func (w *world) addScriptedPeer(ip string, f testFile) *scriptedPeer {
 			PublicIP: addr,
 			Port:     peerPort,
 			UDPPort:  peerPort + 10,
-			Pipeline: pipeline,
 			Random:   rand.New(rand.NewPCG(9, 9)),
 		},
 		share: peer.Share{Name: f.name, Size: int64(len(f.data)), Parts: piece.BuildFullSet(piece.PartCount(int64(len(f.data))))},

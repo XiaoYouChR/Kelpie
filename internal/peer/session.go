@@ -41,9 +41,7 @@ type Config struct {
 	KadPort    uint16
 	KadVersion byte
 	Server     netip.AddrPort
-	// Pipeline is how many blocks a download keeps in flight.
-	Pipeline int
-	Random   *rand.Rand
+	Random     *rand.Rand
 	// Buddy is our Kad buddy's IP and UDP port while it serves us.
 	Buddy netip.AddrPort
 	// HasDirectCallback: we take Kad callback requests ourselves, over UDP.

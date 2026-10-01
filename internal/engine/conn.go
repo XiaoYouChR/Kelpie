@@ -273,7 +273,6 @@ func (e *Engine) buildPeerConfig(c *conn) peer.Config {
 		Port:        uint16(e.tcpPort),
 		UDPPort:     uint16(e.udpPort),
 		Server:      server,
-		Pipeline:    pipeline,
 		Random:      e.ports.Rand,
 		ShareByHash: e.shareByHash,
 		SourcesByHash: func(file wire.Hash, parts piece.Set) []peer.Source {
