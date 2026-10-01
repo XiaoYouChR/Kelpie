@@ -11,12 +11,13 @@ import (
 	crand "crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"maps"
+	"math"
 	"math/rand/v2"
 	"net"
 	"net/netip"
-	"os"
 	"sync"
 	"time"
 
@@ -161,12 +162,18 @@ type uploadKey struct {
 func Start(config Config, events Events) (*Engine, error) {
 	var seed [32]byte
 	crand.Read(seed[:])
+	// Without the interface addresses only the public IP tells our own
+	// sources apart, so a failure is just logged.
+	localAddrs, err := transport.ProbeLocalAddrs()
+	if err != nil {
+		log.Printf("engine: interface addresses: %v", err)
+	}
 	ports := Ports{
 		Transport:  transport.Real{},
 		Disk:       disk.Real{},
 		Clock:      clock.Real{},
 		Rand:       rand.New(rand.NewChaCha8(seed)),
-		LocalAddrs: probeLocalAddrs(),
+		LocalAddrs: localAddrs,
 	}
 	var mapPorts openNAT
 	if config.EnableUPnP {
@@ -175,25 +182,6 @@ func Start(config Config, events Events) (*Engine, error) {
 		}
 	}
 	return build(config, ports, events, defaultCapacities, mapPorts)
-}
-
-// probeLocalAddrs lists the host's interface addresses; without them only
-// the public IP tells our own sources apart, so a failure is just logged.
-func probeLocalAddrs() []netip.Addr {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		log.Printf("engine: interface addresses: %v", err)
-		return nil
-	}
-	var local []netip.Addr
-	for _, a := range addrs {
-		if prefix, ok := a.(*net.IPNet); ok {
-			if ip, ok := netip.AddrFromSlice(prefix.IP); ok {
-				local = append(local, ip.Unmap())
-			}
-		}
-	}
-	return local
 }
 
 // Build runs an Engine on the given ports; tests pass fakes. UPnP is never
@@ -251,23 +239,23 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		return nil, toStartFailed(err)
 	}
 	if config.TraceFile != "" {
-		file, err := os.OpenFile(config.TraceFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+		file, end, err := openTrace(ports.Disk, config.TraceFile)
 		if err != nil {
 			e.closeSockets()
 			cancel()
 			return nil, toStartFailed(err)
 		}
 		e.trace = buildLeafQueue[traceLine](caps.trace)
-		e.startLeaf(func() { e.runTraceWriter(file, e.trace.items) })
+		e.startLeaf(func() { e.runTraceWriter(file, end, e.trace.items) })
 	}
 	e.server = server.BuildServer(server.Config{
 		UserHash: self.UserHash,
 		Port:     uint16(e.tcpPort),
 		Version:  config.Version,
 		Random:   e.ports.Rand,
-	}, updateLearned(loadServerLists(config.ServerLists), state.Servers))
+	}, updateLearned(loadLists(ports.Disk, config.ServerLists, server.ParseMet), state.Servers))
 	if config.EnableKad {
-		e.startKad(loadNodeLists(config.NodeLists))
+		e.startKad(loadLists(ports.Disk, config.NodeLists, kad.ParseNodes))
 	}
 
 	now := ports.Clock.Now()
@@ -320,38 +308,31 @@ func toCredits(credits map[wire.Hash]store.Credit) []identity.Credit {
 	return list
 }
 
-// loadServerLists merges every list; a list that cannot be read is skipped,
-// since the others still find servers.
-func loadServerLists(paths []string) []server.Entry {
-	var entries []server.Entry
+// loadLists merges every server or node list; a list that cannot be read is
+// skipped, since the others still find servers and nodes.
+func loadLists[T any](d disk.Disk, paths []string, parse func([]byte) ([]T, error)) []T {
+	var entries []T
 	for _, path := range paths {
-		data, err := os.ReadFile(path)
+		data, err := loadFile(d, path)
 		if err == nil {
-			var list []server.Entry
-			list, err = server.ParseMet(data)
+			var list []T
+			list, err = parse(data)
 			entries = append(entries, list...)
 		}
 		if err != nil {
-			log.Printf("engine: skip server list %s: %v", path, err)
+			log.Printf("engine: skip list %s: %v", path, err)
 		}
 	}
 	return entries
 }
 
-func loadNodeLists(paths []string) []kad.Node {
-	var nodes []kad.Node
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			var list []kad.Node
-			list, err = kad.ParseNodes(data)
-			nodes = append(nodes, list...)
-		}
-		if err != nil {
-			log.Printf("engine: skip node list %s: %v", path, err)
-		}
+func loadFile(d disk.Disk, path string) ([]byte, error) {
+	file, err := d.Open(path, disk.Read)
+	if err != nil {
+		return nil, err
 	}
-	return nodes
+	defer file.Close()
+	return io.ReadAll(io.NewSectionReader(file, 0, math.MaxInt64))
 }
 
 // openSockets binds TCP and UDP to one port number. With Kad, Kad owns the

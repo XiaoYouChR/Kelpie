@@ -26,8 +26,8 @@ func TestDiskContract(t *testing.T) {
 			if _, err := d.Open(path, Write); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("open missing for write: %v", err)
 			}
-			if _, err := d.Probe(path); !errors.Is(err, fs.ErrNotExist) {
-				t.Fatalf("probe missing: %v", err)
+			if info, err := d.Probe(path); info != nil || err != nil {
+				t.Fatalf("probe missing: %v %v", info, err)
 			}
 
 			file, err := d.Open(path, Create)
@@ -107,14 +107,13 @@ func TestFakeFaultMatchesPath(t *testing.T) {
 	}
 }
 
-func TestFakeGlobalFaultAndClear(t *testing.T) {
+func TestFakeGlobalFault(t *testing.T) {
 	d := BuildFake()
 	d.SetData("/a", []byte("abc"))
-	d.AddFault("", OpOpen, fs.ErrPermission, 100)
+	d.AddFault("", OpOpen, fs.ErrPermission, 1)
 	if _, err := d.Open("/a", Read); !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("want permission denied, got %v", err)
 	}
-	d.ClearFaults()
 	file, err := d.Open("/a", Read)
 	if err != nil {
 		t.Fatal(err)

@@ -114,7 +114,7 @@ func matchPlain(b byte) bool {
 // with user hash user. keyPart is random; it salts both keys. It blocks
 // until the peer has answered, as eMule holds its Hello until then (aMule
 // drops a peer that sends more than the handshake step needs): the caller
-// sets a deadline.
+// closes conn to give up.
 //
 // Request: <Marker 1><KeyPart 4>, then encrypted <MagicValue 4>
 // <MethodsSupported 1><MethodPreferred 1><PaddingLen 1>.
@@ -145,8 +145,8 @@ func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (*Conn, error)
 // obfuscation port. A server has no user hash to key with, so the key is
 // agreed by Diffie-Hellman; secret is our 128-bit exponent and marker a
 // random first byte (aMule EncryptedStreamSocket.cpp:56-81, 398-424,
-// 603-668). It blocks until the server has answered: the caller sets a
-// deadline.
+// 603-668). It blocks until the server has answered: the caller closes
+// conn to give up.
 //
 // Request, plain: <Marker 1><g^a mod p 96><PaddingLen 1>. Answer: plain
 // <g^b mod p 96>, then encrypted <MagicValue 4><MethodsSupported 1>
@@ -196,7 +196,7 @@ func OpenServer(conn net.Conn, secret [16]byte, marker byte) (*Conn, error) {
 // OpenIncoming reads the first byte of a connection a peer opened to us,
 // whose user hash is self. A plain eD2k frame is returned as it came; an
 // obfuscation request is answered and the encrypted Conn returned. It blocks
-// until the peer has sent its handshake: the caller sets a deadline.
+// until the peer has sent its handshake: the caller closes conn to give up.
 //
 // eMule and aMule drop a peer whose first read holds more than the
 // handshake. Kelpie keeps such bytes for the reader instead: a requester

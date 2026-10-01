@@ -67,6 +67,20 @@ func (Real) LookupHost(ctx context.Context, host string) ([]netip.Addr, error) {
 	return addrs, err
 }
 
+// ProbeLocalAddrs lists the addresses of the host's network interfaces.
+func ProbeLocalAddrs() ([]netip.Addr, error) {
+	addrs, err := net.InterfaceAddrs()
+	var local []netip.Addr
+	for _, a := range addrs {
+		if prefix, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(prefix.IP); ok {
+				local = append(local, ip.Unmap())
+			}
+		}
+	}
+	return local, err
+}
+
 type realListener struct{ *net.TCPListener }
 
 func (l realListener) Port() int { return l.Addr().(*net.TCPAddr).Port }

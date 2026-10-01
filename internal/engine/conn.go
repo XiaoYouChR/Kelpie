@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/disk"
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
@@ -123,11 +122,11 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 		switch {
 		case err != nil:
 		case obfuscationPort != 0:
-			netConn, err = openObfuscated(c.ctx, netConn, func(c net.Conn) (*obfuscation.Conn, error) {
+			netConn, err = openObfuscated(c.ctx, netConn, func(c net.Conn) (net.Conn, error) {
 				return obfuscation.OpenServer(c, secret, keyPart[0])
 			})
 		case obfuscateFor != wire.Hash{}:
-			netConn, err = openObfuscated(c.ctx, netConn, func(c net.Conn) (*obfuscation.Conn, error) {
+			netConn, err = openObfuscated(c.ctx, netConn, func(c net.Conn) (net.Conn, error) {
 				return obfuscation.OpenOutgoing(c, obfuscateFor, keyPart)
 			})
 		}
@@ -138,19 +137,22 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 	return c
 }
 
-// openObfuscated runs the handshake, closing the socket if ctx ends first so
-// the leaf does not outlive the connection.
-func openObfuscated(ctx context.Context, netConn net.Conn, open func(net.Conn) (*obfuscation.Conn, error)) (net.Conn, error) {
+// openObfuscated runs an obfuscation handshake on a leaf. It closes the
+// socket once ctx ends or connectTimeout passes, so the leaf does not outlive
+// the connection; like the dial, it is timed by a context deadline.
+func openObfuscated(ctx context.Context, netConn net.Conn, open func(net.Conn) (net.Conn, error)) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
 	stop := context.AfterFunc(ctx, func() { netConn.Close() })
-	defer stop()
-	netConn.SetDeadline(time.Now().Add(connectTimeout))
-	obfuscated, err := open(netConn)
+	conn, err := open(netConn)
+	if !stop() && err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		netConn.Close()
 		return nil, err
 	}
-	netConn.SetDeadline(time.Time{})
-	return obfuscated, nil
+	return conn, nil
 }
 
 // uploadTarget is how to reach a peer waiting in our upload queue once its
@@ -197,16 +199,10 @@ func (e *Engine) runAcceptor() {
 // runIncoming waits for an accepted connection's first bytes, which tell
 // whether the peer obfuscates, before the hub sees the connection.
 func (e *Engine) runIncoming(netConn net.Conn, self wire.Hash) {
-	stop := context.AfterFunc(e.ctx, func() { netConn.Close() })
-	netConn.SetDeadline(time.Now().Add(connectTimeout))
-	conn, err := obfuscation.OpenIncoming(netConn, self)
-	stop()
-	if err != nil {
-		netConn.Close()
-		return
-	}
-	netConn.SetDeadline(time.Time{})
-	if !e.send(e.ctx, connAccepted{conn}) {
+	conn, err := openObfuscated(e.ctx, netConn, func(c net.Conn) (net.Conn, error) {
+		return obfuscation.OpenIncoming(c, self)
+	})
+	if err == nil && !e.send(e.ctx, connAccepted{conn}) {
 		netConn.Close()
 	}
 }

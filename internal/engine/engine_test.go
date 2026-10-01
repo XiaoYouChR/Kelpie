@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -277,17 +276,15 @@ func requireEndedOK(t *testing.T, err *Error) {
 
 // loadTrace reads the trace file of n.
 func (n *node) loadTrace() []map[string]any {
-	file, err := os.Open(n.trace)
-	if err != nil {
-		n.w.t.Fatal(err)
+	data, ok := n.disk.DataByPath(n.trace)
+	if !ok {
+		n.w.t.Fatal("no trace file")
 	}
-	defer file.Close()
 	var lines []map[string]any
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
+	for text := range strings.Lines(string(data)) {
 		var line map[string]any
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			n.w.t.Fatalf("trace line %q: %v", scanner.Text(), err)
+		if err := json.Unmarshal([]byte(text), &line); err != nil {
+			n.w.t.Fatalf("trace line %q: %v", text, err)
 		}
 		lines = append(lines, line)
 	}

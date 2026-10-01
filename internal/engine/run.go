@@ -1,8 +1,6 @@
 package engine
 
 import (
-	"errors"
-	"io/fs"
 	"maps"
 	"slices"
 	"time"
@@ -84,10 +82,7 @@ func (e *Engine) startRun(c RunCommand) *Error {
 		state = &old
 	}
 	info, err := e.ports.Disk.Probe(c.File)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		info = nil
-	case err != nil:
+	if err != nil {
 		return toFileError(err)
 	}
 

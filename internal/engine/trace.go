@@ -3,8 +3,8 @@ package engine
 import (
 	"encoding/json"
 	"log"
-	"os"
 
+	"github.com/XiaoYouChR/Kelpie/internal/disk"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
 )
 
@@ -43,9 +43,23 @@ func (e *Engine) sendTrace(ev transfer.TraceEvent) {
 	}
 }
 
+// openTrace opens the trace file for appending at end, so a restarted
+// engine adds to the trace of the one before.
+func openTrace(d disk.Disk, path string) (file disk.File, end int64, err error) {
+	if file, err = d.Open(path, disk.Create); err != nil {
+		return nil, 0, err
+	}
+	info, err := d.Probe(path)
+	if err != nil {
+		file.Close()
+		return nil, 0, err
+	}
+	return file, info.Size(), nil
+}
+
 // runTraceWriter is the trace file's leaf; it appends each line and reports
 // it written so the hub can send the next.
-func (e *Engine) runTraceWriter(file *os.File, lines <-chan traceLine) {
+func (e *Engine) runTraceWriter(file disk.File, end int64, lines <-chan traceLine) {
 	defer file.Close()
 	isBroken := false
 	for {
@@ -53,7 +67,9 @@ func (e *Engine) runTraceWriter(file *os.File, lines <-chan traceLine) {
 		case line := <-lines:
 			if !isBroken {
 				raw, _ := json.Marshal(line)
-				if _, err := file.Write(append(raw, '\n')); err != nil {
+				n, err := file.WriteAt(append(raw, '\n'), end)
+				end += int64(n)
+				if err != nil {
 					log.Printf("engine: trace: %v", err)
 					isBroken = true
 				}

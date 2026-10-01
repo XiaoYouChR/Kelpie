@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -47,9 +46,7 @@ func (w *world) startFakeServerWith(config fakeserver.Config) *fakeserver.Server
 
 func (n *node) setServer(srv *fakeserver.Server) {
 	path := filepath.Join(n.folder, "server.met")
-	if err := os.WriteFile(path, fakeserver.BuildMet(srv), 0o644); err != nil {
-		n.w.t.Fatal(err)
-	}
+	n.disk.SetData(path, fakeserver.BuildMet(srv))
 	n.config.ServerLists = []string{path}
 }
 
@@ -83,9 +80,7 @@ func TestServerByHostName(t *testing.T) {
 	met = wire.BuildAddrPort(met, netip.AddrPortFrom(netip.IPv4Unspecified(), srv.Addr().Port()))
 	met = wire.BuildTags(met, []wire.Tag{{Type: wire.TagString, ID: 0x85, String: "server.test"}})
 	path := filepath.Join(a.folder, "server.met")
-	if err := os.WriteFile(path, met, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	a.disk.SetData(path, met)
 	a.config.ServerLists = []string{path}
 	a.start()
 	w.waitFor("server login", func() bool { return a.events.lastNetwork().IsServerConnected })
@@ -208,9 +203,7 @@ func TestGlobalSourceRequestIsObfuscated(t *testing.T) {
 	log := &lockedBuffer{}
 	a.config.PacketLog = log
 	path := filepath.Join(a.folder, "server.met")
-	if err := os.WriteFile(path, fakeserver.BuildMet(s1, s2), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	a.disk.SetData(path, fakeserver.BuildMet(s1, s2))
 	a.config.ServerLists = []string{path}
 	c.setServer(s2)
 	a.start()

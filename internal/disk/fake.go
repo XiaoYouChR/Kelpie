@@ -50,12 +50,6 @@ func (f *Fake) AddFault(path string, op Op, err error, count int) {
 	f.faults = append(f.faults, &fault{path: path, op: op, err: err, remaining: count})
 }
 
-func (f *Fake) ClearFaults() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.faults = nil
-}
-
 func (f *Fake) SetData(path string, data []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -102,7 +96,7 @@ func (f *Fake) Probe(name string) (fs.FileInfo, error) {
 	defer f.mu.Unlock()
 	data, ok := f.files[name]
 	if !ok {
-		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
+		return nil, nil
 	}
 	return fakeInfo{name: path.Base(name), size: int64(len(data.bytes))}, nil
 }

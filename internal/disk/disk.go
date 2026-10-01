@@ -1,4 +1,5 @@
-// Package disk is the engine's seam for the files it downloads and seeds.
+// Package disk is the engine's seam for files: those it downloads and seeds,
+// the server and node lists it reads, and the trace it writes.
 package disk
 
 import (
@@ -11,7 +12,7 @@ import (
 
 type Disk interface {
 	Open(path string, mode Mode) (File, error)
-	// Probe reports a missing path as an error matching fs.ErrNotExist.
+	// Probe reports a missing path as nil info and nil error.
 	Probe(path string) (fs.FileInfo, error)
 }
 
@@ -53,5 +54,9 @@ func (Real) Open(path string, mode Mode) (File, error) {
 }
 
 func (Real) Probe(path string) (fs.FileInfo, error) {
-	return os.Stat(path)
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return info, err
 }

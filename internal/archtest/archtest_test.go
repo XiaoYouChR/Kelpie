@@ -61,18 +61,9 @@ var exceptions = map[edge]string{
 	// a pure state machine should hand back its own value type and let the
 	// engine convert it for the store.
 	{"internal/transfer", "internal/store"}: "pure state machine imports the store leaf",
-	// TODO: loadServerLists/loadNodeLists and the trace file use os directly
-	// instead of the disk seam (engine.go:254,328,344).
-	{"internal/engine", "os"}: "engine bypasses the disk seam",
-	// TODO: probeLocalAddrs calls net.InterfaceAddrs (engine.go:183) instead
-	// of the transport seam; the rest of engine's net use is the net.Conn type.
-	{"internal/engine", "net"}: "engine bypasses the transport seam",
-	// TODO: obfuscation handshake deadlines on net.Conn use the wall clock
-	// (conn.go:146,201).
-	{"internal/engine", "wall clock"}: "engine bypasses the clock seam",
-	// TODO: run.go:88 matches fs.ErrNotExist from disk.Real; the disk seam
-	// should name its own not-found error.
-	{"internal/engine", "io/fs"}: "engine sees the disk seam's implementation errors",
+	// The engine takes connections from the transport seam as net.Conn, and
+	// matches net.ErrClosed and *net.TCPAddr on them; it opens nothing itself.
+	{"internal/engine", "net"}: "engine uses the transport seam's net.Conn",
 	// Decision needed: the store writes state.json with os directly, not
 	// through disk (store.go). It is a leaf in ADR-0005 but not one of the
 	// three seams in CLAUDE.md.
