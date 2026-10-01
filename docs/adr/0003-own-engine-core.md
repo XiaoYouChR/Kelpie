@@ -15,7 +15,7 @@ behind narrower interfaces, and rewrites the runtime core: session, transfer,
 peer session, connection, upload queue, and storage. The actor structure is
 recorded in ADR-0005.
 
-The engine reads the existing goed2k `state.json` (version 3), so identities,
+The engine reads the existing goed2k `state.json` (versions up to 3), so identities,
 credits, Kad nodes, and unfinished transfers survive the switch, and writes its
 own format.
 
@@ -43,17 +43,20 @@ own format.
 - First release: slot grants on incoming connections, UDP reask, Secure User
   Identification, eMule-sized connection limits, server callbacks for LowID in
   both directions, Source Exchange v2 in both directions, UDP global source
-  search, firewalled Kad sources, a full request pipeline with compression and
-  rarest-first picking, publishing partial files to servers and Kad, block-level
-  corruption handling with banning, one server connection at a time, our own
-  client identity, and dual-stack addresses with IPv6 in Source Exchange
+  search, Kad version 8 with firewall checks, a source index for other nodes,
+  and buddies in both roles, a full request pipeline with compression,
+  MULTIPACKET_EXT2 and rarest-first picking, asking each client for one file
+  at a time as aMule's A4AF does, publishing partial files to servers and Kad, block-level corruption
+  handling with AICH recovery and banning, one server connection at a time, our
+  own client identity, and dual-stack addresses with IPv6 in Source Exchange
   between Kelpie peers and in server source answers following the emule-qt
   specification.
-- Protocol obfuscation for client connections is in the first release too:
-  on the real network the fastest sources of the hot link (aMule seedboxes)
-  require it and close a plain connection right after our Hello.
-- NAT-PMP and PCP join the first release: UPnP is often off or broken on
-  home routers, and a HighID matters more to speed than any other feature.
-- Later: Kad buddies, AICH. Kad stays IPv4.
+- Protocol obfuscation, TCP and UDP, is in the first release too: on the real
+  network the fastest sources of the hot link (aMule seedboxes) require it and
+  close a plain connection right after our Hello.
+- Port mapping tries PCP and NAT-PMP before UPnP: UPnP is often off or broken
+  on home routers, and a HighID matters more to speed than any other feature.
+- Not planned: Kad keyword and note searches, which no caller needs. Kad stays
+  IPv4.
 - Code may be reused from `goed2k` (MIT) with attribution; eMule and aMule
   (GPL) contribute protocol knowledge only.
