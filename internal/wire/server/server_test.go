@@ -34,8 +34,8 @@ func unhex(t *testing.T, s string) []byte {
 	return b
 }
 
-func TestTCPRoundTrip(t *testing.T) {
-	packets := []wire.Packet{
+func samplePackets() []wire.Packet {
+	return []wire.Packet{
 		Login{UserHash: userHash, Port: 4662, Name: "Kelpie", Version: 0x3C, Flags: CapZlib | CapNewTags | CapUnicode | CapLargeFiles | CapIPv6, EmuleVersion: 0x2000, IPv6: v6, Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x0F, Uint: 4662}}},
 		IDChange{ClientID: 0x04030201, Flags: FlagCompression | FlagRelatedSearch | FlagIPv6, Reserved: 4661, ReportedIP: netip.MustParseAddr("1.2.3.4")},
 		IDChange{ClientID: 0x04030201, Flags: FlagTCPObfuscation, ReportedIP: netip.MustParseAddr("1.2.3.4"), ObfuscationPort: 4665},
@@ -59,7 +59,10 @@ func TestTCPRoundTrip(t *testing.T) {
 			{Hash: userHash, ClientID: IncompleteID, Port: IncompletePort, Tags: []wire.Tag{{Type: wire.TagUint32, ID: FileSize, Uint: 1}, {Type: wire.TagUint32, ID: FileSizeHi, Uint: 1}}},
 		}},
 	}
-	for _, p := range packets {
+}
+
+func TestTCPRoundTrip(t *testing.T) {
+	for _, p := range samplePackets() {
 		frame, _, err := wire.ParseFrame(wire.BuildPacket(nil, p))
 		if err != nil {
 			t.Fatal(err)
@@ -74,8 +77,8 @@ func TestTCPRoundTrip(t *testing.T) {
 	}
 }
 
-func TestUDPRoundTrip(t *testing.T) {
-	packets := []wire.Packet{
+func sampleUDPPackets() []wire.Packet {
+	return []wire.Packet{
 		GlobGetSources2{Files: []GetSources{{Hash: fileHash, Size: 100}, {Hash: userHash, Size: 5 << 30}}},
 		GlobGetSources{Files: []wire.Hash{fileHash, userHash}},
 		GlobFoundSources{Files: []FoundSources{{Hash: fileHash, Sources: []Source{{ClientID: 1, Port: 2}}}}},
@@ -86,7 +89,10 @@ func TestUDPRoundTrip(t *testing.T) {
 		GlobServStatReq{Challenge: 0x55AA1234},
 		GlobServStatRes{Challenge: 0x55AA1234, Users: 1, Files: 2, MaxUsers: 3, SoftFiles: 4, HardFiles: 5, UDPFlags: UDPFlagGetSources2 | UDPFlagLargeFiles, LowIDUsers: 6, UDPObfuscationPort: 7, TCPObfuscationPort: 8, UDPKey: 9},
 	}
-	for _, p := range packets {
+}
+
+func TestUDPRoundTrip(t *testing.T) {
+	for _, p := range sampleUDPPackets() {
 		frame, err := wire.ParseDatagram(wire.BuildPacketDatagram(nil, p))
 		if err != nil {
 			t.Fatal(err)

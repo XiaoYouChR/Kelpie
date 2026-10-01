@@ -48,13 +48,13 @@ func roundTrip(t *testing.T, p wire.Packet) wire.Packet {
 	return got
 }
 
-func TestRoundTrip(t *testing.T) {
+func samplePackets() []wire.Packet {
 	sourceTags := []wire.Tag{
 		{Type: wire.TagUint8, ID: TagSourceType, Uint: 1},
 		{Type: wire.TagUint32, ID: TagSourceIP, Uint: 0x0100007f},
 		{Type: wire.TagUint16, ID: TagSourcePort, Uint: 4662},
 	}
-	packets := []wire.Packet{
+	return []wire.Packet{
 		BootstrapReq{},
 		BootstrapRes{ID: idA, TCPPort: 4661, Version: Version, Contacts: []Contact{localContact()}},
 		HelloReq{ID: idA, TCPPort: 4662, Version: 9, Tags: []wire.Tag{{Type: wire.TagUint16, ID: TagSourceUPort, Uint: 4672}}},
@@ -76,7 +76,10 @@ func TestRoundTrip(t *testing.T) {
 		Ping{},
 		Pong{UDPPort: 4672},
 	}
-	for _, p := range packets {
+}
+
+func TestRoundTrip(t *testing.T) {
+	for _, p := range samplePackets() {
 		roundTrip(t, p)
 	}
 }

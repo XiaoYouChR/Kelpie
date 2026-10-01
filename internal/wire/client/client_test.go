@@ -52,7 +52,7 @@ func roundTrip(t *testing.T, p wire.Packet, parse func(byte, byte, []byte) (wire
 	}
 }
 
-func TestTCPRoundTrip(t *testing.T) {
+func samplePackets() []wire.Packet {
 	hello := Hello{
 		UserHash:     userHash,
 		ClientID:     0x04030201,
@@ -73,7 +73,7 @@ func TestTCPRoundTrip(t *testing.T) {
 	}
 	answer := HelloAnswer(hello)
 	answer.YourIP = netip.MustParseAddr("2a01:4f8::2")
-	packets := []wire.Packet{
+	return []wire.Packet{
 		hello,
 		answer,
 		Hello{UserHash: userHash, ClientID: 7},
@@ -136,13 +136,16 @@ func TestTCPRoundTrip(t *testing.T) {
 		AICHAnswer{Hash: fileHash, HasData: true, Part: 700, Root: aichRoot, HasLongIdents: true, Entries: []AICHEntry{{Ident: 0x10000, Hash: aichRoot}}},
 		IPv6Changed{Addr: netip.MustParseAddr("2a01:4f8::1")},
 	}
-	for _, p := range packets {
+}
+
+func TestTCPRoundTrip(t *testing.T) {
+	for _, p := range samplePackets() {
 		roundTrip(t, p, Parse)
 	}
 }
 
-func TestUDPRoundTrip(t *testing.T) {
-	packets := []wire.Packet{
+func sampleUDPPackets() []wire.Packet {
+	return []wire.Packet{
 		ReaskFilePing{Hash: fileHash},
 		ReaskFilePing{Hash: fileHash, HasCompleteSources: true, CompleteSources: 4},
 		ReaskFilePing{Hash: fileHash, HasParts: true, Parts: parts(), HasCompleteSources: true, CompleteSources: 4},
@@ -152,7 +155,10 @@ func TestUDPRoundTrip(t *testing.T) {
 		FileNotFound{},
 		QueueFull{},
 	}
-	for _, p := range packets {
+}
+
+func TestUDPRoundTrip(t *testing.T) {
+	for _, p := range sampleUDPPackets() {
 		raw := wire.BuildPacketDatagram(nil, p)
 		frame, err := wire.ParseDatagram(raw)
 		if err != nil {

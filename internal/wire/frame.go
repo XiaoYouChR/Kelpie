@@ -85,11 +85,16 @@ func ParseFrameFrom(r io.Reader) (Frame, error) {
 	if err != nil {
 		return Frame{}, err
 	}
-	body := make([]byte, size)
-	if _, err := io.ReadFull(r, body); err != nil {
+	// The body grows as it arrives: a header alone must not make us
+	// allocate up to MaxBodySize for each connection.
+	body := bytes.NewBuffer(make([]byte, 0, min(size, 64<<10)))
+	if _, err := io.CopyN(body, r, int64(size)); err != nil {
+		if errors.Is(err, io.EOF) {
+			err = io.ErrUnexpectedEOF
+		}
 		return Frame{}, err
 	}
-	return toFrame(head[0], head[5], body)
+	return toFrame(head[0], head[5], body.Bytes())
 }
 
 // ParseDatagram reads a UDP packet: protocol byte, opcode, body.

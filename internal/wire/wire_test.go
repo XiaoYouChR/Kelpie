@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/netip"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -237,5 +239,21 @@ func TestBitfieldSetClear(t *testing.T) {
 	f.Clear(0)
 	if !f.Has(11) || f.Has(0) || f.Has(12) || f.Has(-1) || f.Count() != 1 {
 		t.Fatalf("bitfield = %v", f.Bools())
+	}
+}
+
+// A peer that announces a 16 MiB frame and sends nothing more must not cost
+// 16 MiB per connection.
+func TestParseFrameFromAllocatesWhatArrives(t *testing.T) {
+	head := []byte{ProtocolEMule, 0, 0, 0, 1, 0x46}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := ParseFrameFrom(bytes.NewReader(append(head, make([]byte, 100)...)))
+	runtime.ReadMemStats(&after)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("err = %v, want unexpected EOF", err)
+	}
+	if n := after.TotalAlloc - before.TotalAlloc; n > 1<<20 {
+		t.Fatalf("allocated %d bytes for a 100-byte body", n)
 	}
 }
