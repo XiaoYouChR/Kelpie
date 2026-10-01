@@ -227,7 +227,7 @@ func (e *Engine) onConnAccepted(netConn net.Conn) {
 	c := e.addConn(addr.AddrPort(), false, false)
 	c.net = netConn
 	e.startConnLeaves(c)
-	c.session = peer.BuildIncoming(e.buildPeerConfig(), c.remote, e.now())
+	c.session = peer.BuildIncoming(e.buildPeerConfig(c), c.remote, e.now())
 }
 
 func (e *Engine) onConnOpened(m connOpened) {
@@ -248,7 +248,7 @@ func (e *Engine) onConnOpened(m connOpened) {
 		e.runServer(e.server.OnConnected(c.remote))
 		return
 	}
-	session, out := peer.BuildOutgoing(e.buildPeerConfig(), c.remote, e.now())
+	session, out := peer.BuildOutgoing(e.buildPeerConfig(c), c.remote, e.now())
 	c.session = session
 	e.runSession(c, out)
 	for _, h := range c.files {
@@ -270,17 +270,21 @@ func (e *Engine) startConnLeaves(c *conn) {
 	e.startLeaf(func() { e.runWriter(c.ctx, c.id, c.remote, c.net, c.out.items, limiterOut) })
 }
 
-func (e *Engine) buildPeerConfig() peer.Config {
+func (e *Engine) buildPeerConfig(c *conn) peer.Config {
 	cfg := peer.Config{
-		Self:     e.self,
-		Version:  e.config.Version,
-		ClientID: e.server.ClientID(),
-		PublicIP: e.publicIP,
-		Port:     uint16(e.tcpPort),
-		UDPPort:  uint16(e.udpPort),
-		Server:   e.serverAddr,
-		Pipeline: pipeline,
-		Random:   e.ports.Rand,
+		Self:        e.self,
+		Version:     e.config.Version,
+		ClientID:    e.server.ClientID(),
+		PublicIP:    e.publicIP,
+		Port:        uint16(e.tcpPort),
+		UDPPort:     uint16(e.udpPort),
+		Server:      e.serverAddr,
+		Pipeline:    pipeline,
+		Random:      e.ports.Rand,
+		ShareByHash: e.shareByHash,
+		SourcesByHash: func(file wire.Hash, parts piece.Set) []peer.Source {
+			return e.buildPeerSources(file, c, parts)
+		},
 	}
 	if e.kad != nil {
 		cfg.KadPort = uint16(e.udpPort)
@@ -487,7 +491,7 @@ func (e *Engine) onPacket(id uint64, p wire.Packet) {
 	if c.isClosed {
 		return
 	}
-	e.runSession(c, c.session.OnPacket(p, e.shareByHash, e.now()))
+	e.runSession(c, c.session.OnPacket(p, e.now()))
 }
 
 // runSession performs a session's Output in its documented order.
@@ -539,10 +543,6 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		}
 	case peer.SlotGranted:
 		e.onSlotGranted(c, ev.File)
-	case peer.SlotRevoked:
-		if r := e.downloadByHash(ev.File); r != nil {
-			e.runTransferActions(r, r.transfer.OnQueued(c.id, 0, now))
-		}
 	case peer.NoNeededParts:
 		e.onNoNeededParts(c, ev.File)
 	case peer.BlocksWanted:
@@ -566,8 +566,6 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		c.uploadFile = wire.Hash{}
 		c.uploadBlocks = nil
 		e.queue.OnConnectionGone(c.id)
-	case peer.SourcesRequested:
-		e.runSession(c, c.session.SendSources(ev.File, e.buildPeerSources(ev.File, c, ev.Parts)))
 	case peer.SourcesFound:
 		if r := e.downloadByHash(ev.File); r != nil {
 			e.addSources(r, toExchangeSources(ev.Sources), transfer.ChannelExchange)

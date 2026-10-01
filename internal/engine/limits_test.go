@@ -78,14 +78,16 @@ func (w *world) openRawPeer(ip string, n *node) *rawPeer {
 		w.t.Fatal(err)
 	}
 	cfg := peer.Config{
-		Self:     self,
-		Version:  "0.50.0",
-		ClientID: wire.ToClientID(addr),
-		PublicIP: addr,
-		Port:     peerPort,
-		UDPPort:  peerPort + 10,
-		Pipeline: pipeline,
-		Random:   rand.New(rand.NewPCG(7, 7)),
+		Self:          self,
+		Version:       "0.50.0",
+		ClientID:      wire.ToClientID(addr),
+		PublicIP:      addr,
+		Port:          peerPort,
+		UDPPort:       peerPort + 10,
+		Pipeline:      pipeline,
+		Random:        rand.New(rand.NewPCG(7, 7)),
+		ShareByHash:   func(wire.Hash) (peer.Share, bool) { return peer.Share{}, false },
+		SourcesByHash: func(wire.Hash, piece.Set) []peer.Source { return nil },
 	}
 	p := &rawPeer{w: w, conn: w.openRaw(ip, n)}
 	session, out := peer.BuildOutgoing(cfg, n.endpoint(), w.clock.Now())
@@ -119,7 +121,7 @@ func (p *rawPeer) readUntil(what string, match func(peer.Event) bool) {
 				return
 			}
 			p.mu.Lock()
-			out := p.session.OnPacket(packet, func(wire.Hash) (peer.Share, bool) { return peer.Share{}, false }, p.w.clock.Now())
+			out := p.session.OnPacket(packet, p.w.clock.Now())
 			p.events = append(p.events, out.Events...)
 			p.mu.Unlock()
 			p.send(out.Send...)

@@ -66,6 +66,8 @@ func (w *world) addScriptedPeer(ip string, f testFile) *scriptedPeer {
 		share: peer.Share{Name: f.name, Size: int64(len(f.data)), Parts: piece.BuildFullSet(piece.PartCount(int64(len(f.data))))},
 		file:  f.hash,
 	}
+	p.cfg.ShareByHash = p.shareByHash
+	p.cfg.SourcesByHash = func(wire.Hash, piece.Set) []peer.Source { return nil }
 	listener, err := p.host.OpenListener(peerPort)
 	if err != nil {
 		w.t.Fatal(err)
@@ -134,7 +136,7 @@ func (p *scriptedPeer) run(netConn net.Conn, session *peer.Session, first peer.O
 			p.mu.Lock()
 			c.received = append(c.received, packet)
 			c.receivedAt = append(c.receivedAt, p.w.clock.Now())
-			p.perform(c, session.OnPacket(packet, p.shareByHash, p.w.clock.Now()))
+			p.perform(c, session.OnPacket(packet, p.w.clock.Now()))
 			p.mu.Unlock()
 		}
 	}()

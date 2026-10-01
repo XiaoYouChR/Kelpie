@@ -23,7 +23,7 @@ func sentOf[T wire.Packet](t *testing.T, l *link) T {
 
 func TestFileRequestUsesFileIdentifier(t *testing.T) {
 	l := buildLink(t)
-	if !l.a.s.Capabilities().HasFileIdentifiers || !l.b.s.Capabilities().HasFileIdentifiers {
+	if !l.a.s.features.hasFileIdentifiers || !l.b.s.features.hasFileIdentifiers {
 		t.Fatal("file identifiers not advertised")
 	}
 	size := piece.PartSize + 1000
@@ -63,8 +63,8 @@ func TestSourceRequestUsesFileIdentifier(t *testing.T) {
 	if _, ok := sentOf[client.MultiPacketExt2](t, l).Requests[0].(client.RequestSources2); !ok {
 		t.Fatal("no source request")
 	}
-	if lastOf[SourcesRequested](t, l.b).File != file {
-		t.Fatal("request not seen")
+	if len(l.b.sourceRequests) != 1 || l.b.sourceRequests[0].file != file {
+		t.Fatalf("source requests %+v", l.b.sourceRequests)
 	}
 }
 

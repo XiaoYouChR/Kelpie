@@ -20,13 +20,34 @@ var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 type side struct {
 	s      *Session
 	shares map[wire.Hash]Share
-	events []Event
-	closed string
+	// sources answers every source request; sourceRequests records them.
+	sources        []Source
+	sourceRequests []sourceRequest
+	events         []Event
+	closed         string
 }
+
+type sourceRequest struct {
+	file  wire.Hash
+	parts piece.Set
+}
+
+func buildSide() *side { return &side{shares: map[wire.Hash]Share{}} }
 
 func (e *side) shareByHash(file wire.Hash) (Share, bool) {
 	share, ok := e.shares[file]
 	return share, ok
+}
+
+func (e *side) sourcesByHash(file wire.Hash, parts piece.Set) []Source {
+	e.sourceRequests = append(e.sourceRequests, sourceRequest{file, parts})
+	return e.sources
+}
+
+// serve makes cfg answer from e's shares and sources.
+func (e *side) serve(cfg Config) Config {
+	cfg.ShareByHash, cfg.SourcesByHash = e.shareByHash, e.sourcesByHash
+	return cfg
 }
 
 // link carries packets between two sessions through their wire form, so the
@@ -69,10 +90,10 @@ func buildLink(t *testing.T) *link {
 }
 
 func (l *link) open(ca, cb Config) *link {
-	a, hello := BuildOutgoing(ca, netip.AddrPortFrom(cb.PublicIP, cb.Port), l.now)
-	b := BuildIncoming(cb, netip.AddrPortFrom(ca.PublicIP, 50000), l.now)
-	l.a = &side{s: a, shares: map[wire.Hash]Share{}}
-	l.b = &side{s: b, shares: map[wire.Hash]Share{}}
+	l.a, l.b = buildSide(), buildSide()
+	var hello Output
+	l.a.s, hello = BuildOutgoing(l.a.serve(ca), netip.AddrPortFrom(cb.PublicIP, cb.Port), l.now)
+	l.b.s = BuildIncoming(l.b.serve(cb), netip.AddrPortFrom(ca.PublicIP, 50000), l.now)
 	l.run(l.a, hello)
 	return l
 }
@@ -110,7 +131,7 @@ func (l *link) run(from *side, out Output) {
 			p = l.tamper(p)
 		}
 		l.sent = append(l.sent, p)
-		record(f.to, f.to.s.OnPacket(l.toParsed(p), f.to.shareByHash, l.now))
+		record(f.to, f.to.s.OnPacket(l.toParsed(p), l.now))
 	}
 }
 
@@ -181,12 +202,12 @@ func TestHandshakeBothDirections(t *testing.T) {
 	if ha.YourIP != l.a.s.cfg.PublicIP || hb.YourIP != l.b.s.cfg.PublicIP {
 		t.Fatalf("YourIP votes %v %v", ha.YourIP, hb.YourIP)
 	}
-	caps := l.a.s.Capabilities()
-	if !caps.IsEmule || !caps.CanCompress || !caps.HasSourceExchange2 ||
-		!caps.HasExtMultiPacket || !caps.HasLargeFiles || !caps.HasExtendedSources || caps.UDPVersion != 4 ||
-		caps.SecureIdent != identity.Support || caps.IPv6 != l.b.s.cfg.IPv6 || caps.UDPPort != 4672 ||
+	caps, features := l.a.s.Capabilities(), l.a.s.features
+	if !features.isEmule || !features.canCompress || !caps.HasSourceExchange2 ||
+		!features.hasExtMultiPacket || !features.hasLargeFiles || !features.hasExtendedSources || caps.UDPVersion != 4 ||
+		features.secureIdent != identity.Support || caps.IPv6 != l.b.s.cfg.IPv6 || caps.UDPPort != 4672 ||
 		caps.CryptOptions != wire.CryptSupported|wire.CryptRequested {
-		t.Fatalf("capabilities %+v", caps)
+		t.Fatalf("capabilities %+v, features %+v", caps, features)
 	}
 	hello := l.sent[0].(client.Hello)
 	if hello.Name != "Kelpie" || hello.EmuleVersion != 0x4B<<24|1<<17|2<<10|3<<7 || caps.MuleVersion != 0x99 {
@@ -231,7 +252,7 @@ func TestIdentityFailsForForgedKey(t *testing.T) {
 
 func TestPacketBeforeHelloCloses(t *testing.T) {
 	s := BuildIncoming(buildConfig(t, 1), netip.MustParseAddrPort("10.0.0.9:1"), start)
-	if out := s.OnPacket(client.AcceptUploadRequest{}, nil, start); out.Close != closeProtocol {
+	if out := s.OnPacket(client.AcceptUploadRequest{}, start); out.Close != closeProtocol {
 		t.Fatalf("close %q", out.Close)
 	}
 }
@@ -542,8 +563,8 @@ func TestOutOfPartsRevokesSlot(t *testing.T) {
 	l.run(l.b, l.b.s.StartUpload())
 	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: piece.BlockSize}}))
 	l.run(l.b, l.b.s.StopUpload())
-	if lastOf[SlotRevoked](t, l.a).File != file {
-		t.Fatal("slot not revoked")
+	if q := lastOf[Queued](t, l.a); q.File != file || q.Rank != 0 {
+		t.Fatalf("slot not revoked: %+v", q)
 	}
 	if out := l.a.s.Request(file, []piece.Block{{Begin: 0, End: piece.BlockSize}}); len(out.Send) != 0 {
 		t.Fatal("requested without a slot")
@@ -589,8 +610,8 @@ func TestEmptySlotIsCancelled(t *testing.T) {
 	if sentCount[client.CancelTransfer](l) != 1 {
 		t.Fatal("empty slot kept")
 	}
-	if lastOf[SlotRevoked](t, l.a).File != file {
-		t.Fatal("slot not released")
+	if q := lastOf[Queued](t, l.a); q.File != file || q.Rank != 0 {
+		t.Fatalf("slot not released: %+v", q)
 	}
 	if lastOf[NoNeededParts](t, l.a).File != file {
 		t.Fatal("empty slot not reported as no needed parts")
@@ -621,7 +642,7 @@ func TestSlotEndHandsOverReceivedPrefix(t *testing.T) {
 	if got.File != file || got.Block != want || !bytes.Equal(got.Data, data[:want.End]) {
 		t.Fatalf("received %+v (%d bytes)", got.Block, len(got.Data))
 	}
-	if _, ok := l.a.events[len(l.a.events)-1].(SlotRevoked); !ok {
+	if q, ok := l.a.events[len(l.a.events)-1].(Queued); !ok || q.Rank != 0 {
 		t.Fatal("slot revoked before the prefix was handed over")
 	}
 }
@@ -658,14 +679,21 @@ func TestRequestsCarryPeerParts(t *testing.T) {
 	if got := lastOf[UploadRequested](t, l.b).Parts; !slices.Equal(got, parts) {
 		t.Fatalf("upload request parts %v", got)
 	}
-	if got := lastOf[SourcesRequested](t, l.b).Parts; !slices.Equal(got, parts) {
-		t.Fatalf("source request parts %v", got)
+	if len(l.b.sourceRequests) != 1 || !slices.Equal(l.b.sourceRequests[0].parts, parts) {
+		t.Fatalf("source requests %+v", l.b.sourceRequests)
 	}
 }
 
 func TestSourceExchange(t *testing.T) {
 	l := buildLink(t)
 	file, _ := addShare(l.b, 1, piece.BlockSize, false)
+	server := netip.MustParseAddrPort("1.2.3.4:4661")
+	l.b.sources = []Source{
+		{IPv4: netip.MustParseAddr("5.6.7.8"), IPv6: netip.MustParseAddr("2001:db8::7"), Port: 4662, UserHash: hashOf(9), CryptOptions: wire.CryptSupported | wire.CryptRequested},
+		{LowID: 42, Port: 4663, Server: server},
+		{IPv6: netip.MustParseAddr("2001:db8::8"), Port: 4664},
+	}
+	sources := l.b.sources
 	l.run(l.a, l.a.s.Add(file, piece.BlockSize, piece.Set{false}))
 	l.sent = nil
 	l.run(l.a, l.a.s.RequestSources(file, l.now))
@@ -675,16 +703,9 @@ func TestSourceExchange(t *testing.T) {
 	if r := multi.Requests[0].(client.RequestSources2); len(multi.Requests) != 1 || r.Version != client.ExtendedSourcesVersion {
 		t.Fatalf("asked a Kelpie peer with %+v", multi)
 	}
-	if lastOf[SourcesRequested](t, l.b).File != file {
-		t.Fatal("request not seen")
+	if len(l.b.sourceRequests) != 1 || l.b.sourceRequests[0].file != file {
+		t.Fatalf("source requests %+v", l.b.sourceRequests)
 	}
-	server := netip.MustParseAddrPort("1.2.3.4:4661")
-	sources := []Source{
-		{IPv4: netip.MustParseAddr("5.6.7.8"), IPv6: netip.MustParseAddr("2001:db8::7"), Port: 4662, UserHash: hashOf(9), CryptOptions: wire.CryptSupported | wire.CryptRequested},
-		{LowID: 42, Port: 4663, Server: server},
-		{IPv6: netip.MustParseAddr("2001:db8::8"), Port: 4664},
-	}
-	l.run(l.b, l.b.s.SendSources(file, sources))
 	found := lastOf[SourcesFound](t, l.a)
 	if found.File != file || len(found.Sources) != 3 {
 		t.Fatalf("found %+v", found)
@@ -708,16 +729,21 @@ func TestSourceExchange(t *testing.T) {
 
 // An eMule peer speaks SX2 version 4 with hybrid ids and no IPv6.
 func TestSourceExchangeWithEmule(t *testing.T) {
-	s, _ := BuildOutgoing(buildConfig(t, 1), netip.MustParseAddrPort("10.0.0.2:4662"), start)
 	file := hashOf(1)
-	shares := func(wire.Hash) (Share, bool) { return Share{Size: piece.BlockSize}, true }
+	e := buildSide()
+	e.shares[file] = Share{Size: piece.BlockSize}
+	e.sources = []Source{
+		{IPv4: netip.MustParseAddr("5.6.7.0"), Port: 4662, UserHash: hashOf(3), CryptOptions: wire.CryptSupported},
+		{IPv6: netip.MustParseAddr("2001:db8::8"), Port: 4664},
+	}
+	s, _ := BuildOutgoing(e.serve(buildConfig(t, 1)), netip.MustParseAddrPort("10.0.0.2:4662"), start)
 	s.OnPacket(client.HelloAnswer{
 		UserHash:     hashOf(2),
 		Name:         "eMule",
 		EmuleVersion: 0<<24 | 0<<17 | 70<<10,
 		Misc1:        client.MiscOptions1{ExtendedRequestsVersion: 2, HasMultiPacket: true, DataCompressionVersion: 1},
 		Misc2:        client.MiscOptions2{HasSourceExchange2: true},
-	}, shares, start)
+	}, start)
 	s.Add(file, piece.BlockSize, piece.Set{false})
 	out := s.RequestSources(file, start)
 	if r := out.Send[0].(client.MultiPacket).Requests[0].(client.RequestSources2); r.Version != client.SourceExchange2Version {
@@ -727,27 +753,20 @@ func TestSourceExchangeWithEmule(t *testing.T) {
 		{ClientID: 0x05060700, Port: 4662, UserHash: hashOf(3), CryptOptions: 0x07},
 		{ClientID: 42, Port: 4663},
 	}}
-	out = s.OnPacket(answer, shares, start)
+	out = s.OnPacket(answer, start)
 	found := out.Events[0].(SourcesFound).Sources
 	if found[0].IPv4 != netip.MustParseAddr("5.6.7.0") || found[1].LowID != 42 ||
 		found[0].CryptOptions != 0x07 || !wire.CanObfuscate(found[0].CryptOptions, found[0].UserHash) || wire.CanObfuscate(found[1].CryptOptions, found[1].UserHash) {
 		t.Fatalf("found %+v", found)
 	}
 
-	out = s.OnPacket(client.RequestSources2{Version: 4, Hash: file}, shares, start)
-	if _, ok := out.Events[0].(SourcesRequested); !ok {
-		t.Fatal("request not seen")
-	}
-	out = s.SendSources(file, []Source{
-		{IPv4: netip.MustParseAddr("5.6.7.0"), Port: 4662, UserHash: hashOf(3), CryptOptions: wire.CryptSupported},
-		{IPv6: netip.MustParseAddr("2001:db8::8"), Port: 4664},
-	})
+	out = s.OnPacket(client.RequestSources2{Version: 4, Hash: file}, start)
 	sent := out.Send[0].(client.AnswerSources2)
 	if sent.Version != 4 || len(sent.Sources) != 1 || sent.Sources[0].ClientID != 0x05060700 ||
 		sent.Sources[0].UserHash != hashOf(3) || sent.Sources[0].CryptOptions != wire.CryptSupported {
 		t.Fatalf("answer %+v", sent)
 	}
-	if out := s.OnPacket(client.RequestSources2{Version: 4, Hash: file}, shares, start.Add(time.Minute)); len(out.Events) != 0 {
+	if out := s.OnPacket(client.RequestSources2{Version: 4, Hash: file}, start.Add(time.Minute)); len(out.Send) != 0 {
 		t.Fatal("answered again within SOURCECLIENTREASKS")
 	}
 	if out := s.SendQueueRank(70000); out.Send[0] != (client.QueueRanking{Rank: 0xFFFF}) {
@@ -801,7 +820,7 @@ func TestStalledSlotIsGivenUp(t *testing.T) {
 	if out.Close != "" || len(out.Send) != 1 || out.Send[0] != (client.CancelTransfer{}) {
 		t.Fatalf("out %+v", out)
 	}
-	if ev := out.Events[0].(SlotRevoked); ev.File != file {
+	if ev := out.Events[0].(Queued); ev.File != file || ev.Rank != 0 {
 		t.Fatalf("revoked %+v", ev)
 	}
 }
@@ -813,22 +832,22 @@ func TestEmuleInfoBeforeHelloAnswer(t *testing.T) {
 	out := s.OnPacket(client.EmuleInfo{Version: 0x30, ProtocolVersion: 1, Tags: []wire.Tag{
 		{Type: wire.TagUint32, ID: client.InfoCompression, Uint: 1},
 		{Type: wire.TagUint32, ID: client.InfoUDPPort, Uint: 4672},
-	}}, nil, start)
+	}}, start)
 	if out.Close != "" || len(out.Send) != 1 {
 		t.Fatalf("early EmuleInfo: close %q, sent %+v", out.Close, out.Send)
 	}
 	if _, ok := out.Send[0].(client.EmuleInfoAnswer); !ok {
 		t.Fatalf("sent %T", out.Send[0])
 	}
-	out = s.OnPacket(client.HelloAnswer{UserHash: hashOf(2), Name: "Shareaza", Port: 6346}, nil, start)
+	out = s.OnPacket(client.HelloAnswer{UserHash: hashOf(2), Name: "Shareaza", Port: 6346}, start)
 	if out.Close != "" {
 		t.Fatalf("close %q", out.Close)
 	}
 	if _, ok := out.Events[0].(HandshakeCompleted); !ok {
 		t.Fatalf("events %+v", out.Events)
 	}
-	if caps := s.Capabilities(); !caps.IsEmule || caps.MuleVersion != 0x30 || !caps.CanCompress || caps.UDPPort != 4672 || caps.Port != 6346 {
-		t.Fatalf("capabilities %+v", caps)
+	if caps := s.Capabilities(); !s.features.isEmule || caps.MuleVersion != 0x30 || !s.features.canCompress || caps.UDPPort != 4672 || caps.Port != 6346 {
+		t.Fatalf("capabilities %+v, features %+v", caps, s.features)
 	}
 }
 
@@ -854,7 +873,7 @@ func TestCryptOptionsReadAsEmuleDoes(t *testing.T) {
 		{client.MiscOptions2{CanCrypt: true, IsCryptRequested: true, IsCryptRequired: true}, wire.CryptSupported | wire.CryptRequested | wire.CryptRequired},
 	} {
 		s, _ := BuildOutgoing(buildConfig(t, 1), netip.MustParseAddrPort("10.0.0.2:4662"), start)
-		s.OnPacket(client.HelloAnswer{UserHash: hashOf(2), Misc2: c.misc2}, nil, start)
+		s.OnPacket(client.HelloAnswer{UserHash: hashOf(2), Misc2: c.misc2}, start)
 		if got := s.Capabilities().CryptOptions; got != c.want {
 			t.Errorf("%+v: got %#x, want %#x", c.misc2, got, c.want)
 		}
@@ -880,7 +899,7 @@ func TestHelloNamesBuddyAndKadVersion(t *testing.T) {
 		t.Fatalf("hello buddy %v, kad version %d", h.Buddy, h.Misc2.KadVersion)
 	}
 	b := BuildIncoming(buildConfig(t, 2), netip.MustParseAddrPort("10.0.0.1:4662"), start)
-	b.OnPacket(out.Send[0], nil, start)
+	b.OnPacket(out.Send[0], start)
 	if b.Capabilities().KadVersion != 7 {
 		t.Fatalf("kad version %d", b.Capabilities().KadVersion)
 	}

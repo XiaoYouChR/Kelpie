@@ -78,6 +78,7 @@ func buildFuzzSession(cfg Config, isOutgoing bool, files fuzzFiles) *fuzzSession
 	cfg.Random = rand.New(rand.NewPCG(1, 7))
 	remote := netip.MustParseAddrPort("198.51.100.2:4662")
 	f := &fuzzSession{files: files, now: start}
+	cfg.ShareByHash, cfg.SourcesByHash = f.shares, f.sources
 	if isOutgoing {
 		var out Output
 		f.s, out = BuildOutgoing(cfg, remote, f.now)
@@ -94,6 +95,14 @@ func (f *fuzzSession) shares(file wire.Hash) (Share, bool) {
 		return Share{}, false
 	}
 	return Share{Name: "up.bin", Size: f.files.upSize, Parts: piece.BuildFullSet(piece.PartCount(f.files.upSize)), Tree: f.files.upTree}, true
+}
+
+func (f *fuzzSession) sources(wire.Hash, piece.Set) []Source {
+	return []Source{
+		{IPv4: netip.MustParseAddr("198.51.100.7"), Port: 4662, UserHash: hashOf(7)},
+		{LowID: 42, Port: 4663, Server: netip.MustParseAddrPort("198.51.100.8:4661")},
+		{IPv6: netip.MustParseAddr("2001:db8::8"), Port: 4664},
+	}
 }
 
 func (f *fuzzSession) blockOf(index int64, size int64) piece.Block {
@@ -117,7 +126,7 @@ func (f *fuzzSession) run(kind byte, payload []byte) []wire.Packet {
 		if err != nil {
 			return nil
 		}
-		out = f.s.OnPacket(p, f.shares, f.now)
+		out = f.s.OnPacket(p, f.now)
 	case stepStart:
 		out = f.s.Start(f.files.down)
 	case stepRequest:
@@ -175,7 +184,7 @@ func (r *recorder) toPeer(sent []wire.Packet) {
 		if err != nil {
 			panic(err)
 		}
-		out := r.peer.s.OnPacket(parsed, r.peer.shareByHash, r.f.now)
+		out := r.peer.s.OnPacket(parsed, r.f.now)
 		r.fromPeer(out)
 	}
 }
@@ -198,12 +207,13 @@ func (r *recorder) call(kind byte, arg byte) {
 // recordSession scripts a session that downloads, uploads, asks for
 // recovery data, hash sets and sources, with a peer that is our own code.
 func recordSession(t testing.TB, ours, theirs Config, isOutgoing bool, files fuzzFiles) []byte {
-	r := &recorder{f: buildFuzzSession(ours, isOutgoing, files), peer: &side{shares: map[wire.Hash]Share{}}}
+	r := &recorder{f: buildFuzzSession(ours, isOutgoing, files), peer: buildSide()}
 	var hasher aich.Hasher
 	hasher.Write(files.downData)
 	r.peer.shares[files.down] = Share{Name: "down.bin", Size: files.downSize, Parts: piece.BuildFullSet(3), PartHashes: files.downHashes, Tree: aich.BuildTree(files.downSize, hasher.Leaves())}
 	ourAddr := netip.MustParseAddrPort("198.51.100.1:4662")
 	theirs.Random = rand.New(rand.NewPCG(2, 7))
+	theirs = r.peer.serve(theirs)
 	if isOutgoing {
 		r.peer.s = BuildIncoming(theirs, ourAddr, start)
 		r.toPeer(r.f.hello)

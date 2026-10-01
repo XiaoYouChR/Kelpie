@@ -47,9 +47,9 @@ var dhPrime = new(big.Int).SetBytes([]byte{
 
 var errHandshake = errors.New("obfuscation: bad handshake")
 
-// Conn encrypts what it writes and decrypts what it reads. Read and Write
-// may run on different goroutines.
-type Conn struct {
+// cipherConn encrypts what it writes and decrypts what it reads. Read and
+// Write may run on different goroutines.
+type cipherConn struct {
 	net.Conn
 	r    io.Reader
 	in   *rc4.Cipher
@@ -57,20 +57,20 @@ type Conn struct {
 	wbuf []byte
 }
 
-func (c *Conn) Read(b []byte) (int, error) {
+func (c *cipherConn) Read(b []byte) (int, error) {
 	n, err := c.r.Read(b)
 	c.in.XORKeyStream(b[:n], b[:n])
 	return n, err
 }
 
-func (c *Conn) Write(b []byte) (int, error) {
+func (c *cipherConn) Write(b []byte) (int, error) {
 	c.wbuf = append(c.wbuf[:0], b...)
 	c.out.XORKeyStream(c.wbuf, c.wbuf)
 	return c.Conn.Write(c.wbuf)
 }
 
 // readAnswer reads <MagicValue 4><MethodSelected 1><PaddingLen 1><Padding>.
-func (c *Conn) readAnswer() error {
+func (c *cipherConn) readAnswer() error {
 	var head [6]byte
 	if _, err := io.ReadFull(c.r, head[:]); err != nil {
 		return err
@@ -82,7 +82,7 @@ func (c *Conn) readAnswer() error {
 	return c.discard(int(head[5]))
 }
 
-func (c *Conn) discard(n int) error {
+func (c *cipherConn) discard(n int) error {
 	padding := make([]byte, n)
 	if _, err := io.ReadFull(c.r, padding); err != nil {
 		return err
@@ -114,8 +114,8 @@ func matchPlain(b byte) bool {
 //
 // Request: <Marker 1><KeyPart 4>, then encrypted <MagicValue 4>
 // <MethodsSupported 1><MethodPreferred 1><PaddingLen 1>.
-func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (*Conn, error) {
-	c := &Conn{
+func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (net.Conn, error) {
+	c := &cipherConn{
 		Conn: conn,
 		r:    bufio.NewReader(conn),
 		in:   buildCipher(user[:], []byte{magicServer}, keyPart[:]),
@@ -148,7 +148,7 @@ func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (*Conn, error)
 // <g^b mod p 96>, then encrypted <MagicValue 4><MethodsSupported 1>
 // <MethodPreferred 1><PaddingLen 1><Padding>. Reply, encrypted:
 // <MagicValue 4><MethodSelected 1><PaddingLen 1>.
-func OpenServer(conn net.Conn, secret [16]byte, marker byte) (*Conn, error) {
+func OpenServer(conn net.Conn, secret [16]byte, marker byte) (net.Conn, error) {
 	a := new(big.Int).SetBytes(secret[:])
 	for matchPlain(marker) {
 		marker++
@@ -165,7 +165,7 @@ func OpenServer(conn net.Conn, secret [16]byte, marker byte) (*Conn, error) {
 		return nil, err
 	}
 	new(big.Int).Exp(new(big.Int).SetBytes(shared), a, dhPrime).FillBytes(shared)
-	c := &Conn{
+	c := &cipherConn{
 		Conn: conn,
 		r:    r,
 		in:   buildCipher(shared, []byte{magicServer}),
@@ -191,7 +191,7 @@ func OpenServer(conn net.Conn, secret [16]byte, marker byte) (*Conn, error) {
 
 // OpenIncoming reads the first byte of a connection a peer opened to us,
 // whose user hash is self. A plain eD2k frame is returned as it came; an
-// obfuscation request is answered and the encrypted Conn returned. It blocks
+// obfuscation request is answered and the encrypted connection returned. It blocks
 // until the peer has sent its handshake: the caller closes conn to give up.
 //
 // eMule and aMule drop a peer whose first read holds more than the
@@ -212,7 +212,7 @@ func OpenIncoming(conn net.Conn, self wire.Hash) (net.Conn, error) {
 		return nil, err
 	}
 	keyPart := [4]byte(head[1:5])
-	c := &Conn{
+	c := &cipherConn{
 		Conn: conn,
 		r:    r,
 		in:   buildCipher(self[:], []byte{magicRequester}, keyPart[:]),

@@ -35,9 +35,6 @@ type Share struct {
 	Tree       *aich.Tree
 }
 
-// shareByHash looks up a file we offer.
-type shareByHash func(file wire.Hash) (Share, bool)
-
 type uploadBlock struct {
 	file  wire.Hash
 	block piece.Block
@@ -50,22 +47,23 @@ type uploadState struct {
 	// carries no hash.
 	file wire.Hash
 	// parts holds, per file, what the peer's file request said it has.
-	parts       map[wire.Hash]piece.Set
-	isUploading bool
-	sizes       map[wire.Hash]int64
-	// blocks holds the blocks requested and not yet sent (false) and the
-	// last ones sent (true, oldest first in sent), so a peer re-listing
-	// blocks still in flight gets each only once.
-	blocks map[uploadBlock]bool
-	sent   []uploadBlock
+	parts map[wire.Hash]piece.Set
+	// slot is nil while the peer holds no upload slot.
+	slot *uploadSlot
+}
+
+// uploadSlot remembers the blocks requested and not yet sent, with the size
+// of their file, and the last ones sent, oldest first, so a peer re-listing
+// blocks still in flight gets each only once.
+type uploadSlot struct {
+	pending map[uploadBlock]int64
+	sent    []uploadBlock
 }
 
 // StartUpload gives the peer an upload slot.
 func (s *Session) StartUpload() Output {
 	var out Output
-	s.up.isUploading = true
-	clear(s.up.blocks)
-	s.up.sent = nil
+	s.up.slot = &uploadSlot{pending: map[uploadBlock]int64{}}
 	out.send(client.AcceptUploadRequest{})
 	return out
 }
@@ -73,10 +71,8 @@ func (s *Session) StartUpload() Output {
 // StopUpload ends the peer's upload slot.
 func (s *Session) StopUpload() Output {
 	var out Output
-	if s.up.isUploading {
-		s.up.isUploading = false
-		clear(s.up.blocks)
-		s.up.sent = nil
+	if s.up.slot != nil {
+		s.up.slot = nil
 		out.send(client.OutOfParts{})
 	}
 	return out
@@ -85,7 +81,7 @@ func (s *Session) StopUpload() Output {
 // SendQueueRank tells a waiting peer its place in our upload queue.
 func (s *Session) SendQueueRank(rank uint32) Output {
 	var out Output
-	if s.caps.IsEmule {
+	if s.features.isEmule {
 		out.send(client.QueueRanking{Rank: uint16(min(rank, 0xFFFF))})
 	} else {
 		out.send(client.QueueRank{Rank: rank})
@@ -97,17 +93,21 @@ func (s *Session) SendQueueRank(rank uint32) Output {
 // supports it and compression makes it smaller.
 func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Output {
 	var out Output
-	key := uploadBlock{file, block}
-	if isSent, ok := s.up.blocks[key]; !s.up.isUploading || !ok || isSent {
+	slot := s.up.slot
+	if slot == nil {
 		return out
 	}
-	s.up.blocks[key] = true
-	if s.up.sent = append(s.up.sent, key); len(s.up.sent) > maxUploadBlocks {
-		delete(s.up.blocks, s.up.sent[0])
-		s.up.sent = s.up.sent[1:]
+	key := uploadBlock{file, block}
+	size, ok := slot.pending[key]
+	if !ok {
+		return out
 	}
-	isLarge := s.up.sizes[file] > largeFileSize
-	if s.caps.CanCompress {
+	delete(slot.pending, key)
+	if slot.sent = append(slot.sent, key); len(slot.sent) > maxUploadBlocks {
+		slot.sent = slot.sent[1:]
+	}
+	isLarge := size > largeFileSize
+	if s.features.canCompress {
 		if packed := toDeflated(data); len(packed) < len(data) {
 			for chunk := range slices.Chunk(packed, partPacketSize) {
 				if isLarge {
@@ -140,8 +140,8 @@ func toDeflated(data []byte) []byte {
 	return packed.Bytes()
 }
 
-func (s *Session) onFileRequest(p client.FileRequest, shares shareByHash, out *Output) {
-	share, ok := shares(p.Hash)
+func (s *Session) onFileRequest(p client.FileRequest, out *Output) {
+	share, ok := s.cfg.ShareByHash(p.Hash)
 	if !ok {
 		out.send(client.NoFile{Hash: p.Hash})
 		return
@@ -160,8 +160,8 @@ func (s *Session) setRequestedParts(p client.FileRequest, share Share) {
 	}
 }
 
-func (s *Session) onStatusRequest(file wire.Hash, shares shareByHash, out *Output) {
-	share, ok := shares(file)
+func (s *Session) onStatusRequest(file wire.Hash, out *Output) {
+	share, ok := s.cfg.ShareByHash(file)
 	if !ok {
 		out.send(client.NoFile{Hash: file})
 		return
@@ -182,9 +182,9 @@ func ToStatus(share Share) wire.Bitfield {
 // onMultiPacket answers the bundled requests in one OP_MULTIPACKETANSWER,
 // or OP_MULTIPACKETANSWER_EXT2 led by our identifier when isExt2
 // (ListenSocket.cpp:1072-1297). OP_MULTIPACKET carries no size.
-func (s *Session) onMultiPacket(id client.FileIdentifier, requests []wire.Packet, isExt2 bool, shares shareByHash, now time.Time, out *Output) {
+func (s *Session) onMultiPacket(id client.FileIdentifier, requests []wire.Packet, isExt2 bool, now time.Time, out *Output) {
 	file := id.Hash
-	share, ok := shares(file)
+	share, ok := s.cfg.ShareByHash(file)
 	if !ok || !matchFile(id, share) {
 		out.send(client.NoFile{Hash: file})
 		return
@@ -204,7 +204,7 @@ func (s *Session) onMultiPacket(id client.FileIdentifier, requests []wire.Packet
 		case client.AICHFileHashRequest:
 			// eMule ignores it once the root travels in the identifier
 			// (ListenSocket.cpp:1206).
-			if isExt2 || s.caps.HasFileIdentifiers {
+			if isExt2 || s.features.hasFileIdentifiers {
 				continue
 			}
 			if root, ok := s.onRootRequest(file, share, out); ok {
@@ -224,20 +224,20 @@ func (s *Session) onMultiPacket(id client.FileIdentifier, requests []wire.Packet
 		out.send(client.MultiPacketAnswer{Hash: file, Answers: answers})
 	}
 	if sourcesRequest != nil {
-		s.onSourcesRequest(*sourcesRequest, shares, now, out)
+		s.onSourcesRequest(*sourcesRequest, now, out)
 	}
 }
 
-func (s *Session) onHashSetRequest(file wire.Hash, shares shareByHash, out *Output) {
-	if share, ok := shares(file); ok && len(share.PartHashes) > 0 {
+func (s *Session) onHashSetRequest(file wire.Hash, out *Output) {
+	if share, ok := s.cfg.ShareByHash(file); ok && len(share.PartHashes) > 0 {
 		out.send(client.HashSetAnswer{Hash: file, Parts: share.PartHashes})
 	}
 }
 
 // onHashSetRequest2 answers with the MD4 part hashes only; eMule closes on
 // a file it does not share (UploadClient.cpp:572-605).
-func (s *Session) onHashSetRequest2(p client.HashSetRequest2, shares shareByHash, out *Output) {
-	share, ok := shares(p.File.Hash)
+func (s *Session) onHashSetRequest2(p client.HashSetRequest2, out *Output) {
+	share, ok := s.cfg.ShareByHash(p.File.Hash)
 	if !ok || !matchFile(p.File, share) {
 		out.Close = closeProtocol
 		return
@@ -269,31 +269,32 @@ func toIdentifier(file wire.Hash, share Share) client.FileIdentifier {
 	return id
 }
 
-func (s *Session) onUploadRequest(file wire.Hash, shares shareByHash, out *Output) {
+func (s *Session) onUploadRequest(file wire.Hash, out *Output) {
 	if file == (wire.Hash{}) {
 		file = s.up.file
 	}
-	if _, ok := shares(file); !ok {
+	if _, ok := s.cfg.ShareByHash(file); !ok {
 		return
 	}
 	s.up.file = file
 	out.add(UploadRequested{File: file, Parts: s.up.parts[file]})
 }
 
-func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, shares shareByHash, out *Output) {
-	share, ok := shares(file)
-	if !s.up.isUploading || !ok {
+func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, out *Output) {
+	share, ok := s.cfg.ShareByHash(file)
+	slot := s.up.slot
+	if slot == nil || !ok {
 		return
 	}
-	s.up.sizes[file] = share.Size
 	var fresh []piece.Block
 	for _, b := range blocks {
 		key := uploadBlock{file, b}
-		isFull := len(s.up.blocks)-len(s.up.sent) >= maxUploadBlocks
-		if _, seen := s.up.blocks[key]; seen || isFull || b.End > share.Size || b.End-b.Begin > maxRequestSize {
+		_, isPending := slot.pending[key]
+		isFull := len(slot.pending) >= maxUploadBlocks
+		if isPending || isFull || slices.Contains(slot.sent, key) || b.End > share.Size || b.End-b.Begin > maxRequestSize {
 			continue
 		}
-		s.up.blocks[key] = false
+		slot.pending[key] = share.Size
 		fresh = append(fresh, b)
 	}
 	if len(fresh) > 0 {
@@ -302,9 +303,7 @@ func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, shares sh
 }
 
 func (s *Session) onUploadCancelled(out *Output) {
-	s.up.isUploading = false
-	clear(s.up.blocks)
-	s.up.sent = nil
+	s.up.slot = nil
 	out.add(UploadCancelled{})
 }
 
