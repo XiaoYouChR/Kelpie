@@ -445,9 +445,6 @@ func TestLowIDSourceNeedsServerCallback(t *testing.T) {
 	if got := h.tick(transfer.Tick{ConnectBudget: 1, Server: endpoint(8888)}); countActions[transfer.RequestServerCallback](got) != 0 {
 		t.Fatalf("callback through another server: %+v", got)
 	}
-	if got := h.tick(transfer.Tick{ConnectBudget: 1, Server: server, IsFirewalled: true}); countActions[transfer.RequestServerCallback](got) != 0 {
-		t.Fatalf("callback while we are LowID: %+v", got)
-	}
 	got := h.tick(transfer.Tick{ConnectBudget: 1, Server: server})
 	if countActions[transfer.RequestServerCallback](got) != 1 {
 		t.Fatalf("no callback on the shared server: %+v", got)
@@ -500,5 +497,79 @@ func TestConnectCarriesObfuscation(t *testing.T) {
 	want := transfer.Connect{Endpoint: endpoint(1), UserHash: userHash(1), CanObfuscate: true}
 	if len(connects) != 1 || connects[0] != want {
 		t.Fatalf("connects %+v", connects)
+	}
+}
+
+func lowIDSource(i int, server netip.AddrPort) transfer.Source {
+	return transfer.Source{ClientID: uint32(i + 1), Server: server}
+}
+
+func buddySource(i int) transfer.Source {
+	return transfer.Source{Buddy: endpoint(5000 + i), BuddyID: userHash(i), UserHash: userHash(i)}
+}
+
+func TestFirewalledDropsLowIDSources(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	server := endpoint(9999)
+	h.run(h.transfer.OnSourcesFound([]transfer.Source{lowIDSource(1, server)}, transfer.ChannelServer, start))
+	if got := h.transfer.Progress(start).Peers; got != 1 {
+		t.Fatalf("peers while HighID = %d, want 1", got)
+	}
+
+	h.tick(transfer.Tick{Server: server, IsFirewalled: true})
+	if got := h.transfer.Progress(start).Peers; got != 0 {
+		t.Fatalf("stored LowID source kept after we became firewalled: peers = %d", got)
+	}
+	for i, channel := range []transfer.Channel{transfer.ChannelServer, transfer.ChannelGlobalServer, transfer.ChannelExchange} {
+		actions := h.transfer.OnSourcesFound([]transfer.Source{lowIDSource(2, server), buddySource(i)}, channel, start)
+		if found := traces(actions, transfer.EventFound); len(found) != 1 || found[0].Source != "kad:"+userHash(i).String() {
+			t.Fatalf("%s while firewalled: found %+v, want only the Kad buddy source", channel, found)
+		}
+	}
+}
+
+// Sources we cannot reach must not switch off the channels that could bring
+// reachable ones, nor fill the cap.
+func TestUnreachableSourcesAreNotCounted(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	server := endpoint(9999)
+	h.tick(transfer.Tick{Server: server, IsFirewalled: true})
+	var found []transfer.Source
+	for i := range 400 {
+		found = append(found, buddySource(i))
+	}
+	h.run(h.transfer.OnSourcesFound(found, transfer.ChannelKad, start))
+
+	channels := map[transfer.Channel]bool{}
+	for _, action := range h.tick(transfer.Tick{Now: start.Add(2 * time.Hour), Server: server, IsFirewalled: true, IsKadRunning: true}) {
+		if r, ok := action.(transfer.RequestSources); ok {
+			channels[r.Channel] = true
+		}
+	}
+	if !channels[transfer.ChannelServer] || !channels[transfer.ChannelGlobalServer] || !channels[transfer.ChannelKad] {
+		t.Fatalf("source requests with 400 unreachable sources: %v", channels)
+	}
+	actions := h.transfer.OnSourcesFound([]transfer.Source{{Endpoint: endpoint(1)}}, transfer.ChannelKad, start)
+	if got := len(traces(actions, transfer.EventFound)); got != 1 {
+		t.Fatalf("HighID source refused at the cap of unreachable sources: %+v", actions)
+	}
+
+	other := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	other.tick(transfer.Tick{Server: server})
+	found = nil
+	for i := range 60 {
+		found = append(found, lowIDSource(i, endpoint(8888)))
+	}
+	other.run(other.transfer.OnSourcesFound(found, transfer.ChannelExchange, start))
+	channels = map[transfer.Channel]bool{}
+	for _, action := range other.tick(transfer.Tick{Now: start.Add(time.Hour), Server: server, IsKadRunning: true}) {
+		if r, ok := action.(transfer.RequestSources); ok {
+			channels[r.Channel] = true
+		}
+	}
+	if !channels[transfer.ChannelGlobalServer] || !channels[transfer.ChannelKad] {
+		t.Fatalf("source requests with 60 LowID sources on another server: %v", channels)
 	}
 }

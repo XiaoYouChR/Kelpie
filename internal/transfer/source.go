@@ -207,7 +207,9 @@ func (t *Transfer) OnSourcesFound(found []Source, channel Channel, now time.Time
 }
 
 func (t *Transfer) addSource(found Source, channel Channel, now time.Time) []Action {
-	if !isUsable(found) || t.isBanned(found) {
+	// A LowID source can only be reached by a callback, which a firewalled
+	// client cannot get (aMule CPartFile::CanAddSource, PartFile.cpp:1769).
+	if !isUsable(found) || t.isBanned(found) || found.ClientID != 0 && t.tick.IsFirewalled {
 		return nil
 	}
 	if s := t.matchingSource(found); s != nil {
@@ -229,11 +231,11 @@ func (t *Transfer) addSource(found Source, channel Channel, now time.Time) []Act
 	return []Action{event}
 }
 
-// addNew makes room at the cap by dropping a failed source; without
-// one, the new source is refused.
+// addNew makes room at the cap by dropping a failed source or one we cannot
+// reach; without one, the new source is refused.
 func (t *Transfer) addNew(found Source, channel Channel) *source {
 	if len(t.sources) >= maxSources {
-		i := slices.IndexFunc(t.sources, func(s *source) bool { return s.state == stateFailed })
+		i := slices.IndexFunc(t.sources, func(s *source) bool { return !t.isValid(s) })
 		if i < 0 {
 			return nil
 		}
@@ -248,14 +250,33 @@ func (t *Transfer) removeSource(s *source) {
 	t.sources = slices.DeleteFunc(t.sources, func(other *source) bool { return other == s })
 }
 
+// validSourceCount counts the sources that the "enough sources" limits may
+// rely on: not failed and reachable from where we are now.
 func (t *Transfer) validSourceCount() int {
 	count := 0
 	for _, s := range t.sources {
-		if s.state != stateFailed {
+		if t.isValid(s) {
 			count++
 		}
 	}
 	return count
+}
+
+func (t *Transfer) isValid(s *source) bool {
+	return s.state != stateFailed && (s.isConnected || t.canReach(s))
+}
+
+// canReach mirrors requestConnect: callbacks need us reachable, and a server
+// callback needs the source on our server.
+func (t *Transfer) canReach(s *source) bool {
+	switch {
+	case s.Buddy.IsValid():
+		return !t.tick.IsFirewalled
+	case s.ClientID != 0:
+		return !t.tick.IsFirewalled && s.Server == t.tick.Server
+	default:
+		return true
+	}
 }
 
 // OnConnectFailed reports that a Connect to endpoint did not succeed.
@@ -483,6 +504,10 @@ func (t *Transfer) OnTick(tick Tick) []Action {
 	if t.mode == ModeSeed {
 		return actions
 	}
+	t.tick = tick
+	if tick.IsFirewalled {
+		t.sources = slices.DeleteFunc(t.sources, func(s *source) bool { return s.ClientID != 0 && !s.isConnected })
+	}
 	budget := tick.ConnectBudget
 	for _, s := range slices.Clone(t.sources) {
 		actions = append(actions, t.runSource(s, tick, &budget)...)
@@ -546,17 +571,14 @@ func (t *Transfer) canReaskUDP(s *source, tick Tick) bool {
 }
 
 func (t *Transfer) requestConnect(s *source, tick Tick, budget *int) []Action {
+	if !t.canReach(s) {
+		return nil
+	}
 	var action Action
 	switch {
 	case s.Buddy.IsValid():
-		if tick.IsFirewalled {
-			return nil
-		}
 		action = RequestKadCallback{Buddy: s.Buddy, BuddyID: s.BuddyID}
 	case s.ClientID != 0:
-		if tick.IsFirewalled || s.Server != tick.Server {
-			return nil
-		}
 		action = RequestServerCallback{ClientID: s.ClientID}
 	default:
 		action = Connect{Endpoint: s.Endpoint, UserHash: s.UserHash, CanObfuscate: s.CanObfuscate}

@@ -97,6 +97,9 @@ type Transfer struct {
 	bannedHashes    map[wire.Hash]bool
 	bannedEndpoints map[netip.AddrPort]bool
 
+	// tick is the engine's state as of the last OnTick.
+	tick Tick
+
 	lastServerAsk   time.Time
 	lastServer      netip.AddrPort
 	lastGlobalAsk   time.Time
