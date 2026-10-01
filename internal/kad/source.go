@@ -29,10 +29,10 @@ type Wanted struct {
 
 // Source types, as eMule's CSearch::StorePacket publishes them.
 const (
-	SourceOpen            byte = 1 // HighID
-	SourceFirewalled      byte = 3 // reachable only through its buddy
-	SourceOpenLarge       byte = 4 // HighID, file over 4 GB
-	SourceFirewalledLarge byte = 5 // firewalled, file over 4 GB
+	sourceOpen            byte = 1 // HighID
+	sourceFirewalled      byte = 3 // reachable only through its buddy
+	sourceOpenLarge       byte = 4 // HighID, file over 4 GB
+	sourceFirewalledLarge byte = 5 // firewalled, file over 4 GB
 	SourceDirectCallback  byte = 6 // firewalled, but takes callback requests over UDP itself
 )
 
@@ -56,7 +56,7 @@ type Source struct {
 func (s Source) CanObfuscate() bool { return s.CryptOptions&wire.CryptSupported != 0 }
 
 func (s Source) IsFirewalled() bool {
-	return s.Type == SourceFirewalled || s.Type == SourceFirewalledLarge
+	return s.Type == sourceFirewalled || s.Type == sourceFirewalledLarge
 }
 
 type SourcesFound struct {
@@ -127,9 +127,9 @@ func toSource(e kadwire.Entry, isFirewalled bool) (Source, bool) {
 		s.Addr = netip.AddrPortFrom(ip, tcpPort)
 	}
 	switch s.Type {
-	case SourceOpen, SourceOpenLarge:
+	case sourceOpen, sourceOpenLarge:
 		return s, ip.IsValid() && tcpPort != 0
-	case SourceFirewalled, SourceFirewalledLarge:
+	case sourceFirewalled, sourceFirewalledLarge:
 		if isFirewalled || !s.Buddy.Addr().IsValid() || buddyPort == 0 || s.BuddyID == (wire.Hash{}) {
 			return Source{}, false
 		}
