@@ -229,31 +229,39 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 	}
 	e.queue = upload.BuildQueue(e.ledger.Ratio, e.ledger.TrustByUser, func(wire.Hash, netip.Addr) bool { return false })
 	e.queue.SetRate(config.RateLimits.Upload)
-	if err := e.openSockets(); err != nil {
+	if err := e.start(mapPorts); err != nil {
 		cancel()
 		return nil, toStartFailed(err)
 	}
-	if config.TraceFile != "" {
-		file, end, err := openTrace(ports.Disk, config.TraceFile)
+	return e, nil
+}
+
+// start opens the sockets and the trace file, then starts the leaves, Kad
+// and the hub.
+func (e *Engine) start(mapPorts openNAT) error {
+	if err := e.openSockets(); err != nil {
+		return err
+	}
+	if e.config.TraceFile != "" {
+		file, end, err := openTrace(e.ports.Disk, e.config.TraceFile)
 		if err != nil {
 			e.closeSockets()
-			cancel()
-			return nil, toStartFailed(err)
+			return err
 		}
-		e.trace = buildLeafQueue[traceLine](caps.trace)
+		e.trace = buildLeafQueue[traceLine](e.caps.trace)
 		e.startLeaf(func() { e.runTraceWriter(file, end, e.trace.items) })
 	}
 	e.server = server.BuildServer(server.Config{
-		UserHash: self.UserHash,
+		UserHash: e.self.UserHash,
 		Port:     uint16(e.tcpPort),
-		Version:  config.Version,
+		Version:  e.config.Version,
 		Random:   e.ports.Rand,
-	}, updateLearned(loadLists(ports.Disk, config.ServerLists, server.ParseMet), state.Servers))
-	if config.EnableKad {
-		e.startKad(loadLists(ports.Disk, config.NodeLists, kad.ParseNodes))
+	}, updateLearned(loadLists(e.ports.Disk, e.config.ServerLists, server.ParseMet), e.state.Servers))
+	if e.config.EnableKad {
+		e.startKad(loadLists(e.ports.Disk, e.config.NodeLists, kad.ParseNodes))
 	}
 
-	now := ports.Clock.Now()
+	now := e.now()
 	e.lastSecond, e.lastSave = now, now
 	for range diskWorkers {
 		e.startLeaf(func() { e.runDiskWorker(e.disk.items) })
@@ -268,7 +276,7 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 	}
 	e.refreshNetwork()
 	go e.run()
-	return e, nil
+	return nil
 }
 
 func toStartFailed(err error) *Error {
