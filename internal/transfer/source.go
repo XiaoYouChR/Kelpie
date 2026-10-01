@@ -560,7 +560,7 @@ func (t *Transfer) OnTick(tick Tick) []Action {
 	if tick.IsFirewalled {
 		t.sources = slices.DeleteFunc(t.sources, func(s *source) bool { return s.ClientID != 0 && !t.isConnected(s) })
 	}
-	t.purgeNoNeeded(tick.Now)
+	t.removeNoNeeded(tick.Now)
 	budget := tick.ConnectBudget
 	for _, s := range slices.Clone(t.sources) {
 		actions = append(actions, t.runSource(s, tick, &budget)...)
@@ -598,7 +598,7 @@ func (t *Transfer) OnNoNeededParts(peer uint64) {
 	}
 }
 
-func (t *Transfer) purgeNoNeeded(now time.Time) {
+func (t *Transfer) removeNoNeeded(now time.Time) {
 	if float64(len(t.sources)) < maxSources*noNeededPurgeShare || now.Sub(t.lastPurge) <= noNeededPurgeTime {
 		return
 	}
