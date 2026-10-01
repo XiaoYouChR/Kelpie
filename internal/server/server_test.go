@@ -46,9 +46,9 @@ func loggedIn(t *testing.T, entries []Entry, clientID, flags uint32, wanted []Wa
 	if dialed(out)[0] != entries[0].Endpoint {
 		t.Fatalf("connect = %v, want %v first", dialed(out), entries[0].Endpoint)
 	}
-	s.OnConnected(entries[0].Endpoint, start)
+	s.OnConnected(entries[0].Endpoint)
 	out = s.OnPacket(entries[0].Endpoint, serverwire.IDChange{ClientID: clientID, Flags: flags}, start)
-	if !s.IsServerConnected() {
+	if !s.IsConnected() {
 		t.Fatal("not connected after IDChange")
 	}
 	return s, out
@@ -122,10 +122,10 @@ func TestFirstLoginWins(t *testing.T) {
 	if out := s.OnTick(start, nil); !reflect.DeepEqual(dialed(out), []netip.AddrPort{a, b}) {
 		t.Fatalf("connect = %v", dialed(out))
 	}
-	if out := s.OnConnected(b, start); out.To != b || len(sent[serverwire.Login](out)) != 1 {
+	if out := s.OnConnected(b); out.To != b || len(sent[serverwire.Login](out)) != 1 {
 		t.Fatalf("login to b = %+v", out)
 	}
-	if out := s.OnConnected(a, start); out.To != a || len(sent[serverwire.Login](out)) != 1 {
+	if out := s.OnConnected(a); out.To != a || len(sent[serverwire.Login](out)) != 1 {
 		t.Fatalf("login to a = %+v", out)
 	}
 	out := s.OnPacket(a, serverwire.ServerMessage{Text: "from a"}, start)
@@ -136,7 +136,7 @@ func TestFirstLoginWins(t *testing.T) {
 	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a}) || out.To != b {
 		t.Fatalf("login output = %+v", out)
 	}
-	if !s.IsServerConnected() || s.current.Endpoint != b {
+	if !s.IsConnected() || s.current.Endpoint != b {
 		t.Fatal("not logged in to b")
 	}
 	if out := s.OnDisconnected(a, start); len(dialed(out)) > 0 || s.servers[0].Failures != 0 {
@@ -154,7 +154,7 @@ func TestFailedAttemptCountsAgainstItsServer(t *testing.T) {
 	a, b := ep("1.0.0.1:4661"), ep("1.0.0.2:4661")
 	s := BuildServer(config, []Entry{{Endpoint: a, Users: 10}, {Endpoint: b}})
 	s.OnTick(start, nil)
-	s.OnConnected(a, start)
+	s.OnConnected(a)
 	if out := s.OnDisconnected(a, start); len(dialed(out)) > 0 {
 		t.Fatalf("reconnected while b is pending: %v", dialed(out))
 	}
@@ -183,7 +183,7 @@ func TestLoginTimesOut(t *testing.T) {
 	a, b, c := ep("1.0.0.1:4661"), ep("1.0.0.2:4661"), ep("1.0.0.3:4661")
 	s := BuildServer(config, []Entry{{Endpoint: a, Users: 2}, {Endpoint: b, Users: 1}, {Endpoint: c}})
 	s.OnTick(start, nil)
-	s.OnConnected(a, start.Add(time.Second))
+	s.OnConnected(a)
 	if out := s.OnTick(start.Add(connectTimeout), nil); len(out.Close) > 0 || len(dialed(out)) > 0 {
 		t.Fatalf("gave up too early: %+v", out)
 	}
@@ -196,7 +196,7 @@ func TestLoginTimesOut(t *testing.T) {
 func TestLogin(t *testing.T) {
 	s := BuildServer(config, []Entry{{Endpoint: first}})
 	s.OnTick(start, nil)
-	out := s.OnConnected(first, start)
+	out := s.OnConnected(first)
 	want := serverwire.Login{
 		UserHash: userHash, Port: 4662, Name: "Kelpie", Version: 0x3C,
 		Flags: serverwire.CapZlib | serverwire.CapNewTags | serverwire.CapUnicode | serverwire.CapLargeFiles |
@@ -206,7 +206,7 @@ func TestLogin(t *testing.T) {
 	if len(out.Send) != 1 || !reflect.DeepEqual(out.Send[0], want) {
 		t.Fatalf("login = %+v, want %+v", out.Send, want)
 	}
-	if s.IsServerConnected() {
+	if s.IsConnected() {
 		t.Fatal("connected before IDChange")
 	}
 }
@@ -225,7 +225,7 @@ func TestIDChangeGivesLowIDOrHighID(t *testing.T) {
 		t.Fatal("HighID not reported")
 	}
 	s.OnDisconnected(first, start)
-	if s.IsServerConnected() || s.IsHighID() || s.ClientID() != 0 {
+	if s.IsConnected() || s.IsHighID() || s.ClientID() != 0 {
 		t.Fatal("still connected after disconnect")
 	}
 }
@@ -581,7 +581,7 @@ func TestHostNameServer(t *testing.T) {
 	if !reflect.DeepEqual(dialed(out), []netip.AddrPort{resolved}) {
 		t.Fatalf("connect after lookup = %+v", out.Connect)
 	}
-	s.OnConnected(resolved, start)
+	s.OnConnected(resolved)
 	s.OnPacket(resolved, serverwire.IDChange{ClientID: highID}, start)
 	later := start.Add(dnsSolveTime + time.Minute)
 	if out := s.OnTick(later, nil); len(out.Resolve) > 0 {

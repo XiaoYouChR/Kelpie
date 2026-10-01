@@ -600,7 +600,7 @@ func (e *Engine) onTick() {
 // zero.
 func (e *Engine) refreshNetwork() {
 	network := Network{
-		IsServerConnected: e.server.IsServerConnected(),
+		IsServerConnected: e.server.IsConnected(),
 		IsHighID:          e.server.IsHighID(),
 		IsKadFirewalled:   e.kadStatus.IsFirewalled,
 		KadNodes:          e.kadStatus.Nodes,

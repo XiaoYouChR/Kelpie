@@ -75,7 +75,7 @@ func FuzzOnPacket(f *testing.F) {
 		s := BuildServer(config, entries)
 		now := start
 		s.OnTick(now, wanted)
-		s.OnConnected(first, now)
+		s.OnConnected(first)
 		for len(script) >= 3 {
 			via := script[0]
 			size := min(int(binary.LittleEndian.Uint16(script[1:3])), len(script)-3)

@@ -245,7 +245,7 @@ func (e *Engine) onConnOpened(m connOpened) {
 	c.net = m.conn
 	e.startConnLeaves(c)
 	if c.isServer {
-		e.runServer(e.server.OnConnected(c.remote, e.now()))
+		e.runServer(e.server.OnConnected(c.remote))
 		return
 	}
 	session, out := peer.BuildOutgoing(e.buildPeerConfig(), c.remote, e.now())

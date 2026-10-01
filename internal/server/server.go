@@ -244,17 +244,17 @@ func (s *Server) Entries() []Entry {
 	return entries
 }
 
-func (s *Server) IsServerConnected() bool { return s.current != nil }
+func (s *Server) IsConnected() bool { return s.current != nil }
 
 // SetPublicIP tells our public IPv4 address, invalid while unknown. Server
 // UDP keys belong to it.
 func (s *Server) SetPublicIP(ip netip.Addr) { s.publicIP = ip }
 
-func (s *Server) IsHighID() bool { return s.IsServerConnected() && !wire.IsLowID(s.clientID) }
+func (s *Server) IsHighID() bool { return s.IsConnected() && !wire.IsLowID(s.clientID) }
 
 // ClientID is the id the connected server gave us; 0 while not logged in.
 func (s *Server) ClientID() uint32 {
-	if !s.IsServerConnected() {
+	if !s.IsConnected() {
 		return 0
 	}
 	return s.clientID
@@ -279,7 +279,7 @@ func (s *Server) OnTick(now time.Time, wanted []Wanted) Output {
 	return out
 }
 
-func (s *Server) OnConnected(server netip.AddrPort, now time.Time) Output {
+func (s *Server) OnConnected(server netip.AddrPort) Output {
 	if s.attemptIndex(server) < 0 {
 		return Output{}
 	}
