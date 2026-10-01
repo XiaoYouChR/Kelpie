@@ -17,7 +17,7 @@ func TestSendersAreForgotten(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	size := 2 * piece.PartSize
 	file := link.File{Name: "f.bin", Size: size, Hash: wire.Hash{1}, PartHashes: []wire.Hash{{2}, {3}}}
-	tr := Build(Options{File: file, Path: "/f.bin", Mode: ModeDownload, Random: rand.New(rand.NewPCG(1, 1))}, now)
+	tr, _ := Build(Options{File: file, Path: "/f.bin", Mode: ModeDownload, Random: rand.New(rand.NewPCG(1, 1))}, now)
 	for peer := range uint64(1000) {
 		addr := netip.AddrFrom4([4]byte{198, 51, byte(peer >> 8), byte(peer)})
 		tr.OnPeerConnected(peer, Hello{Endpoint: netip.AddrPortFrom(addr, 4662), UserHash: wire.Hash{byte(peer), byte(peer >> 8), 7}}, now)

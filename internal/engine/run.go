@@ -142,7 +142,8 @@ func (e *Engine) startTransfer(r *run, state *transfer.State) {
 	if r.mode == ModeSeed {
 		mode = transfer.ModeSeed
 	}
-	r.transfer = transfer.Build(transfer.Options{
+	var actions []transfer.Action
+	r.transfer, actions = transfer.Build(transfer.Options{
 		File:   r.file,
 		Path:   r.path,
 		State:  state,
@@ -154,6 +155,7 @@ func (e *Engine) startTransfer(r *run, state *transfer.State) {
 	for _, src := range r.file.Sources {
 		e.addKnownSource(r.file.Hash, transfer.Source{Endpoint: src})
 	}
+	e.runTransferActions(r, actions)
 }
 
 // onFileHashed finishes checking a seed's file: a match makes it a

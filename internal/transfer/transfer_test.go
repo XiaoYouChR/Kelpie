@@ -50,10 +50,13 @@ func userHash(i int) wire.Hash {
 type harness struct {
 	t        *testing.T
 	transfer *transfer.Transfer
-	data     []byte
-	disk     []byte
-	actions  []transfer.Action
-	now      time.Time
+	// started holds the actions Build returned; a test runs them when it
+	// needs them.
+	started []transfer.Action
+	data    []byte
+	disk    []byte
+	actions []transfer.Action
+	now     time.Time
 }
 
 func buildHarness(t *testing.T, data []byte, options transfer.Options) *harness {
@@ -63,7 +66,8 @@ func buildHarness(t *testing.T, data []byte, options transfer.Options) *harness 
 	if options.Path == "" {
 		options.Path = path
 	}
-	return &harness{t: t, transfer: transfer.Build(options, start), data: data, disk: make([]byte, len(data)), now: start}
+	tr, started := transfer.Build(options, start)
+	return &harness{t: t, transfer: tr, started: started, data: data, disk: make([]byte, len(data)), now: start}
 }
 
 func (h *harness) run(actions []transfer.Action) {
@@ -143,11 +147,14 @@ func TestMultiSourceDownloadCompletes(t *testing.T) {
 	file := buildFile(data, endpoint(1), endpoint(2))
 	h := buildHarness(t, data, transfer.Options{File: file})
 
+	if got := len(traces(h.started, transfer.EventFound)); got != 2 {
+		t.Fatalf("found traces = %d, want 2", got)
+	}
 	connects := h.tick(transfer.Tick{ConnectBudget: 10})
 	if got := countActions[transfer.Connect](connects); got != 2 {
 		t.Fatalf("Connect actions = %d, want 2", got)
 	}
-	if got := len(traces(connects, transfer.EventFound)); got != 2 {
+	if got := len(traces(connects, transfer.EventFound)); got != 0 {
 		t.Fatalf("found traces = %d, want 2", got)
 	}
 	full := piece.BuildFullSet(piece.PartCount(file.Size))
@@ -214,10 +221,10 @@ func TestResumeHashesWrittenParts(t *testing.T) {
 	h := buildHarness(t, data, transfer.Options{File: file, State: &state})
 	copy(h.disk, data[:piece.PartSize])
 
-	actions := h.tick(transfer.Tick{})
-	if got := countActions[transfer.HashPart](actions); got != 1 {
+	if got := countActions[transfer.HashPart](h.started); got != 1 {
 		t.Fatalf("HashPart actions = %d, want 1", got)
 	}
+	h.run(h.started)
 	if !h.transfer.ToState().VerifiedParts[0] {
 		t.Fatal("part 0 not verified after resume hashing")
 	}

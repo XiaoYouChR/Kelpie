@@ -32,7 +32,7 @@ func FuzzResume(f *testing.F) {
 		Created:  start,
 	}
 	seed := transfer.State(state.Transfers[file.Hash])
-	resumed := transfer.Build(transfer.Options{File: file, Path: path, State: &seed, Random: rand.New(rand.NewPCG(1, 2))}, start)
+	resumed, _ := transfer.Build(transfer.Options{File: file, Path: path, State: &seed, Random: rand.New(rand.NewPCG(1, 2))}, start)
 	if got, want := resumed.Progress(start).Received, piece.PartSize+piece.BlockSize+1000+5000; got != want {
 		f.Fatalf("seed resumes %d bytes, want %d", got, want)
 	}
@@ -60,7 +60,7 @@ func FuzzResume(f *testing.F) {
 				linked.Size = saved.Size
 			}
 			resume := transfer.State(saved)
-			tr := transfer.Build(transfer.Options{File: linked, Path: saved.File, State: &resume, Random: rand.New(rand.NewPCG(1, 2))}, start)
+			tr, _ := transfer.Build(transfer.Options{File: linked, Path: saved.File, State: &resume, Random: rand.New(rand.NewPCG(1, 2))}, start)
 			tr.Progress(start)
 			tr.ToState()
 		}

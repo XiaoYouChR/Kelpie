@@ -537,12 +537,10 @@ func (t *Transfer) removePeer(peer uint64, now time.Time) []Action {
 // OnTick runs the timers: source reasks and connections within the budget,
 // callback timeouts, the hash set request and publishing.
 func (t *Transfer) OnTick(tick Tick) []Action {
-	actions := t.pending
-	t.pending = nil
 	if !t.isRunning() {
-		return actions
+		return nil
 	}
-	actions = append(actions, t.runPublish(tick.Now)...)
+	actions := t.runPublish(tick.Now)
 	if t.mode == ModeSeed {
 		return actions
 	}

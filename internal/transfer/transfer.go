@@ -85,9 +85,6 @@ type Transfer struct {
 	download   meter
 	upload     meter
 
-	// pending holds actions produced outside a reaction, handed out by the
-	// next OnTick.
-	pending []Action
 	// unhashedParts are written parts waiting for the hash set.
 	unhashedParts []int
 	// hashSetPeer is the peer asked for the hash set; 0 when none is.
@@ -112,10 +109,11 @@ type Transfer struct {
 	lastPurge       time.Time
 }
 
-// Build creates the Transfer for options.File. Persisted state that does not
-// fit the file is dropped and the download starts over; a seed whose state is
-// not complete fails at once with a file error.
-func Build(options Options, now time.Time) *Transfer {
+// Build creates the Transfer for options.File with the actions to start it:
+// hashing parts written before a restart, and the link's sources. Persisted
+// state that does not fit the file is dropped and the download starts over;
+// a seed whose state is not complete fails at once with a file error.
+func Build(options Options, now time.Time) (*Transfer, []Action) {
 	t := &Transfer{
 		file:              options.File,
 		path:              options.Path,
@@ -144,6 +142,7 @@ func Build(options Options, now time.Time) *Transfer {
 		t.picker, _ = buildPicker(options.File.Size, nil, nil, options.Random)
 	}
 
+	var actions []Action
 	switch {
 	case t.isComplete():
 		t.outcome = Outcome{Status: StatusComplete}
@@ -154,13 +153,13 @@ func Build(options Options, now time.Time) *Transfer {
 		t.outcome = Outcome{Status: StatusFailed, Message: "the file is not complete"}
 	default:
 		for _, part := range t.picker.writtenParts() {
-			t.pending = append(t.pending, t.requestPartHash(part)...)
+			actions = append(actions, t.requestPartHash(part)...)
 		}
 		for _, source := range options.File.Sources {
-			t.pending = append(t.pending, t.addSource(Source{Endpoint: source}, ChannelLink, now)...)
+			actions = append(actions, t.addSource(Source{Endpoint: source}, ChannelLink, now)...)
 		}
 	}
-	return t
+	return t, actions
 }
 
 func (t *Transfer) matchHashSet(hashes []wire.Hash) bool {
