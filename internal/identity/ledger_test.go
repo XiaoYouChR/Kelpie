@@ -196,3 +196,26 @@ func TestTrustByUser(t *testing.T) {
 		t.Fatalf("unknown user %v", got)
 	}
 }
+
+func TestIdleUsersAreRemoved(t *testing.T) {
+	ledger := BuildLedger(nil, today)
+	for i := range 1000 {
+		user := wire.Hash{byte(i), byte(i >> 8), 5}
+		ledger.OnHello(user, today)
+		ledger.OnKeyReceived(user, keyA)
+		ledger.OnIdentified(user, home)
+	}
+	ledger.OnHello(alice, today)
+	ledger.OnTransferred(alice, home, 5, 0)
+	if got := ledger.ToCredits(); len(got) != 1 || got[0].User != alice {
+		t.Fatalf("saved %d users, want only the one with traffic", len(got))
+	}
+	ledger.RemoveIdle(today.Add(idleTime - time.Second))
+	if len(ledger.accounts) != 1001 {
+		t.Fatalf("%d users before idleTime, want 1001", len(ledger.accounts))
+	}
+	ledger.RemoveIdle(today.Add(idleTime))
+	if len(ledger.accounts) != 1 || ledger.accounts[alice] == nil {
+		t.Fatalf("%d users after idleTime, want only the one with traffic", len(ledger.accounts))
+	}
+}

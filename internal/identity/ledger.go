@@ -26,6 +26,11 @@ type Credit struct {
 // forgotten: aMule drops them at load after 150 days (ClientCreditsList.cpp:120).
 const creditExpiry = 150 * 24 * time.Hour
 
+// idleTime is how long a user without traffic is remembered after its last
+// hello: KEEPTRACK_TIME (Constants.h:70), aMule's time to keep track of a
+// client. Without it every user hash that ever greeted us stays in memory.
+const idleTime = 2 * time.Hour
+
 type identState byte
 
 const (
@@ -195,11 +200,27 @@ func (l *Ledger) Ratio(user wire.Hash, ip netip.Addr) float64 {
 	return math.Max(1, math.Min(10, ratio))
 }
 
-// ToCredits lists every user with credits or a stored key, sorted by user.
+// RemoveIdle forgets users without traffic whose last hello is idleTime
+// old. They start over if they come back.
+func (l *Ledger) RemoveIdle(now time.Time) {
+	for user, a := range l.accounts {
+		if !a.hasTraffic() && now.Sub(a.credit.LastSeen) >= idleTime {
+			delete(l.accounts, user)
+		}
+	}
+}
+
+func (a *account) hasTraffic() bool {
+	return a.credit.Uploaded > 0 || a.credit.Downloaded > 0
+}
+
+// ToCredits lists every user with traffic, sorted by user. Like aMule
+// (ClientCreditsList.cpp:194) a key alone is not saved, so identities that
+// never transferred anything do not pile up on disk.
 func (l *Ledger) ToCredits() []Credit {
 	credits := make([]Credit, 0, len(l.accounts))
 	for _, a := range l.accounts {
-		if a.credit.Uploaded == 0 && a.credit.Downloaded == 0 && len(a.credit.PublicKey) == 0 {
+		if !a.hasTraffic() {
 			continue
 		}
 		credit := a.credit

@@ -602,6 +602,7 @@ func (e *Engine) onTick() {
 	}
 	if now.Sub(e.lastSave) >= saveInterval {
 		e.lastSave = now
+		e.ledger.RemoveIdle(now)
 		e.requestSave()
 	}
 }
