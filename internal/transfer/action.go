@@ -42,12 +42,9 @@ type RequestKadCallback struct {
 	CanObfuscate bool
 }
 
-// RequestSources asks a connected peer for its sources; Channel is always
-// ChannelExchange, as the server and Kad pace their own source searches.
-type RequestSources struct {
-	Channel Channel
-	Peer    uint64
-}
+// RequestSources asks a connected peer for its sources by Source Exchange;
+// the server and Kad pace their own source searches.
+type RequestSources struct{ Peer uint64 }
 
 // RequestHashSet asks a connected peer for the file's part hashes.
 type RequestHashSet struct{ Peer uint64 }
@@ -62,13 +59,9 @@ type Write struct {
 	Data  []byte
 }
 
-// HashPart reads [Begin, End) back from disk and hashes it with MD4; the engine
+// HashPart reads the part back from disk and hashes it with MD4; the engine
 // answers with OnPartHashed or OnDiskFailed.
-type HashPart struct {
-	Part  int
-	Begin int64
-	End   int64
-}
+type HashPart struct{ Part int }
 
 // Close ends a peer connection for this Transfer.
 type Close struct {

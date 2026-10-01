@@ -120,7 +120,6 @@ type Tick struct {
 	Server netip.AddrPort
 	// IsFirewalled is true when peers cannot connect to us (LowID).
 	IsFirewalled bool
-	IsKadRunning bool
 	// PublicIP is our address as the server or peers see it; invalid while
 	// unknown. Port is our TCP listen port.
 	PublicIP netip.Addr
@@ -382,7 +381,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Ac
 	if t.isExchangeAllowed(s, now) {
 		s.lastExchange = now
 		t.lastExchangeAsk = now
-		actions = append(actions, RequestSources{Channel: ChannelExchange, Peer: peer})
+		actions = append(actions, RequestSources{Peer: peer})
 	}
 	return actions
 }

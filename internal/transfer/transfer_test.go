@@ -77,11 +77,13 @@ func (h *harness) run(actions []transfer.Action) {
 			actions = append(actions, h.transfer.OnBlockWritten(a.Block)...)
 		case transfer.HashPart:
 			var hasher piece.MD4
-			hasher.Write(h.disk[a.Begin:a.End])
+			r := piece.PartRange(int64(len(h.disk)), a.Part)
+			hasher.Write(h.disk[r.Begin:r.End])
 			actions = append(actions, h.transfer.OnPartHashed(a.Part, hasher.Digest(), h.now)...)
 		case transfer.HashBlocks:
 			var hasher aich.Hasher
-			hasher.Write(h.disk[a.Begin:a.End])
+			r := piece.PartRange(int64(len(h.disk)), a.Part)
+			hasher.Write(h.disk[r.Begin:r.End])
 			actions = append(actions, h.transfer.OnBlocksHashed(a.Part, hasher.Leaves(), h.now)...)
 		}
 	}

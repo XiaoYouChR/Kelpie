@@ -275,8 +275,7 @@ func (t *Transfer) requestPartHash(part int) []Action {
 		t.unhashedParts = append(t.unhashedParts, part)
 		return nil
 	}
-	partRange := piece.PartRange(t.file.Size, part)
-	return []Action{HashPart{Part: part, Begin: partRange.Begin, End: partRange.End}}
+	return []Action{HashPart{Part: part}}
 }
 
 // expectedHash follows piece.HashCount: a file below PartSize is checked

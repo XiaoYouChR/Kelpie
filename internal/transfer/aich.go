@@ -32,11 +32,7 @@ type RequestRecovery struct {
 
 // HashBlocks reads [Begin, End) back from disk and hashes each block with
 // SHA-1; the engine answers with OnBlocksHashed or OnDiskFailed.
-type HashBlocks struct {
-	Part  int
-	Begin int64
-	End   int64
-}
+type HashBlocks struct{ Part int }
 
 func (RequestRecovery) isAction() {}
 func (HashBlocks) isAction()      {}
@@ -187,8 +183,7 @@ func (t *Transfer) OnRecovery(peer uint64, part int, root wire.AICHHash, entries
 	}
 	delete(t.aich.asked, part)
 	t.aich.verified[part] = hashes
-	partRange := piece.PartRange(t.file.Size, part)
-	return []Action{HashBlocks{Part: part, Begin: partRange.Begin, End: partRange.End}}
+	return []Action{HashBlocks{Part: part}}
 }
 
 // OnRecoveryFailed: the peer could not give the recovery data it was asked

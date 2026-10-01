@@ -280,7 +280,6 @@ func (e *Engine) runTransfers(now time.Time) {
 			ConnectBudget: budget,
 			Server:        e.serverAddr,
 			IsFirewalled:  e.isFirewalled(),
-			IsKadRunning:  e.kad != nil,
 			PublicIP:      e.publicIP,
 			Port:          uint16(e.tcpPort),
 			LocalAddrs:    e.config.LocalAddrs,
@@ -340,7 +339,7 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 				e.kad.RequestCallback(toKadCallback(a, r.file.Hash))
 			}
 		case transfer.RequestSources:
-			if c := e.conns[a.Peer]; a.Channel == transfer.ChannelExchange && c != nil && c.session != nil {
+			if c := e.conns[a.Peer]; c != nil && c.session != nil {
 				e.runSession(c, c.session.RequestSources(r.file.Hash, now))
 			}
 		case transfer.RequestHashSet:
@@ -352,9 +351,9 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 		case transfer.Write:
 			e.sendDiskJob(diskJob{kind: jobWrite, run: r.id, file: r.handle, block: a.Block, data: a.Data})
 		case transfer.HashPart:
-			e.sendDiskJob(diskJob{kind: jobHashPart, run: r.id, file: r.handle, part: a.Part, block: piece.Block{Begin: a.Begin, End: a.End}})
+			e.sendDiskJob(diskJob{kind: jobHashPart, run: r.id, file: r.handle, part: a.Part, block: piece.PartRange(r.file.Size, a.Part)})
 		case transfer.HashBlocks:
-			e.sendDiskJob(diskJob{kind: jobHashBlocks, run: r.id, file: r.handle, part: a.Part, block: piece.Block{Begin: a.Begin, End: a.End}})
+			e.sendDiskJob(diskJob{kind: jobHashBlocks, run: r.id, file: r.handle, part: a.Part, block: piece.PartRange(r.file.Size, a.Part)})
 		case transfer.RequestRecovery:
 			if c := e.conns[a.Peer]; c != nil && c.session != nil {
 				e.runSession(c, c.session.RequestRecovery(r.file.Hash, a.Part, a.Root))
