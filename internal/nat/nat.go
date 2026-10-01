@@ -97,7 +97,7 @@ func openWith(ctx context.Context, v4, v6 route, probeUPnP func(context.Context)
 		errs = append(errs, err)
 		if locations := probeUPnP(ctx); len(locations) == 0 {
 			errs = append(errs, errors.New("nat: no UPnP gateway found"))
-		} else if closeUPnP, ip, err := openAt(ctx, locations, tcpPort, udpPort, description); err != nil {
+		} else if closeUPnP, ip, err := openAt(ctx, locations, wanted, description); err != nil {
 			errs = append(errs, err)
 		} else {
 			closers = append(closers, closeUPnP)
@@ -134,12 +134,7 @@ func buildMappings(tcpPort, udpPort int) []mapping {
 	return wanted
 }
 
-func openAt(ctx context.Context, locations []string, tcpPort, udpPort int, description string) (func(context.Context) error, netip.Addr, error) {
-	wanted := buildMappings(tcpPort, udpPort)
-	if len(wanted) == 0 {
-		return nil, netip.Addr{}, errors.New("nat: no port to open")
-	}
-
+func openAt(ctx context.Context, locations []string, wanted []mapping, description string) (func(context.Context) error, netip.Addr, error) {
 	var errs []error
 	var services []service
 	for _, location := range locations {
@@ -160,7 +155,7 @@ func openAt(ctx context.Context, locations []string, tcpPort, udpPort int, descr
 	for _, s := range services {
 		hasAdded := false
 		for _, m := range wanted {
-			if err := s.addMapping(ctx, m.protocol, m.port, description); err != nil {
+			if err := s.addMapping(ctx, m, description); err != nil {
 				errs = append(errs, err)
 				continue
 			}
@@ -180,7 +175,7 @@ func openAt(ctx context.Context, locations []string, tcpPort, udpPort int, descr
 	closeMappings := func(ctx context.Context) error {
 		var errs []error
 		for _, a := range addedList {
-			if err := a.service.deleteMapping(ctx, a.protocol, a.port); err != nil {
+			if err := a.service.deleteMapping(ctx, a.mapping); err != nil {
 				errs = append(errs, err)
 			}
 		}

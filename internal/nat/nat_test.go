@@ -198,7 +198,7 @@ func (g *fakeGateway) callsOf(action string) []soapCall {
 func TestOpenMapsTCPAndUDPAndCloseDeletesThem(t *testing.T) {
 	gateway := newFakeGateway(t, igdV1Description, "/ctl/IPConn")
 
-	closeMappings, external, err := openAt(context.Background(), []string{gateway.location()}, 4662, 4672, "Kelpie <eD2k> & Kad")
+	closeMappings, external, err := openAt(context.Background(), []string{gateway.location()}, buildMappings(4662, 4672), "Kelpie <eD2k> & Kad")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestOpenMapsOnEveryGateway(t *testing.T) {
 	gatewayA := newFakeGateway(t, igdV1Description, "/ctl/IPConn")
 	gatewayB := newFakeGateway(t, igdV1Description, "/ctl/IPConn")
 
-	closeMappings, _, err := openAt(context.Background(), []string{gatewayA.location(), gatewayB.location()}, 4661, 4662, "Kelpie")
+	closeMappings, _, err := openAt(context.Background(), []string{gatewayA.location(), gatewayB.location()}, buildMappings(4661, 4662), "Kelpie")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestOpenMapsOnEveryGateway(t *testing.T) {
 }
 
 func TestOpenReturnsErrorWhenNoGatewayFound(t *testing.T) {
-	if _, _, err := openAt(context.Background(), nil, 4661, 4662, "Kelpie"); err == nil {
+	if _, _, err := openAt(context.Background(), nil, buildMappings(4661, 4662), "Kelpie"); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -257,7 +257,7 @@ func TestOpenReturnsErrorWhenNoGatewayFound(t *testing.T) {
 func TestOpenSkipsZeroPort(t *testing.T) {
 	gateway := newFakeGateway(t, igdV1Description, "/ctl/IPConn")
 
-	if _, _, err := openAt(context.Background(), []string{gateway.location()}, 4661, 0, "Kelpie"); err != nil {
+	if _, _, err := openAt(context.Background(), []string{gateway.location()}, buildMappings(4661, 0), "Kelpie"); err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	if got, want := gateway.actions(), []string{"add:TCP:4661"}; !slices.Equal(got, want) {
@@ -267,8 +267,9 @@ func TestOpenSkipsZeroPort(t *testing.T) {
 
 func TestOpenRejectsNoPorts(t *testing.T) {
 	gateway := newFakeGateway(t, igdV1Description, "/ctl/IPConn")
+	probeUPnP := func(context.Context) []string { return []string{gateway.location()} }
 
-	if _, _, err := openAt(context.Background(), []string{gateway.location()}, 0, 0, "Kelpie"); err == nil {
+	if _, _, err := openWith(context.Background(), route{}, route{}, probeUPnP, 0, 0, "Kelpie", testTiming); err == nil {
 		t.Fatal("expected error")
 	}
 	if got := gateway.actions(); len(got) != 0 {
@@ -280,7 +281,7 @@ func TestOpenKeepsPartialMapping(t *testing.T) {
 	gateway := newFakeGateway(t, igdV1Description, "/ctl/IPConn")
 	gateway.failures["AddPortMapping:UDP"] = 718
 
-	closeMappings, _, err := openAt(context.Background(), []string{gateway.location()}, 4661, 4662, "Kelpie")
+	closeMappings, _, err := openAt(context.Background(), []string{gateway.location()}, buildMappings(4661, 4662), "Kelpie")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -297,7 +298,7 @@ func TestOpenFailsWhenEveryMappingIsRefused(t *testing.T) {
 	gateway.failures["AddPortMapping:TCP"] = 718
 	gateway.failures["AddPortMapping:UDP"] = 718
 
-	_, _, err := openAt(context.Background(), []string{gateway.location()}, 4661, 4662, "Kelpie")
+	_, _, err := openAt(context.Background(), []string{gateway.location()}, buildMappings(4661, 4662), "Kelpie")
 	if err == nil || !strings.Contains(err.Error(), "UPnP error 718") {
 		t.Fatalf("err = %v, want UPnP error 718", err)
 	}
@@ -307,7 +308,7 @@ func TestOpenWithoutExternalAddress(t *testing.T) {
 	gateway := newFakeGateway(t, igdV1Description, "/ctl/IPConn")
 	gateway.externalIP = ""
 
-	_, external, err := openAt(context.Background(), []string{gateway.location()}, 4661, 0, "Kelpie")
+	_, external, err := openAt(context.Background(), []string{gateway.location()}, buildMappings(4661, 0), "Kelpie")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -319,7 +320,7 @@ func TestOpenWithoutExternalAddress(t *testing.T) {
 func TestOpenSupportsIGDv2WithForeignHostInControlURL(t *testing.T) {
 	gateway := newFakeGateway(t, igdV2Description, "/ctl/PPPConn")
 
-	_, _, err := openAt(context.Background(), []string{gateway.location()}, 4661, 0, "Kelpie")
+	_, _, err := openAt(context.Background(), []string{gateway.location()}, buildMappings(4661, 0), "Kelpie")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -332,7 +333,7 @@ func TestOpenSupportsIGDv2WithForeignHostInControlURL(t *testing.T) {
 func TestOpenRejectsNonGatewayDevice(t *testing.T) {
 	gateway := newFakeGateway(t, notGatewayDescription, "/ctl/IPConn")
 
-	if _, _, err := openAt(context.Background(), []string{gateway.location()}, 4661, 4662, "Kelpie"); err == nil {
+	if _, _, err := openAt(context.Background(), []string{gateway.location()}, buildMappings(4661, 4662), "Kelpie"); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -342,7 +343,7 @@ func TestOpenStopsWhenContextIsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, _, err := openAt(ctx, []string{gateway.location()}, 4661, 4662, "Kelpie"); err == nil {
+	if _, _, err := openAt(ctx, []string{gateway.location()}, buildMappings(4661, 4662), "Kelpie"); err == nil {
 		t.Fatal("expected error")
 	}
 	if got := gateway.actions(); len(got) != 0 {
