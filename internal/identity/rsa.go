@@ -27,6 +27,7 @@ var (
 	one            = big.NewInt(1)
 )
 
+// publicKey is also the PKCS#1 RSAPublicKey ASN.1 layout.
 type publicKey struct {
 	N *big.Int
 	E int
@@ -47,11 +48,6 @@ type pkcs1PrivateKey struct {
 	Dp      *big.Int
 	Dq      *big.Int
 	Qinv    *big.Int
-}
-
-type pkcs1PublicKey struct {
-	N *big.Int
-	E int
 }
 
 type algorithmIdentifier struct {
@@ -125,7 +121,7 @@ func parsePKCS1(der []byte) (privateKey, error) {
 }
 
 func toSubjectPublicKeyInfo(key publicKey) []byte {
-	inner, err := asn1.Marshal(pkcs1PublicKey{key.N, key.E})
+	inner, err := asn1.Marshal(key)
 	if err != nil {
 		panic(err)
 	}
@@ -153,13 +149,12 @@ func parseSubjectPublicKeyInfo(der []byte) (publicKey, error) {
 	if len(rest) != 0 || !info.Algorithm.Algorithm.Equal(oidRSA) {
 		return publicKey{}, errors.New("public key: not RSA")
 	}
-	var raw pkcs1PublicKey
-	rest, err = asn1.Unmarshal(info.PublicKey.RightAlign(), &raw)
+	var key publicKey
+	rest, err = asn1.Unmarshal(info.PublicKey.RightAlign(), &key)
 	if err != nil {
 		return publicKey{}, fmt.Errorf("public key: %w", err)
 	}
-	key := publicKey{raw.N, raw.E}
-	if len(rest) != 0 || raw.N.Sign() <= 0 || raw.E < 3 || !bytes.Equal(toSubjectPublicKeyInfo(key), der) {
+	if len(rest) != 0 || key.N.Sign() <= 0 || key.E < 3 || !bytes.Equal(toSubjectPublicKeyInfo(key), der) {
 		return publicKey{}, errors.New("public key: not canonical DER")
 	}
 	return key, nil
