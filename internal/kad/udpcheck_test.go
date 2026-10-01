@@ -154,3 +154,14 @@ func TestUDPCheckFails(t *testing.T) {
 		t.Fatalf("udp check %+v, want firewalled after two failures", h.c.udp)
 	}
 }
+
+// TestUDPCheckSkipsClientsWeTested: our test packets to a client opened our
+// NAT to it, so its test would prove nothing.
+func TestUDPCheckSkipsClientsWeTested(t *testing.T) {
+	h := buildHarness(t)
+	tester := startUDPCheck(t, h).Addr
+	h.c.onMessage(FirewallUDP{IP: netip.MustParseAddr("10.50.0.2"), InternPort: 4672})
+	if next := requestsOf[UDPCheck](h.c.onMessage(UDPCheckEnded{IP: tester.Addr()})); len(next) != 0 {
+		t.Fatalf("asked %+v, a client we sent test packets to", next)
+	}
+}
