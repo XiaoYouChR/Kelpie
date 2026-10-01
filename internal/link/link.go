@@ -11,8 +11,8 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
-// ErrInvalid wraps every Parse error: the text is not an eD2k file link.
-var ErrInvalid = errors.New("invalid ed2k file link")
+// errInvalid starts every Parse error: the text is not an eD2k file link.
+var errInvalid = errors.New("invalid ed2k file link")
 
 // maxSize is eMule's MAX_EMULE_FILE_SIZE (256 GiB).
 const maxSize int64 = 256 << 30
@@ -36,7 +36,7 @@ func Parse(text string) (File, error) {
 	text = strings.TrimSpace(text)
 	const scheme = "ed2k://"
 	if len(text) < len(scheme) || !strings.EqualFold(text[:len(scheme)], scheme) {
-		return File{}, fmt.Errorf("%w: missing ed2k:// scheme", ErrInvalid)
+		return File{}, fmt.Errorf("%w: missing ed2k:// scheme", errInvalid)
 	}
 	body := text[len(scheme):]
 	// Browsers may encode every separator, as aMule's TextClient.cpp:537-540
@@ -47,12 +47,12 @@ func Parse(text string) (File, error) {
 	}
 	fields := strings.Split(body, "|")
 	if len(fields) < 5 || fields[0] != "" || !strings.EqualFold(fields[1], "file") {
-		return File{}, fmt.Errorf("%w: not a file link", ErrInvalid)
+		return File{}, fmt.Errorf("%w: not a file link", errInvalid)
 	}
 
 	file := File{Name: toUnescaped(fields[2])}
 	if file.Name == "" {
-		return File{}, fmt.Errorf("%w: empty name", ErrInvalid)
+		return File{}, fmt.Errorf("%w: empty name", errInvalid)
 	}
 	size, err := parseSize(fields[3])
 	if err != nil {
@@ -60,7 +60,7 @@ func Parse(text string) (File, error) {
 	}
 	file.Size = size
 	if file.Hash, err = wire.ParseHash(fields[4]); err != nil {
-		return File{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+		return File{}, fmt.Errorf("%w: %w", errInvalid, err)
 	}
 
 	for _, field := range fields[5:] {
@@ -80,11 +80,11 @@ func Parse(text string) (File, error) {
 
 func parseSize(text string) (int64, error) {
 	if text == "" || strings.Trim(text, "0123456789") != "" {
-		return 0, fmt.Errorf("%w: size %q is not a decimal number", ErrInvalid, text)
+		return 0, fmt.Errorf("%w: size %q is not a decimal number", errInvalid, text)
 	}
 	size, err := strconv.ParseInt(text, 10, 64)
 	if err != nil || size <= 0 || size > maxSize {
-		return 0, fmt.Errorf("%w: size %q is not between 1 and %d", ErrInvalid, text, maxSize)
+		return 0, fmt.Errorf("%w: size %q is not between 1 and %d", errInvalid, text, maxSize)
 	}
 	return size, nil
 }
