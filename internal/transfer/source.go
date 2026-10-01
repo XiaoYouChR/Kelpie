@@ -11,15 +11,15 @@ import (
 
 // Timing and limits follow eMule (Opcodes.h, Preferences.cpp, PartFile.cpp,
 // DownloadClient.cpp, DeadSourceList.cpp) so Kelpie never asks more often
-// than eMule does.
+// than eMule does; the reask interval is aMule's, which is still well above
+// the MIN_REQUESTTIME (590 s) below which eMule and aMule count a client as
+// aggressive.
 const (
-	fileReaskTime = 29 * time.Minute // FILEREASKTIME
-	// minRequestTime is MIN_REQUESTTIME, the reask time of a source that
-	// is not on a queue (DS_NONE in GetTimeUntilReask).
-	minRequestTime = 10 * time.Minute
-	// connectRetryTime is the 20*60*1000 guard in CPartFile::Process: a
-	// source is not reconnected within 20 minutes of the last attempt.
-	connectRetryTime = 20 * time.Minute
+	// fileReaskTime is aMule's FILEREASKTIME (include/protocol/ed2k/
+	// Constants.h:35), counted from when we last connected to the source or
+	// it last told us its rank, with no further connect guard
+	// (PartFile.cpp:1604-1621).
+	fileReaskTime = 1300 * time.Second
 	// udpReaskLead is the window before the TCP reask in which
 	// CPartFile::Process tries OP_REASKFILEPING instead.
 	udpReaskLead = 2 * time.Minute
@@ -133,7 +133,6 @@ type source struct {
 	rank        int
 
 	lastAsked       time.Time
-	lastConnect     time.Time
 	callbackTimeout time.Time
 	retryAt         time.Time
 	lastExchange    time.Time
@@ -462,7 +461,8 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 		s.state = stateQueued
 		s.rank = 0
 	case s.state == stateDownloading:
-		s.state = stateNew
+		s.state = stateQueued
+		s.rank = 0
 		s.lastAsked = now
 	}
 	event := t.buildTrace(now, s, EventClosed)
@@ -550,17 +550,9 @@ func (t *Transfer) runSource(s *source, tick Tick, budget *int) []Action {
 		return nil
 	}
 
-	reaskTime := minRequestTime
-	if s.state == stateQueued {
-		reaskTime = fileReaskTime
-	}
 	untilReask := time.Duration(0)
 	if !s.lastAsked.IsZero() {
-		untilReask = max(0, reaskTime-now.Sub(s.lastAsked))
-	}
-	hasConnectGap := s.lastConnect.IsZero() || now.Sub(s.lastConnect) > connectRetryTime
-	if !hasConnectGap {
-		return nil
+		untilReask = max(0, fileReaskTime-now.Sub(s.lastAsked))
 	}
 	if s.state == stateQueued && untilReask < udpReaskLead && untilReask > udpReaskLast && t.canReaskUDP(s, tick) {
 		s.isUDPPending = true
@@ -602,7 +594,6 @@ func (t *Transfer) requestConnect(s *source, tick Tick, budget *int) []Action {
 	}
 	*budget--
 	s.state = stateConnecting
-	s.lastConnect = tick.Now
 	s.callbackTimeout = time.Time{}
 	if _, isConnect := action.(Connect); !isConnect {
 		s.callbackTimeout = tick.Now.Add(callbackTimeout)

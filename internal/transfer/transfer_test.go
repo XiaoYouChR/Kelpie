@@ -17,8 +17,9 @@ var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 const path = "/downloads/file.bin"
 
-// fileReaskTime is the reask interval of a queued source.
-const fileReaskTime = 29 * time.Minute
+// fileReaskTime is aMule's FILEREASKTIME, the reask interval of a queued
+// source.
+const fileReaskTime = 1300 * time.Second
 
 func buildData(size int64) []byte {
 	data := make([]byte, size)
@@ -327,10 +328,10 @@ func TestReaskTiming(t *testing.T) {
 			at := func(d time.Duration) []transfer.Action {
 				return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 1})
 			}
-			if got := at(26 * time.Minute); len(got) != 0 {
+			if got := at(fileReaskTime - 3*time.Minute); len(got) != 0 {
 				t.Fatalf("actions 3 min before reask: %+v", got)
 			}
-			udp := at(27*time.Minute + time.Second)
+			udp := at(fileReaskTime - 2*time.Minute + time.Second)
 			wantUDP := 0
 			if test.canReaskUDP {
 				wantUDP = 1
@@ -339,16 +340,16 @@ func TestReaskTiming(t *testing.T) {
 				t.Fatalf("near reask: %+v", udp)
 			}
 			if test.canReaskUDP {
-				h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, start.Add(27*time.Minute+2*time.Second)))
-				if got := at(29 * time.Minute); countActions[transfer.Connect](got) != 0 {
+				h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, start.Add(fileReaskTime-2*time.Minute+2*time.Second)))
+				if got := at(fileReaskTime); countActions[transfer.Connect](got) != 0 {
 					t.Fatalf("TCP reask after a UDP answer: %+v", got)
 				}
 				return
 			}
-			if got := at(29*time.Minute - time.Second); countActions[transfer.Connect](got) != 0 {
+			if got := at(fileReaskTime - time.Second); countActions[transfer.Connect](got) != 0 {
 				t.Fatalf("Connect before FILEREASKTIME: %+v", got)
 			}
-			if got := at(29 * time.Minute); countActions[transfer.Connect](got) != 1 {
+			if got := at(fileReaskTime); countActions[transfer.Connect](got) != 1 {
 				t.Fatalf("no Connect at FILEREASKTIME: %+v", got)
 			}
 		})
@@ -603,5 +604,26 @@ func TestSlotAskedSourceStaysQueuedWhenClosedBeforeRank(t *testing.T) {
 	got := at(fileReaskTime)
 	if countActions[transfer.Connect](got) != 1 || got[0] != (transfer.Connect{Endpoint: endpoint(1), UserHash: userHash(1)}) {
 		t.Fatalf("queued source not reasked at the reask interval: %+v", got)
+	}
+}
+
+// A source whose slot ended goes back to its queue and is reasked a whole
+// reask interval later, not after MIN_REQUESTTIME.
+func TestEndedSlotIsReaskedAfterReaskTime(t *testing.T) {
+	data := buildData(piece.PartSize + 100)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	h.connect(1, 1, piece.Set{true, true})
+	h.deliver(1, 1, false)
+	ended := start.Add(time.Minute)
+	h.run(h.transfer.OnPeerGone(1, "idle", ended))
+
+	at := func(d time.Duration) []transfer.Action {
+		return h.tick(transfer.Tick{Now: ended.Add(d), ConnectBudget: 1})
+	}
+	if got := at(fileReaskTime - time.Second); countActions[transfer.Connect](got) != 0 {
+		t.Fatalf("Connect before the reask interval: %+v", got)
+	}
+	if got := at(fileReaskTime); countActions[transfer.Connect](got) != 1 {
+		t.Fatalf("no Connect at the reask interval: %+v", got)
 	}
 }
