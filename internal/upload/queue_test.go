@@ -105,10 +105,10 @@ func TestCreditsOutrankWaitingTime(t *testing.T) {
 	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(10)), SendRank{3, 1})
 	matchActions(t, q.OnRequest(4, buildPeer(4), file, toTime(20)), SendRank{4, 2})
 
-	if got := q.OnReask(buildPeer(4).IP, 4672, file, toTime(60)); got != (ReaskAck{1}) {
+	if got := q.OnReask(buildPeer(4).IP, 4672, file, toTime(60)); got != (ReaskAck{1, buildPeer(4).User}) {
 		t.Fatalf("reask = %#v, want rank 1 for the credited peer", got)
 	}
-	if got := q.OnReask(buildPeer(3).IP, 4672, file, toTime(60)); got != (ReaskAck{2}) {
+	if got := q.OnReask(buildPeer(3).IP, 4672, file, toTime(60)); got != (ReaskAck{2, buildPeer(3).User}) {
 		t.Fatalf("reask = %#v, want rank 2", got)
 	}
 
@@ -181,11 +181,11 @@ func TestWaiterThatStopsReaskingIsPurged(t *testing.T) {
 	q.OnConnectionGone(2)
 	q.OnConnectionGone(1)
 
-	if got := q.OnReask(low.IP, 4672, file, toTime(50*60)); got != (ReaskAck{1}) {
+	if got := q.OnReask(low.IP, 4672, file, toTime(50*60)); got != (ReaskAck{1, low.User}) {
 		t.Fatalf("reask = %#v, want rank 1", got)
 	}
 	matchActions(t, q.OnTick(toTime(100*60)))
-	if got := q.OnReask(low.IP, 4672, file, toTime(100*60)); got != (ReaskAck{1}) {
+	if got := q.OnReask(low.IP, 4672, file, toTime(100*60)); got != (ReaskAck{1, low.User}) {
 		t.Fatalf("reask = %#v, want rank 1 within an hour of the last reask", got)
 	}
 	matchActions(t, q.OnTick(toTime(161*60)))
@@ -199,13 +199,13 @@ func TestReaskAnswers(t *testing.T) {
 	startSlots(t, q)
 	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(10)), SendRank{3, 1})
 
-	if got := q.OnReask(buildPeer(3).IP, 4672, wire.Hash{0xEE}, toTime(20)); got != (FileNotFound{}) {
+	if got := q.OnReask(buildPeer(3).IP, 4672, wire.Hash{0xEE}, toTime(20)); got != (FileNotFound{buildPeer(3).User}) {
 		t.Fatalf("unshared file: %#v", got)
 	}
 	if got := q.OnReask(buildPeer(3).IP, 4672, other, toTime(20)); got != nil {
 		t.Fatalf("different file: %#v", got)
 	}
-	if got := q.OnReask(buildPeer(3).IP, 9999, file, toTime(20)); got != (ReaskAck{1}) {
+	if got := q.OnReask(buildPeer(3).IP, 9999, file, toTime(20)); got != (ReaskAck{1, buildPeer(3).User}) {
 		t.Fatalf("only waiter at the IP: %#v", got)
 	}
 	if got := q.OnReask(buildPeer(9).IP, 4672, file, toTime(20)); got != nil {
@@ -216,7 +216,7 @@ func TestReaskAnswers(t *testing.T) {
 	twin.User = wire.Hash{0x77}
 	twin.UDPPort = 5000
 	matchActions(t, q.OnRequest(4, twin, file, toTime(11)), SendRank{4, 2})
-	if got := q.OnReask(twin.IP, 4672, file, toTime(20)); got != (ReaskAck{1}) {
+	if got := q.OnReask(twin.IP, 4672, file, toTime(20)); got != (ReaskAck{1, buildPeer(3).User}) {
 		t.Fatalf("exact port: %#v", got)
 	}
 	if got := q.OnReask(twin.IP, 6000, file, toTime(20)); got != nil {
@@ -248,7 +248,7 @@ func TestQueueFull(t *testing.T) {
 	if got := q.OnReask(buildPeer(1_000_000).IP, 4672, file, toTime(1)); got != (QueueFull{}) {
 		t.Fatalf("reask from a stranger = %#v, want QueueFull", got)
 	}
-	if got := q.OnReask(buildPeer(2).IP, 4672, file, toTime(1)); got != (ReaskAck{1}) {
+	if got := q.OnReask(buildPeer(2).IP, 4672, file, toTime(1)); got != (ReaskAck{1, buildPeer(2).User}) {
 		t.Fatalf("reask from a waiter = %#v, want its rank", got)
 	}
 

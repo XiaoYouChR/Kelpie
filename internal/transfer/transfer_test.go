@@ -327,7 +327,7 @@ func TestReaskTiming(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
 			h.tick(transfer.Tick{ConnectBudget: 1})
-			h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: test.canReaskUDP}, start))
+			h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: test.canReaskUDP, CanObfuscate: true}, start))
 			h.run(h.transfer.OnQueued(1, 42, start))
 			h.run(h.transfer.OnPeerGone(1, "idle", start))
 
@@ -346,6 +346,10 @@ func TestReaskTiming(t *testing.T) {
 				t.Fatalf("near reask: %+v", udp)
 			}
 			if test.canReaskUDP {
+				want := transfer.ReaskUDP{Endpoint: netip.AddrPortFrom(endpoint(1).Addr(), 4672), UserHash: userHash(1), CanObfuscate: true}
+				if udp[0] != want {
+					t.Fatalf("reask %+v, want %+v: obfuscated with the Hello's user hash", udp[0], want)
+				}
 				h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, start.Add(fileReaskTime-20*time.Second+2*time.Second)))
 				if got := at(fileReaskTime); countActions[transfer.Connect](got) != 0 {
 					t.Fatalf("TCP reask after a UDP answer: %+v", got)

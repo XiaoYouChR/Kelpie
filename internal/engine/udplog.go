@@ -88,6 +88,9 @@ func (c *udpLogConn) addKad(isIn bool, size int) {
 // toDatagramName names an eD2k datagram like toPacketName, adding the
 // source count of server answers, which is what the log is read for.
 func toDatagramName(data []byte) string {
+	if len(data) > 0 && data[0] != wire.ProtocolEDonkey && data[0] != wire.ProtocolEMule && data[0] != wire.ProtocolPacked {
+		return "obfuscated"
+	}
 	frame, err := wire.ParseDatagram(data)
 	if err != nil {
 		return "unparsed"

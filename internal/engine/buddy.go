@@ -238,10 +238,10 @@ func (e *Engine) canDirectCallback() bool {
 
 // requestDirectCallback asks a source that takes direct callbacks, at its
 // Kad port, to connect to us (BaseClient.cpp:1497-1516).
-func (e *Engine) requestDirectCallback(to netip.AddrPort) {
-	e.sendDatagram(to, wire.BuildPacketDatagram(nil, client.DirectCallbackReq{
+func (e *Engine) requestDirectCallback(to netip.AddrPort, user wire.Hash, canObfuscate bool) {
+	e.sendPeerDatagram(to, client.DirectCallbackReq{
 		TCPPort: uint16(e.tcpPort), UserHash: e.self.UserHash, ConnectOptions: connectOptions,
-	}))
+	}, user, canObfuscate)
 }
 
 // onDirectCallbackReq connects to a downloader that asked us directly, as

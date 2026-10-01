@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
+	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
 	"github.com/XiaoYouChR/Kelpie/internal/server"
 	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
@@ -260,6 +261,9 @@ func (e *Engine) runUDPReader() {
 // onDatagram routes eD2k UDP: server packets to the server, peer reasks to
 // the upload queue and the downloads.
 func (e *Engine) onDatagram(from netip.AddrPort, data []byte) {
+	if packet, ok := obfuscation.ParsePeerDatagram(data, e.self.UserHash, from.Addr()); ok {
+		data = packet
+	}
 	frame, err := wire.ParseDatagram(data)
 	if err != nil {
 		return
@@ -294,19 +298,33 @@ func (e *Engine) onDatagram(from netip.AddrPort, data []byte) {
 
 func (e *Engine) onReask(from netip.AddrPort, ping client.ReaskFilePing) {
 	var reply wire.Packet
+	var user wire.Hash
 	switch a := e.queue.OnReask(from.Addr(), from.Port(), ping.Hash, e.now()).(type) {
 	case upload.ReaskAck:
 		ack := client.ReaskAck{Rank: uint16(min(a.Rank, 0xFFFF))}
 		if r := e.runByHash[ping.Hash]; ping.HasParts && r != nil {
 			ack.HasParts, ack.Parts = true, toStatus(r.share)
 		}
-		reply = ack
+		reply, user = ack, a.User
 	case upload.FileNotFound:
-		reply = client.FileNotFound{}
+		reply, user = client.FileNotFound{}, a.User
 	case upload.QueueFull:
 		reply = client.QueueFull{}
 	default:
 		return
 	}
-	e.sendDatagram(from, wire.BuildPacketDatagram(nil, reply))
+	canObfuscate := e.uploadEndpoints[uploadKey{user, from.Addr()}].canObfuscate
+	e.sendPeerDatagram(from, reply, user, canObfuscate)
+}
+
+// sendPeerDatagram obfuscates p for the client with user hash user when it
+// supports obfuscation and we know our public IPv4 address, which keys it;
+// we always request obfuscation, so that is aMule's
+// ShouldReceiveCryptUDPPackets (BaseClient.cpp:2609, MuleUDPSocket.cpp:269).
+func (e *Engine) sendPeerDatagram(to netip.AddrPort, p wire.Packet, user wire.Hash, canObfuscate bool) {
+	data := wire.BuildPacketDatagram(nil, p)
+	if canObfuscate && user != (wire.Hash{}) && e.publicIP.Is4() {
+		data = obfuscation.BuildPeerDatagram(data, user, e.publicIP, e.ports.Rand.Uint32())
+	}
+	e.sendDatagram(to, data)
 }

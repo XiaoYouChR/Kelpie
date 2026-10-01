@@ -64,3 +64,51 @@ func TestExchangedSourceIsObfuscated(t *testing.T) {
 		t.Fatalf("the link's source has no user hash and must stay plain:\n%s", text)
 	}
 }
+
+// A queued downloader reasks a Kelpie seed over UDP obfuscated, keyed with
+// the seed's user hash, and the seed answers obfuscated with the rank.
+//
+// C and D hold A's two slots, all a slow upload gets, so B queues on A.
+func TestUDPReaskIsObfuscated(t *testing.T) {
+	w := buildWorld(t)
+	srv := w.startFakeServer("198.51.100.100")
+	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+	c, d := w.addNode("198.51.100.3"), w.addNode("198.51.100.4")
+	aLog, bLog := &lockedBuffer{}, &lockedBuffer{}
+	a.config.PacketLog, b.config.PacketLog = aLog, bLog
+	a.config.RateLimits.Upload = 2_000
+	for _, n := range []*node{a, b} {
+		n.setServer(srv)
+		n.start()
+		w.waitFor("a HighID", func() bool { return n.events.lastNetwork().IsHighID })
+	}
+	c.start()
+	d.start()
+	f := buildTestFile("reask.bin", 3*int(piece.PartSize), 14)
+	a.seed(1, f)
+	for _, n := range []*node{c, d} {
+		n.download(2, f, a.endpoint())
+		w.waitFor("a slot on A", func() bool { return matchTrace(n.loadTrace(), "slot", a.endpoint().String()) })
+	}
+
+	b.download(2, f, a.endpoint())
+	w.waitFor("B to queue on A", func() bool { return countTrace(b.loadTrace(), "queued", a.endpoint().String()) == 1 })
+	w.waitFor("B's UDP reask answered", func() bool { return countTrace(b.loadTrace(), "queued", a.endpoint().String()) == 2 })
+	toA, toB := "udp out "+a.endpoint().String()+" ", "udp out "+b.endpoint().String()+" "
+	if !strings.Contains(bLog.String(), toA+"obfuscated") || strings.Contains(bLog.String(), toA+"client.") {
+		t.Fatalf("reask not obfuscated:\n%s", bLog.String())
+	}
+	if !strings.Contains(aLog.String(), toB+"obfuscated") || strings.Contains(aLog.String(), toB+"client.") {
+		t.Fatalf("answer not obfuscated:\n%s", aLog.String())
+	}
+}
+
+func countTrace(lines []map[string]any, event, source string) int {
+	n := 0
+	for _, line := range lines {
+		if line["event"] == event && line["source"] == source {
+			n++
+		}
+	}
+	return n
+}
