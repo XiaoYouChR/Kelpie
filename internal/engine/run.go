@@ -277,6 +277,7 @@ func (e *Engine) runTransfers(now time.Time) {
 			IsKadRunning:  e.kad != nil,
 			PublicIP:      e.publicIP,
 			Port:          uint16(e.tcpPort),
+			LocalAddrs:    e.ports.LocalAddrs,
 		})
 		for _, action := range actions {
 			switch action.(type) {

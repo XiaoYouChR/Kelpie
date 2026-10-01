@@ -119,6 +119,8 @@ type Tick struct {
 	// unknown. Port is our TCP listen port.
 	PublicIP netip.Addr
 	Port     uint16
+	// LocalAddrs are the addresses of this host's network interfaces.
+	LocalAddrs []netip.Addr
 }
 
 type source struct {
@@ -214,10 +216,14 @@ func isPublic(addr netip.Addr) bool {
 
 // isSelf follows aMule CPartFile::CanAddSource (PartFile.cpp:1745-1766):
 // while LowID any source at our public IP is ourselves seen through our NAT;
-// while HighID it is us only on our own port.
+// while HighID it is us only on our own port. A host with a public address
+// on an interface, as with most IPv6, is also us there on our own port.
 func (t *Transfer) isSelf(endpoint netip.AddrPort) bool {
-	return endpoint.Addr().Unmap() == t.tick.PublicIP.Unmap() &&
-		(t.tick.IsFirewalled || endpoint.Port() == t.tick.Port)
+	addr := endpoint.Addr().Unmap()
+	if endpoint.Port() == t.tick.Port && slices.Contains(t.tick.LocalAddrs, addr) {
+		return true
+	}
+	return addr == t.tick.PublicIP.Unmap() && (t.tick.IsFirewalled || endpoint.Port() == t.tick.Port)
 }
 
 // OnSourcesFound adds sources from one channel, skipping duplicates, banned

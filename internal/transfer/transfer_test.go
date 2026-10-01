@@ -672,6 +672,21 @@ func TestBadSourceAddressesAreDropped(t *testing.T) {
 	}
 }
 
+func TestSourceAtOurInterfaceAddressOnOurPortIsUs(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	h.tick(transfer.Tick{Port: 4662, LocalAddrs: []netip.Addr{netip.MustParseAddr("2001:db8::5"), netip.MustParseAddr("198.51.100.5")}})
+	found := []transfer.Source{
+		{Endpoint: netip.MustParseAddrPort("[2001:db8::5]:4662")},
+		{Endpoint: netip.MustParseAddrPort("198.51.100.5:4662")},
+		{Endpoint: netip.MustParseAddrPort("198.51.100.5:4663")},
+	}
+	got := traces(h.transfer.OnSourcesFound(found, transfer.ChannelKad, start), transfer.EventFound)
+	if len(got) != 1 || got[0].Source != "198.51.100.5:4663" {
+		t.Fatalf("found %+v, want only the other client on our host", got)
+	}
+}
+
 func TestSlotEndKeepsPartOfBlock(t *testing.T) {
 	data := buildData(piece.BlockSize + 1000)
 	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})

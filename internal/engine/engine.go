@@ -32,12 +32,14 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
-// Ports are the engine's only ways out: sockets, files, time and randomness.
+// Ports are the engine's only ways out: sockets, files, time and randomness,
+// and the host's interface addresses as they were at start.
 type Ports struct {
-	Transport transport.Transport
-	Disk      disk.Disk
-	Clock     clock.Clock
-	Rand      *rand.Rand
+	Transport  transport.Transport
+	Disk       disk.Disk
+	Clock      clock.Clock
+	Rand       *rand.Rand
+	LocalAddrs []netip.Addr
 }
 
 const (
@@ -152,10 +154,11 @@ func Start(config Config, events Events) (*Engine, error) {
 	var seed [32]byte
 	crand.Read(seed[:])
 	ports := Ports{
-		Transport: transport.Real{},
-		Disk:      disk.Real{},
-		Clock:     clock.Real{},
-		Rand:      rand.New(rand.NewChaCha8(seed)),
+		Transport:  transport.Real{},
+		Disk:       disk.Real{},
+		Clock:      clock.Real{},
+		Rand:       rand.New(rand.NewChaCha8(seed)),
+		LocalAddrs: probeLocalAddrs(),
 	}
 	var mapPorts openNAT
 	if config.EnableUPnP {
@@ -164,6 +167,25 @@ func Start(config Config, events Events) (*Engine, error) {
 		}
 	}
 	return build(config, ports, events, defaultCapacities, mapPorts)
+}
+
+// probeLocalAddrs lists the host's interface addresses; without them only
+// the public IP tells our own sources apart, so a failure is just logged.
+func probeLocalAddrs() []netip.Addr {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		log.Printf("engine: interface addresses: %v", err)
+		return nil
+	}
+	var local []netip.Addr
+	for _, a := range addrs {
+		if prefix, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(prefix.IP); ok {
+				local = append(local, ip.Unmap())
+			}
+		}
+	}
+	return local
 }
 
 // Build runs an Engine on the given ports; tests pass fakes. UPnP is never
