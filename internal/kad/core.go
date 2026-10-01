@@ -279,10 +279,16 @@ func (c *core) status() Status {
 	}
 }
 
-// isReachable: other clients can connect to us, directly or through our
-// buddy.
+// isReachable: other clients can connect to us, or have us connect to
+// them by a direct callback or through our buddy.
 func (c *core) isReachable() bool {
-	return !c.firewall.isFirewalled() || c.buddy.Addr.IsValid()
+	return !c.firewall.isFirewalled() || c.canDirectCallback() || c.buddy.Addr.IsValid()
+}
+
+// canDirectCallback: nobody reaches our TCP port, but a UDP test showed
+// that anybody reaches our Kad port (Prefs.cpp:226).
+func (c *core) canDirectCallback() bool {
+	return c.firewall.isFirewalled() && c.udp.isOpen()
 }
 
 func later(a, b time.Time) time.Time {

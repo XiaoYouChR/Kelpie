@@ -91,6 +91,8 @@ func ParseUDP(protocol, opcode byte, body []byte) (wire.Packet, error) {
 		p = QueueFull{}
 	case opReaskCallbackUDP:
 		p = ReaskCallbackUDP{BuddyID: r.Hash(), Ping: parseReaskFilePing(r)}
+	case opDirectCallbackReq:
+		p = DirectCallbackReq{TCPPort: r.Uint16(), UserHash: r.Hash(), ConnectOptions: r.Uint8()}
 	default:
 		return wire.Unknown{Proto: protocol, Op: opcode, Body: body}, nil
 	}

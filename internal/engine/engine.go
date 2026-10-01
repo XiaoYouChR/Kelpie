@@ -119,6 +119,9 @@ type Engine struct {
 	trace     *leafQueue[traceLine]
 	disk      *leafQueue[diskJob]
 	unmapNAT  func(context.Context) error
+	// directCallbacks holds when each IP last asked us for a direct
+	// callback.
+	directCallbacks map[netip.Addr]time.Time
 
 	serverAddr netip.AddrPort
 	publicIP   netip.Addr
@@ -210,6 +213,7 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		uploadEndpoints: map[uploadKey]uploadTarget{},
 		kadChecks:       map[uint64]kadCheck{},
 		buddy:           buddy{incoming: map[netip.Addr]incomingBuddy{}},
+		directCallbacks: map[netip.Addr]time.Time{},
 	}
 	if config.PacketLog != nil {
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)

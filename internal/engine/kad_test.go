@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -178,13 +179,16 @@ func invert(id wire.Hash) wire.Hash {
 	return id
 }
 
-// TestFirewalledSeederServesThroughBuddy: a seeder nobody can reach, over
-// TCP or UDP, gets an open Kelpie as Kad buddy and publishes itself behind
-// it; a downloader's callback request travels through the buddy, and the
-// seeder connects out to the downloader.
-func TestFirewalledSeederServesThroughBuddy(t *testing.T) {
-	w := buildWorld(t)
-	f := buildTestFile("buddy.bin", 900_000, 6)
+// kadWorld is a small Kad network around a LowID seeder: an open Kelpie
+// whose Kad ID makes it the seeder's buddy candidate,
+// a downloader, a bare Kad node near the file that stores sources, and a
+// guide that names six UDP test clients.
+type kadWorld struct {
+	seeder, buddy, downloader *node
+	seederID                  wire.Hash
+}
+
+func (w *world) buildKadWorld(f testFile, isSeederUDPFirewalled bool) kadWorld {
 	nearFile := func(b byte) wire.Hash {
 		id := f.hash
 		id[15] ^= b
@@ -197,25 +201,58 @@ func TestFirewalledSeederServesThroughBuddy(t *testing.T) {
 		tester.start()
 		testerIPs = append(testerIPs, tester.ip)
 	}
-	seeder, buddy, downloader := w.addNode("198.51.100.1"), w.addNode("198.51.100.2"), w.addNode("198.51.100.3")
-	seeder.host.SetLowID(true)
-	seeder.host.SetUDPFirewalled(true)
-	seederID := wire.Hash{0x10, 0x01}
-	buddyID := invert(seederID)
+	k := kadWorld{seeder: w.addNode("198.51.100.1"), buddy: w.addNode("198.51.100.2"), downloader: w.addNode("198.51.100.3"), seederID: wire.Hash{0x10, 0x01}}
+	k.seeder.host.SetLowID(true)
+	k.seeder.host.SetUDPFirewalled(isSeederUDPFirewalled)
+	buddyID := invert(k.seederID)
 	buddyID[15] ^= 1
-	ids := map[*node]wire.Hash{seeder: seederID, buddy: buddyID, downloader: nearFile(2)}
-	storer := w.startBareKad("198.51.100.10", nearFile(1), seeder.kadNode(seederID), buddy.kadNode(buddyID), downloader.kadNode(nearFile(2)))
+	ids := map[*node]wire.Hash{k.seeder: k.seederID, k.buddy: buddyID, k.downloader: nearFile(2)}
+	storer := w.startBareKad("198.51.100.10", nearFile(1), k.seeder.kadNode(k.seederID), k.buddy.kadNode(buddyID), k.downloader.kadNode(nearFile(2)))
 	guide := w.startTesterGuide("198.51.100.11", wire.Hash{0x60}, testerIPs)
-	for n, id := range ids {
+	for _, n := range []*node{k.buddy, k.downloader, k.seeder} {
 		known := []kadNode{storer, guide}
 		for other, otherID := range ids {
 			if other != n {
 				known = append(known, other.kadNode(otherID))
 			}
 		}
-		n.setKad(id, known...)
+		n.setKad(ids[n], known...)
 		n.start()
 	}
+	return k
+}
+
+// downloadFromKad has the downloader fetch f knowing no source, and checks
+// that Kad named the seeder as a firewalled source, one reached by a
+// callback.
+func (k kadWorld) downloadFromKad(f testFile) {
+	w := k.downloader.w
+	if net := k.downloader.events.lastNetwork(); net.IsKadFirewalled {
+		w.t.Fatalf("downloader network %+v, want Kad open", net)
+	}
+	path := k.downloader.download(2, f)
+	requireEndedOK(w.t, w.waitEnded(k.downloader, 2))
+	k.downloader.requireData(path, f.data)
+	isFoundOnKad := false
+	for _, line := range k.downloader.loadTrace() {
+		source, _ := line["source"].(string)
+		isFoundOnKad = isFoundOnKad || line["event"] == "found" && line["channel"] == "kad" && strings.HasPrefix(source, "kad:")
+	}
+	if !isFoundOnKad {
+		w.t.Fatal("the downloader did not find the seeder on Kad")
+	}
+}
+
+// TestFirewalledSeederServesThroughBuddy: a seeder nobody can reach, over
+// TCP or UDP, gets an open Kelpie as Kad buddy and publishes itself behind
+// it; a downloader's callback request travels through the buddy, and the
+// seeder connects out to the downloader.
+func TestFirewalledSeederServesThroughBuddy(t *testing.T) {
+	w := buildWorld(t)
+	f := buildTestFile("buddy.bin", 900_000, 6)
+	k := w.buildKadWorld(f, true)
+	seeder, buddy := k.seeder, k.buddy
+	seederID := k.seederID
 	seeder.seed(1, f)
 	w.waitFor("the seeder to have looked for a buddy", func() bool {
 		return w.clock.Now().Sub(start) >= 8*time.Minute
@@ -223,21 +260,7 @@ func TestFirewalledSeederServesThroughBuddy(t *testing.T) {
 	if net := seeder.events.lastNetwork(); !net.IsKadFirewalled {
 		t.Fatalf("seeder network %+v, want Kad firewalled", net)
 	}
-	if net := downloader.events.lastNetwork(); net.IsKadFirewalled {
-		t.Fatalf("downloader network %+v, want Kad open", net)
-	}
-
-	path := downloader.download(2, f)
-	requireEndedOK(t, w.waitEnded(downloader, 2))
-	downloader.requireData(path, f.data)
-	trace := downloader.loadTrace()
-	isFoundOnKad := false
-	for _, line := range trace {
-		isFoundOnKad = isFoundOnKad || line["event"] == "found" && line["channel"] == "kad"
-	}
-	if !isFoundOnKad {
-		t.Fatal("the downloader did not find the seeder on Kad")
-	}
+	k.downloadFromKad(f)
 
 	asker, err := w.network.AddHost(netip.MustParseAddr("198.51.100.40")).OpenUDP(kadPort)
 	if err != nil {
@@ -265,4 +288,18 @@ func TestFirewalledSeederServesThroughBuddy(t *testing.T) {
 	if !bytes.Equal(answer, wire.BuildPacketDatagram(nil, client.FileNotFound{})) {
 		t.Fatalf("reask answer %x, want OP_FILENOTFOUND", answer)
 	}
+}
+
+// TestFirewalledSeederTakesDirectCallback: a seeder nobody reaches over
+// TCP but anybody over UDP publishes itself as a direct callback source,
+// and connects out when the downloader asks it over UDP.
+func TestFirewalledSeederTakesDirectCallback(t *testing.T) {
+	w := buildWorld(t)
+	f := buildTestFile("direct.bin", 700_000, 7)
+	k := w.buildKadWorld(f, false)
+	k.seeder.seed(1, f)
+	w.waitFor("the seeder to finish its UDP test and publish", func() bool {
+		return w.clock.Now().Sub(start) >= 3*time.Minute
+	})
+	k.downloadFromKad(f)
 }

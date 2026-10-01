@@ -332,8 +332,9 @@ func (c *core) sendAction(l *lookup, cand *candidate, now time.Time) {
 }
 
 // buildSourceTags is CSearch::StorePacket for STOREFILE
-// (Search.cpp:595-660): an open source, or a firewalled one with the buddy
-// that passes callbacks on; a firewalled client without a buddy does not
+// (Search.cpp:595-660): an open source; a firewalled one that others reach
+// over UDP and so take callback requests itself; or one with the buddy
+// that passes callbacks on. A firewalled client without either does not
 // publish. The storing node adds our IP, and our UDP port as it sees it
 // unless a UDP test showed that our own port is the one to use.
 func (c *core) buildSourceTags(size uint64) ([]wire.Tag, bool) {
@@ -342,6 +343,8 @@ func (c *core) buildSourceTags(size uint64) ([]wire.Tag, bool) {
 	switch {
 	case !c.firewall.isFirewalled():
 		tags = append(tags, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: uint64(pick(isLarge, SourceOpenLarge, SourceOpen))})
+	case c.canDirectCallback():
+		tags = append(tags, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: uint64(SourceDirectCallback)})
 	case c.buddy.Addr.IsValid():
 		tags = append(tags,
 			wire.Tag{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: uint64(pick(isLarge, SourceFirewalledLarge, SourceFirewalled))},
@@ -360,7 +363,11 @@ func (c *core) buildSourceTags(size uint64) ([]wire.Tag, bool) {
 	if size > 0xFFFFFFFF {
 		sizeTag.Type = wire.TagUint64
 	}
-	return append(tags, sizeTag, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagEncryption, Uint: uint64(connectOptions)}), true
+	options := connectOptions
+	if c.canDirectCallback() {
+		options |= cryptDirectCallback
+	}
+	return append(tags, sizeTag, wire.Tag{Type: wire.TagUint8, ID: kadwire.TagEncryption, Uint: uint64(options)}), true
 }
 
 func pick[T any](cond bool, yes, no T) T {

@@ -33,11 +33,17 @@ const (
 	SourceFirewalled      byte = 3 // reachable only through its buddy
 	SourceOpenLarge       byte = 4 // HighID, file over 4 GB
 	SourceFirewalledLarge byte = 5 // firewalled, file over 4 GB
+	SourceDirectCallback  byte = 6 // firewalled, but takes callback requests over UDP itself
 )
+
+// cryptDirectCallback is the TAG_ENCRYPTION bit of a source that takes
+// direct callbacks (CPrefs::GetMyConnectOptions).
+const cryptDirectCallback byte = 0x08
 
 // Source is one peer that has a file, as Kad reported it. For firewalled
 // types the engine cannot connect to Addr; it asks Kad to RequestCallback
-// through Buddy, and the source connects to us.
+// through Buddy, or for SourceDirectCallback sends the source's Kad port
+// (UDPPort) an OP_DIRECTCALLBACKREQ, and the source connects to us.
 type Source struct {
 	Type     byte
 	UserHash wire.Hash
@@ -79,10 +85,11 @@ type Callback struct {
 	Hash    wire.Hash
 }
 
-// toSource reads a search result the way eMule's CSearch::ProcessResultFile
-// and CDownloadQueue::KademliaSearchFile do. Type 6 (direct UDP callback)
-// and type 2 are not used; firewalled sources are useless while we are
-// firewalled ourselves.
+// toSource reads a search result the way CSearch::ProcessResultFile and
+// CDownloadQueue::KademliaSearchFile (DownloadQueue.cpp:1600-1670) do. Type
+// 2 is skipped ("some clients process it wrong"); firewalled sources, types
+// 3, 5 and 6, are useless while we are firewalled ourselves, and type 6
+// must say it takes direct callbacks.
 func toSource(e kadwire.Entry, isFirewalled bool) (Source, bool) {
 	s := Source{UserHash: e.ID}
 	var ip netip.Addr
@@ -135,6 +142,8 @@ func toSource(e kadwire.Entry, isFirewalled bool) (Source, bool) {
 			s.Addr = netip.AddrPortFrom(netip.Addr{}, tcpPort)
 		}
 		return s, true
+	case SourceDirectCallback:
+		return s, !isFirewalled && s.CryptOptions&cryptDirectCallback != 0 && ip.IsValid() && s.UDPPort != 0
 	}
 	return Source{}, false
 }

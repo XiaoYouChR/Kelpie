@@ -210,6 +210,7 @@ func (e *Engine) buildPeerConfig() peer.Config {
 		if e.isFirewalled() {
 			cfg.Buddy = e.buddyAddr()
 		}
+		cfg.HasDirectCallback = e.canDirectCallback()
 	}
 	return cfg
 }
@@ -729,9 +730,12 @@ func toKadSources(found []kad.Source) []transfer.Source {
 	var sources []transfer.Source
 	for _, f := range found {
 		src := transfer.Source{UserHash: f.UserHash, UDPPort: f.UDPPort, CanObfuscate: f.CanObfuscate()}
-		if f.IsFirewalled() {
+		switch {
+		case f.IsFirewalled():
 			src.Buddy, src.BuddyID = f.Buddy, f.BuddyID
-		} else {
+		case f.Type == kad.SourceDirectCallback:
+			src.Buddy, src.IsDirectCallback = netip.AddrPortFrom(f.Addr.Addr(), f.UDPPort), true
+		default:
 			src.Endpoint = f.Addr
 		}
 		sources = append(sources, src)

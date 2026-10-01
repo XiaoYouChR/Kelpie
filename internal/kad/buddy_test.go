@@ -125,3 +125,53 @@ func TestOpenNodeServesAsBuddy(t *testing.T) {
 		t.Fatalf("with a buddy: sent %+v, requests %+v", h.sent, h.requests)
 	}
 }
+
+func TestSourceTypesTwoAndSix(t *testing.T) {
+	user := wire.Hash{0x66}
+	direct := func(options byte) kadwire.Entry {
+		return kadwire.Entry{ID: user, Tags: []wire.Tag{
+			{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: 6},
+			{Type: wire.TagUint32, ID: kadwire.TagSourceIP, Uint: uint64(kadwire.ToUint32(netip.MustParseAddr("5.6.7.8")))},
+			{Type: wire.TagUint16, ID: kadwire.TagSourcePort, Uint: 4662},
+			{Type: wire.TagUint16, ID: kadwire.TagSourceUPort, Uint: 4672},
+			{Type: wire.TagUint8, ID: kadwire.TagEncryption, Uint: uint64(options)},
+		}}
+	}
+	s, ok := toSource(direct(0x0B), false)
+	want := Source{Type: SourceDirectCallback, UserHash: user, Addr: netip.MustParseAddrPort("5.6.7.8:4662"), UDPPort: 4672, CryptOptions: 0x0B}
+	if !ok || s != want {
+		t.Fatalf("type 6 source %+v, %v; want %+v", s, ok, want)
+	}
+	if _, ok := toSource(direct(0x0B), true); ok {
+		t.Fatal("kept a direct callback source while firewalled")
+	}
+	if _, ok := toSource(direct(0x03), false); ok {
+		t.Fatal("kept a type 6 source without the direct callback flag")
+	}
+	two := direct(0x0B)
+	two.Tags[0].Uint = 2
+	if _, ok := toSource(two, false); ok {
+		t.Fatal("kept a type 2 source")
+	}
+}
+
+func TestFirewalledNodeWithOpenUDPTakesDirectCallbacks(t *testing.T) {
+	h := buildHarness(t)
+	h.connect(fileHash, 4)
+	h.setUDPVerdict(false)
+	h.c.setWanted(Wanted{Publish: []Publish{{Hash: fileHash, Size: 5000}}}, h.now)
+	for range 60 {
+		h.tick(time.Second)
+	}
+	pubs := packetsOf[kadwire.PublishSourcesReq](h)
+	if len(pubs) == 0 || len(packetsOf[kadwire.FindBuddyReq](h)) != 0 {
+		t.Fatalf("%d publishes, buddy requests %v", len(pubs), packetsOf[kadwire.FindBuddyReq](h))
+	}
+	entry := pubs[0].packet.Source
+	entry.Tags = append(entry.Tags,
+		wire.Tag{Type: wire.TagUint32, ID: kadwire.TagSourceIP, Uint: uint64(kadwire.ToUint32(netip.MustParseAddr("10.5.5.5")))},
+		wire.Tag{Type: wire.TagUint16, ID: kadwire.TagSourceUPort, Uint: 4672})
+	if src, ok := toSource(entry, false); !ok || src.Type != SourceDirectCallback {
+		t.Fatalf("published source reads back as %+v, %v", src, ok)
+	}
+}

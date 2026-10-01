@@ -19,7 +19,8 @@ const (
 	opFirewallCheckUDPReq byte = 0xA7
 	opKadFirewallAck      byte = 0xA8
 
-	opReaskCallbackUDP byte = 0x94
+	opReaskCallbackUDP  byte = 0x94
+	opDirectCallbackReq byte = 0x95
 )
 
 // FirewallCheckUDPReq is OP_FWCHECKUDPREQ: send a KADEMLIA2_FIREWALLUDP to
@@ -115,3 +116,18 @@ type BuddyPong struct{}
 func (BuddyPong) Protocol() byte        { return wire.ProtocolEMule }
 func (BuddyPong) Opcode() byte          { return opBuddyPong }
 func (BuddyPong) Build(b []byte) []byte { return b }
+
+// DirectCallbackReq is OP_DIRECTCALLBACKREQ: a downloader asks a
+// firewalled client that others reach over UDP to connect to TCPPort.
+type DirectCallbackReq struct {
+	TCPPort        uint16
+	UserHash       wire.Hash
+	ConnectOptions byte
+}
+
+func (DirectCallbackReq) Protocol() byte { return wire.ProtocolEMule }
+func (DirectCallbackReq) Opcode() byte   { return opDirectCallbackReq }
+func (p DirectCallbackReq) Build(b []byte) []byte {
+	b = binary.LittleEndian.AppendUint16(b, p.TCPPort)
+	return append(append(b, p.UserHash[:]...), p.ConnectOptions)
+}

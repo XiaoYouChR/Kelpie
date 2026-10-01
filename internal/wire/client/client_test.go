@@ -149,6 +149,7 @@ func TestUDPRoundTrip(t *testing.T) {
 		FileNotFound{},
 		QueueFull{},
 		ReaskCallbackUDP{BuddyID: userHash, Ping: ReaskFilePing{Hash: fileHash, HasCompleteSources: true, CompleteSources: 4}},
+		DirectCallbackReq{TCPPort: 4662, UserHash: userHash, ConnectOptions: 0x0B},
 	}
 	for _, p := range packets {
 		raw := wire.BuildPacketDatagram(nil, p)
@@ -174,7 +175,7 @@ func TestUnknownOpcodesSurvive(t *testing.T) {
 		{wire.ProtocolEDonkey, 0x4E, Parse},
 		{wire.ProtocolEMule, 0x61, Parse},
 		{wire.ProtocolKad, 0x01, Parse},
-		{wire.ProtocolEMule, 0x95, ParseUDP},
+		{wire.ProtocolEMule, 0xFE, ParseUDP},
 	} {
 		got, err := c.parse(c.protocol, c.opcode, []byte{1, 2})
 		want := wire.Unknown{Proto: c.protocol, Op: c.opcode, Body: []byte{1, 2}}

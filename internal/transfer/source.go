@@ -90,6 +90,9 @@ type Source struct {
 	// CanObfuscate: the channel says the source supports protocol
 	// obfuscation, which needs its UserHash.
 	CanObfuscate bool
+	// IsDirectCallback: a firewalled Kad source that takes callback
+	// requests itself, at the UDP endpoint in Buddy.
+	IsDirectCallback bool
 }
 
 // Hello is what a connected peer told us about itself.
@@ -607,7 +610,7 @@ func (t *Transfer) requestConnect(s *source, tick Tick, budget *int) []Action {
 	var action Action
 	switch {
 	case s.Buddy.IsValid():
-		action = RequestKadCallback{Buddy: s.Buddy, BuddyID: s.BuddyID}
+		action = RequestKadCallback{Buddy: s.Buddy, BuddyID: s.BuddyID, IsDirect: s.IsDirectCallback}
 	case s.ClientID != 0:
 		action = RequestServerCallback{ClientID: s.ClientID}
 	default:

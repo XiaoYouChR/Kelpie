@@ -319,7 +319,11 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 		case transfer.RequestServerCallback:
 			e.requestServerCallback(a.ClientID)
 		case transfer.RequestKadCallback:
-			if e.kad != nil {
+			switch {
+			case e.kad == nil:
+			case a.IsDirect:
+				e.requestDirectCallback(a.Buddy)
+			default:
 				e.kad.RequestCallback(toKadCallback(a, r.file.Hash))
 			}
 		case transfer.RequestSources:

@@ -21,6 +21,12 @@ const (
 	// incomingBuddyLife is how long a client we accepted as buddy has to
 	// connect; aMule keeps it until some buddy links, we bound it.
 	incomingBuddyLife = 10 * time.Minute
+	// directCallbackGap: one direct callback per IP every 3 minutes
+	// (CClientList::AllowCallbackRequest).
+	directCallbackGap = 3 * time.Minute
+	// connectOptions are ours as a direct callback request carries them:
+	// obfuscation supported and requested.
+	connectOptions byte = 0x03
 )
 
 // buddy is aMule's CClientList buddy (ClientList.cpp:560-720): one TCP link
@@ -220,4 +226,47 @@ func (e *Engine) onReaskCallbackTCP(c *conn, p client.ReaskCallbackTCP) {
 	if c == e.buddy.conn && !e.buddy.isServing {
 		e.onReask(p.Endpoint, p.Ping)
 	}
+}
+
+// canDirectCallback is aMule's direct UDP callback condition
+// (BaseClient.cpp:1127): nobody reaches our TCP port, a UDP test showed
+// that anybody reaches our Kad port.
+func (e *Engine) canDirectCallback() bool {
+	s := e.kadStatus
+	return e.kad != nil && s.IsFirewalled && !s.IsUDPFirewalled && s.IsUDPVerified
+}
+
+// requestDirectCallback asks a source that takes direct callbacks, at its
+// Kad port, to connect to us (BaseClient.cpp:1497-1516).
+func (e *Engine) requestDirectCallback(to netip.AddrPort) {
+	e.sendDatagram(to, wire.BuildPacketDatagram(nil, client.DirectCallbackReq{
+		TCPPort: uint16(e.tcpPort), UserHash: e.self.UserHash, ConnectOptions: connectOptions,
+	}))
+}
+
+// onDirectCallbackReq connects to a downloader that asked us directly, as
+// ClientUDPSocket.cpp:277 does while Kad sees us firewalled.
+func (e *Engine) onDirectCallbackReq(from netip.AddrPort, p client.DirectCallbackReq) {
+	now := e.now()
+	for ip, at := range e.directCallbacks {
+		if now.Sub(at) >= directCallbackGap {
+			delete(e.directCallbacks, ip)
+		}
+	}
+	if e.kad == nil || !e.kadStatus.IsFirewalled || p.TCPPort == 0 {
+		return
+	}
+	if _, ok := e.directCallbacks[from.Addr()]; ok {
+		return
+	}
+	e.directCallbacks[from.Addr()] = now
+	endpoint := netip.AddrPortFrom(from.Addr(), p.TCPPort)
+	if e.connByEndpoint(endpoint) != nil || len(e.conns) >= maxConnections {
+		return
+	}
+	var obfuscateFor wire.Hash
+	if p.ConnectOptions&peer.CryptSupported != 0 {
+		obfuscateFor = p.UserHash
+	}
+	e.openConn(endpoint, false, obfuscateFor)
 }
