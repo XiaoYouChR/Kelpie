@@ -102,6 +102,22 @@ const (
 	UDPFlagIPv6           uint32 = 0x4000
 )
 
+// ObfuscatedPing is aMule's obfuscated status ping (ServerList.cpp:297-322),
+// sent to the server's TCP port plus 12: a bare challenge and padding, with
+// no protocol byte or opcode, so Protocol and Opcode are the challenge's
+// first two bytes. The server answers OP_GLOBSERVSTATRES obfuscated with
+// the challenge as key.
+type ObfuscatedPing struct {
+	Challenge uint32
+	Padding   []byte
+}
+
+func (p ObfuscatedPing) Protocol() byte { return byte(p.Challenge) }
+func (p ObfuscatedPing) Opcode() byte   { return byte(p.Challenge >> 8) }
+func (p ObfuscatedPing) Build(b []byte) []byte {
+	return append(append(b, byte(p.Challenge>>16), byte(p.Challenge>>24)), p.Padding...)
+}
+
 // GlobServStatRes is the UDP OP_GLOBSERVSTATRES. Older servers stop after
 // any field from MaxUsers on; missing fields decode as zero.
 type GlobServStatRes struct {

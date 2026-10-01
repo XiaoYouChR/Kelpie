@@ -2,6 +2,7 @@ package server
 
 import (
 	"cmp"
+	"math/rand/v2"
 	"net/netip"
 	"slices"
 	"strings"
@@ -54,6 +55,9 @@ type Config struct {
 	Port     uint16
 	// Version is the Engine Process version, such as "v0.1.0".
 	Version string
+	// Random picks the challenges of obfuscated status pings, which key
+	// the answers.
+	Random *rand.Rand
 }
 
 // Wanted is one file the engine shares or downloads, passed on every tick.
@@ -80,10 +84,13 @@ type Source struct {
 	CanObfuscate bool
 }
 
-// Datagram is one UDP packet for a server's UDP port.
+// Datagram is one UDP packet for a server's UDP port. A non-zero Key
+// means obfuscating it with that server UDP key; To is then the server's
+// UDP obfuscation port.
 type Datagram struct {
 	To     netip.AddrPort
 	Packet wire.Packet
+	Key    uint32
 }
 
 // Output is what the engine must do, in field order: close server
@@ -162,6 +169,12 @@ type listed struct {
 	// is awaited.
 	resolvedAt  time.Time
 	isResolving bool
+	// udpKey is the server's UDP obfuscation key for udpKeyIP, our public
+	// address when it came; the server derives it from that address.
+	udpKey   uint32
+	udpKeyIP netip.Addr
+	// isCryptPinging: the status ping awaiting its answer is obfuscated.
+	isCryptPinging bool
 }
 
 // isResolved: a server listed by host name has an address.
@@ -196,6 +209,7 @@ type Server struct {
 	clientID    uint32
 	tcpFlags    uint32
 	lastSent    time.Time
+	publicIP    netip.Addr
 
 	askedAt         map[wire.Hash]time.Time
 	nextSourceFrame time.Time
@@ -240,6 +254,10 @@ func (s *Server) Entries() []Entry {
 }
 
 func (s *Server) IsServerConnected() bool { return s.current != nil }
+
+// SetPublicIP tells our public IPv4 address, invalid while unknown. Server
+// UDP keys belong to it.
+func (s *Server) SetPublicIP(ip netip.Addr) { s.publicIP = ip }
 
 func (s *Server) IsHighID() bool { return s.IsServerConnected() && !wire.IsLowID(s.clientID) }
 

@@ -193,3 +193,44 @@ func TestHasOtherUser(t *testing.T) {
 		t.Error("an unknown endpoint has another user")
 	}
 }
+
+// A server that takes obfuscated UDP is pinged obfuscated, and the UDP key
+// its answer brings obfuscates the global source request, whose answer
+// names the source.
+//
+// A is logged in to S1, which answers faster than S2; C shares the file on
+// S2 only.
+func TestGlobalSourceRequestIsObfuscated(t *testing.T) {
+	w := buildWorld(t)
+	s1 := w.startFakeServerWith(fakeserver.Config{Addr: netip.MustParseAddrPort("198.51.100.100:4661"), ObfuscationPort: 4665})
+	s2 := w.startFakeServerWith(fakeserver.Config{Addr: netip.MustParseAddrPort("198.51.100.101:4661"), UDPKey: 0x0BADF00D, Delay: 2 * time.Second})
+	a, c := w.addNode("198.51.100.1"), w.addNode("198.51.100.3")
+	log := &lockedBuffer{}
+	a.config.PacketLog = log
+	path := filepath.Join(a.folder, "server.met")
+	if err := os.WriteFile(path, fakeserver.BuildMet(s1, s2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.config.ServerLists = []string{path}
+	c.setServer(s2)
+	a.start()
+	c.start()
+	f := buildTestFile("global.bin", 500_000, 15)
+	c.seed(1, f)
+
+	toS2 := "udp out 198.51.100.101:4673 obfuscated"
+	w.waitFor("A's obfuscated ping answered by S2", func() bool {
+		return strings.Contains(log.String(), "udp in  198.51.100.101:4673 obfuscated")
+	})
+	a.download(2, f)
+	w.waitFor("A to find C through S2", func() bool {
+		return matchTrace(a.loadTrace(), "found", c.endpoint().String())
+	})
+	text := log.String()
+	if strings.Count(text, toS2) < 2 || strings.Contains(text, "udp out 198.51.100.101:4665") {
+		t.Fatalf("UDP to S2 not obfuscated:\n%s", text)
+	}
+	if !a.events.lastNetwork().IsServerConnected || !strings.Contains(text, "in  198.51.100.100:4661 server.IDChange") {
+		t.Fatalf("A not on S1:\n%s", text)
+	}
+}

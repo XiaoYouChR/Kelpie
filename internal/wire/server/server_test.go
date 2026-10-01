@@ -184,3 +184,10 @@ func TestUnknownOpcodesSurvive(t *testing.T) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 }
+
+func TestObfuscatedPingIsBare(t *testing.T) {
+	got := wire.BuildPacketDatagram(nil, ObfuscatedPing{Challenge: 0x04030201, Padding: []byte{9, 9}})
+	if want := []byte{1, 2, 3, 4, 9, 9}; !bytes.Equal(got, want) {
+		t.Fatalf("got %x, want %x", got, want)
+	}
+}

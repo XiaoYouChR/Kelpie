@@ -32,6 +32,10 @@ const (
 
 	metUDPFlags           byte = 0x92 // ST_UDPFLAGS
 	metTCPPortObfuscation byte = 0x97 // ST_TCPPORTOBFUSCATION
+
+	// udpObfuscationOffset is where eD2k servers take obfuscated pings
+	// (aMule ServerList.cpp:322); this one takes all obfuscated UDP there.
+	udpObfuscationOffset = 12
 )
 
 type Config struct {
@@ -50,6 +54,11 @@ type Config struct {
 	// ObfuscationPort, when not 0, is a second TCP port where clients log
 	// in obfuscated; the server announces it.
 	ObfuscationPort uint16
+	// UDPKey, when not 0, makes the server take obfuscated UDP on its port
+	// plus 12, obfuscated pings included, and announce it. A real server
+	// derives each client's key from the client's address; this one gives
+	// UDPKey XOR the client ID.
+	UDPKey uint32
 }
 
 type Server struct {
@@ -57,6 +66,8 @@ type Server struct {
 	listener   transport.Listener
 	obfuscated transport.Listener
 	udp        transport.PacketConn
+	// obfuscatedUDP is the UDP port plus 12, open with Config.UDPKey.
+	obfuscatedUDP transport.PacketConn
 
 	mu        sync.Mutex
 	clients   map[*client]struct{}
@@ -98,6 +109,16 @@ func Create(config Config) (*Server, error) {
 			return nil, err
 		}
 	}
+	if config.UDPKey != 0 {
+		if s.obfuscatedUDP, err = config.Transport.OpenUDP(listener.Port() + udpObfuscationOffset); err != nil {
+			listener.Close()
+			udp.Close()
+			if s.obfuscated != nil {
+				s.obfuscated.Close()
+			}
+			return nil, err
+		}
+	}
 	s.config.Addr = netip.AddrPortFrom(config.Addr.Addr(), uint16(listener.Port()))
 	return s, nil
 }
@@ -111,8 +132,15 @@ func (s *Server) Run(ctx context.Context) error {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		s.runUDP(ctx)
+		s.runUDP(ctx, s.udp, false)
 	}()
+	if s.obfuscatedUDP != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.runUDP(ctx, s.obfuscatedUDP, true)
+		}()
+	}
 	errs := make(chan error, 2)
 	accept := func(listener transport.Listener, isObfuscated bool) {
 		defer wg.Done()
@@ -154,6 +182,9 @@ func (s *Server) Run(ctx context.Context) error {
 		s.obfuscated.Close()
 	}
 	s.udp.Close()
+	if s.obfuscatedUDP != nil {
+		s.obfuscatedUDP.Close()
+	}
 	wg.Wait()
 	return err
 }
@@ -311,47 +342,78 @@ func (s *Server) status() packet.ServerStatus {
 	return status
 }
 
-func (s *Server) runUDP(ctx context.Context) {
+// runUDP serves one UDP socket. On the obfuscated one a datagram is either
+// encrypted with the client's key, and so is the answer, or a bare
+// challenge, an obfuscated ping, answered encrypted with the challenge.
+func (s *Server) runUDP(ctx context.Context, conn transport.PacketConn, isObfuscated bool) {
 	buf := make([]byte, 64<<10)
 	for {
-		n, from, err := s.udp.ReadFrom(buf)
+		n, from, err := conn.ReadFrom(buf)
 		if err != nil {
 			return
 		}
-		frame, err := wire.ParseDatagram(buf[:n])
-		if err != nil {
-			continue
-		}
-		p, err := packet.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)
-		if err != nil {
-			continue
-		}
-		var reply wire.Packet
-		switch p := p.(type) {
-		case packet.GlobGetSources:
-			reply = s.buildFound(p.Files)
-		case packet.GlobGetSources2:
-			var files []wire.Hash
-			for _, f := range p.Files {
-				files = append(files, f.Hash)
-			}
-			reply = s.buildFound(files)
-		case packet.GlobServStatReq:
-			status := s.status()
-			reply = packet.GlobServStatRes{
-				Challenge: p.Challenge, Users: status.Users, Files: status.Files,
-				MaxUsers: status.Users + 1000, SoftFiles: fileLimit, HardFiles: fileLimit, UDPFlags: s.udpFlags(),
-				TCPObfuscationPort: s.config.ObfuscationPort,
+		data, key := buf[:n], uint32(0)
+		if isObfuscated {
+			key = s.udpKeyByAddr(from.Addr())
+			if plain, ok := openDatagram(data, key); ok {
+				data = plain
+			} else if n >= 4 {
+				key = binary.LittleEndian.Uint32(data)
+				data = wire.BuildPacketDatagram(nil, packet.GlobServStatReq{Challenge: key})
+			} else {
+				continue
 			}
 		}
+		reply := s.buildUDPAnswer(data, from.Addr())
 		if reply == nil {
 			continue
 		}
 		if !s.runDelay(ctx) {
 			return
 		}
-		s.udp.WriteTo(wire.BuildPacketDatagram(nil, reply), from)
+		answer := wire.BuildPacketDatagram(nil, reply)
+		if key != 0 {
+			answer = sealDatagram(answer, key)
+		}
+		conn.WriteTo(answer, from)
 	}
+}
+
+func (s *Server) buildUDPAnswer(data []byte, from netip.Addr) wire.Packet {
+	frame, err := wire.ParseDatagram(data)
+	if err != nil {
+		return nil
+	}
+	p, err := packet.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)
+	if err != nil {
+		return nil
+	}
+	switch p := p.(type) {
+	case packet.GlobGetSources:
+		return s.buildFound(p.Files)
+	case packet.GlobGetSources2:
+		var files []wire.Hash
+		for _, f := range p.Files {
+			files = append(files, f.Hash)
+		}
+		return s.buildFound(files)
+	case packet.GlobServStatReq:
+		status := s.status()
+		res := packet.GlobServStatRes{
+			Challenge: p.Challenge, Users: status.Users, Files: status.Files,
+			MaxUsers: status.Users + 1000, SoftFiles: fileLimit, HardFiles: fileLimit, UDPFlags: s.udpFlags(),
+			TCPObfuscationPort: s.config.ObfuscationPort,
+		}
+		if s.config.UDPKey != 0 {
+			res.UDPObfuscationPort, res.UDPKey = s.config.Addr.Port()+udpObfuscationOffset, s.udpKeyByAddr(from)
+		}
+		return res
+	}
+	return nil
+}
+
+func (s *Server) udpKeyByAddr(ip netip.Addr) uint32 {
+	return s.config.UDPKey ^ wire.ToClientID(ip)
 }
 
 // buildFound answers a global source query; nil when no file has sources.
@@ -392,10 +454,14 @@ func (c *client) send(p wire.Packet) {
 }
 
 func (s *Server) udpFlags() uint32 {
+	flags := udpFlags
 	if s.config.ObfuscationPort != 0 {
-		return udpFlags | packet.UDPFlagTCPObfuscation
+		flags |= packet.UDPFlagTCPObfuscation
 	}
-	return udpFlags
+	if s.config.UDPKey != 0 {
+		flags |= packet.UDPFlagUDPObfuscation
+	}
+	return flags
 }
 
 // BuildMet builds a server.met listing servers, each announcing its UDP

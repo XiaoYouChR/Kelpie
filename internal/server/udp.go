@@ -20,6 +20,10 @@ const (
 	bytesPerFile         = 20                           // BYTES_PER_FILE_G2
 	bytesPerLargeFile    = bytesPerFile + 8             // ADDITIONAL_BYTES_PER_LARGEFILE
 	challengeBase        = 0x55AA0000                   // ServerStats challenge prefix
+	udpStatMinReaskTime  = 20 * time.Minute             // UDPSERVSTATMINREASKTIME
+	cryptPingTimeout     = 20 * time.Second             // ServerList.cpp:310
+	cryptPingPortOffset  = 12                           // ServerList.cpp:322
+	maxPingPadding       = 16                           // ServerList.cpp:301
 )
 
 // udpSearch is the OP_GLOBGETSOURCES(2) series to the server being asked,
@@ -46,10 +50,11 @@ func (s *Server) OnUDPPacket(from netip.AddrPort, p wire.Packet, now time.Time) 
 		if l.challenge == 0 || p.Challenge != l.challenge {
 			return out
 		}
-		l.challenge, l.Failures, l.isDead = 0, 0, false
+		l.challenge, l.Failures, l.isDead, l.isCryptPinging = 0, 0, false, false
 		l.Ping = uint32(now.Sub(l.PingedAt).Milliseconds())
 		l.Users, l.Files, l.SoftFiles, l.UDPFlags = p.Users, p.Files, p.SoftFiles, p.UDPFlags
 		l.TCPObfuscationPort, l.UDPObfuscationPort = p.TCPObfuscationPort, p.UDPObfuscationPort
+		l.udpKey, l.udpKeyIP = p.UDPKey, s.publicIP
 	case packet.GlobFoundSources:
 		for _, f := range p.Files {
 			if !s.isWanted(f.Hash) {
@@ -75,6 +80,10 @@ func (s *Server) OnUDPPacket(from netip.AddrPort, p wire.Packet, now time.Time) 
 // runStats pings one server every UDPSERVERSTATTIME, each at most once per
 // UDPSERVSTATREASKTIME. A server still owing the previous answer when its
 // turn comes again is dead to UDP.
+//
+// With our public IP known, a ping is first sent obfuscated; a server
+// that leaves it unanswered for 20 s gets a plain one at its next turn,
+// and only that one counts as a failure (ServerList.cpp:297-334).
 func (s *Server) runStats(now time.Time, out *Output) {
 	u := &s.udp
 	if !u.lastStat.IsZero() && now.Sub(u.lastStat) <= udpStatTime {
@@ -83,21 +92,83 @@ func (s *Server) runStats(now time.Time, out *Output) {
 	for range s.servers {
 		l := s.servers[u.statCursor%len(s.servers)]
 		u.statCursor++
-		if l.isDead || !l.isResolved() || (!l.PingedAt.IsZero() && now.Sub(l.PingedAt) < udpStatReaskTime) {
+		if l.isDead || !l.isResolved() || !s.isPingDue(l, now) {
 			continue
 		}
 		u.lastStat = now
-		if l.challenge != 0 {
+		if !l.isCryptPinging && l.challenge != 0 {
 			l.isDead = true
 			return
 		}
+		l.PingedAt = now
+		if !l.isCryptPinging && s.publicIP.IsValid() {
+			l.isCryptPinging = true
+			l.challenge = max(1, s.config.Random.Uint32())
+			padding := make([]byte, s.config.Random.IntN(maxPingPadding))
+			for i := range padding {
+				padding[i] = byte(s.config.Random.Uint32())
+			}
+			to := netip.AddrPortFrom(l.Endpoint.Addr(), l.Endpoint.Port()+cryptPingPortOffset)
+			out.SendUDP = append(out.SendUDP, Datagram{To: to, Packet: packet.ObfuscatedPing{Challenge: l.challenge, Padding: padding}})
+			return
+		}
+		l.isCryptPinging = false
 		u.pings++
 		l.challenge = challengeBase + uint32(u.pings)
-		l.PingedAt = now
 		l.Failures++
-		out.SendUDP = append(out.SendUDP, Datagram{To: toUDP(l.Endpoint), Packet: packet.GlobServStatReq{Challenge: l.challenge}})
+		out.SendUDP = append(out.SendUDP, s.buildDatagram(l, packet.GlobServStatReq{Challenge: l.challenge}))
 		return
 	}
+}
+
+// isPingDue: an unanswered obfuscated ping is followed by a plain one after
+// 20 s; a server whose UDP key belongs to an address we no longer have is
+// pinged again once UDPSERVSTATMINREASKTIME has passed
+// (ServerList.cpp:1017-1048), else after UDPSERVSTATREASKTIME.
+func (s *Server) isPingDue(l *listed, now time.Time) bool {
+	since := now.Sub(l.PingedAt)
+	switch {
+	case l.PingedAt.IsZero():
+		return true
+	case l.isCryptPinging:
+		return since >= cryptPingTimeout
+	case l.challenge == 0 && l.udpKey != 0 && s.publicIP.IsValid() && l.udpKeyIP != s.publicIP:
+		return since >= udpStatMinReaskTime
+	}
+	return since >= udpStatReaskTime
+}
+
+// buildDatagram addresses p to l, obfuscated when l has a UDP key for our
+// public IP and takes obfuscated UDP (ServerUDPSocket.cpp:376-384).
+func (s *Server) buildDatagram(l *listed, p wire.Packet) Datagram {
+	if key := s.udpKey(l); key != 0 {
+		return Datagram{To: netip.AddrPortFrom(l.Endpoint.Addr(), l.UDPObfuscationPort), Packet: p, Key: key}
+	}
+	return Datagram{To: toUDP(l.Endpoint), Packet: p}
+}
+
+// udpKey is aMule's GetServerKeyUDP when SupportsObfuscationUDP
+// (Server.cpp:303-310); 0 means plain.
+func (s *Server) udpKey(l *listed) uint32 {
+	if l.UDPFlags&packet.UDPFlagUDPObfuscation == 0 || l.UDPObfuscationPort == 0 || !s.publicIP.IsValid() || l.udpKeyIP != s.publicIP {
+		return 0
+	}
+	return l.udpKey
+}
+
+// UDPKeyByAddr is the key that opens an obfuscated datagram from a
+// server's UDP endpoint: the challenge while an obfuscated ping awaits its
+// answer, else the server's UDP key; 0 when none is expected
+// (ServerUDPSocket.cpp:63-90).
+func (s *Server) UDPKeyByAddr(from netip.AddrPort) uint32 {
+	l := s.serverByUDP(from)
+	switch {
+	case l == nil:
+		return 0
+	case l.isCryptPinging:
+		return l.challenge
+	}
+	return s.udpKey(l)
 }
 
 // runSearch sends at most one OP_GLOBGETSOURCES2, or OP_GLOBGETSOURCES to
@@ -142,7 +213,7 @@ func (s *Server) runSearch(now time.Time, out *Output) {
 		request = packet.GlobGetSources{Files: batch}
 	}
 	if u.asked > before {
-		out.SendUDP = append(out.SendUDP, Datagram{To: toUDP(u.server.Endpoint), Packet: request})
+		out.SendUDP = append(out.SendUDP, s.buildDatagram(u.server, request))
 		u.lastSent = now
 	}
 	if u.asked >= quota {
@@ -188,9 +259,13 @@ func (s *Server) nextSearchServer(now time.Time) *listed {
 	return nil
 }
 
+// serverByUDP matches a server's UDP port, its UDP obfuscation port, and
+// the port of obfuscated pings (ServerList.cpp:648-659).
 func (s *Server) serverByUDP(from netip.AddrPort) *listed {
 	for _, l := range s.servers {
-		if toUDP(l.Endpoint) == from {
+		port := l.Endpoint.Port()
+		if l.Endpoint.Addr() == from.Addr() && (from.Port() == port+4 || from.Port() == port+cryptPingPortOffset ||
+			(l.UDPObfuscationPort != 0 && from.Port() == l.UDPObfuscationPort)) {
 			return l
 		}
 	}

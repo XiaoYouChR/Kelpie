@@ -48,7 +48,11 @@ func (e *Engine) runServer(out server.Output) {
 		}
 	}
 	for _, d := range out.SendUDP {
-		e.sendDatagram(d.To, wire.BuildPacketDatagram(nil, d.Packet))
+		data := wire.BuildPacketDatagram(nil, d.Packet)
+		if d.Key != 0 {
+			data = obfuscation.BuildServerDatagram(data, d.Key, e.ports.Rand.Uint32())
+		}
+		e.sendDatagram(d.To, data)
 	}
 	for _, callback := range out.ConnectPeers {
 		if e.connByEndpoint(callback.Endpoint) == nil && len(e.conns) < maxConnections {
@@ -261,7 +265,11 @@ func (e *Engine) runUDPReader() {
 // onDatagram routes eD2k UDP: server packets to the server, peer reasks to
 // the upload queue and the downloads.
 func (e *Engine) onDatagram(from netip.AddrPort, data []byte) {
-	if packet, ok := obfuscation.ParsePeerDatagram(data, e.self.UserHash, from.Addr()); ok {
+	if key := e.server.UDPKeyByAddr(from); key != 0 {
+		if packet, ok := obfuscation.ParseServerDatagram(data, key); ok {
+			data = packet
+		}
+	} else if packet, ok := obfuscation.ParsePeerDatagram(data, e.self.UserHash, from.Addr()); ok {
 		data = packet
 	}
 	frame, err := wire.ParseDatagram(data)
