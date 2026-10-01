@@ -63,8 +63,8 @@ type State struct {
 
 type Options struct {
 	File link.File
-	// Path is the file the Transfer writes; State is dropped when it belongs
-	// to another path.
+	// Path is the file the Transfer writes. The engine passes only State
+	// saved for this path.
 	Path   string
 	State  *State
 	Mode   Mode
@@ -135,7 +135,7 @@ func Build(options Options, now time.Time) *Transfer {
 		bannedEndpoints:   map[netip.AddrPort]time.Time{},
 		aich:              buildAICHState(options.File.AICHHash, options.Random),
 	}
-	if state := options.State; state != nil && state.File == options.Path && state.Size == options.File.Size {
+	if state := options.State; state != nil && state.Size == options.File.Size {
 		picker, err := piece.BuildPicker[uint64](state.Size, state.VerifiedParts, state.WrittenBlocks, options.Random)
 		if err == nil {
 			t.picker = picker

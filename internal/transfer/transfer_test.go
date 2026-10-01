@@ -199,11 +199,6 @@ func TestResumeFromPersistedState(t *testing.T) {
 	if len(again.WrittenBlocks) != 5 || !again.VerifiedParts[0] || again.Created != state.Created {
 		t.Fatalf("state after resume = %+v", again)
 	}
-
-	elsewhere := buildHarness(t, data, transfer.Options{File: file, State: &state, Path: "/other/file.bin"})
-	if got := elsewhere.transfer.Progress(start).Received; got != 0 {
-		t.Fatalf("state for another path: received = %d, want 0", got)
-	}
 }
 
 func TestResumeHashesWrittenParts(t *testing.T) {
