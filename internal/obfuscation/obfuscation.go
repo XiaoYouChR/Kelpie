@@ -7,7 +7,6 @@ package obfuscation
 
 import (
 	"bufio"
-	"crypto/md5"
 	"crypto/rc4"
 	"encoding/binary"
 	"errors"
@@ -46,7 +45,7 @@ var dhPrime = new(big.Int).SetBytes([]byte{
 	0x8F, 0x05, 0x15, 0x0F, 0x54, 0x8B, 0x5F, 0x43, 0x6A, 0xF7, 0x0D, 0xF3,
 })
 
-var ErrHandshake = errors.New("obfuscation: bad handshake")
+var errHandshake = errors.New("obfuscation: bad handshake")
 
 // Conn encrypts what it writes and decrypts what it reads. Read and Write
 // may run on different goroutines.
@@ -78,7 +77,7 @@ func (c *Conn) readAnswer() error {
 	}
 	c.in.XORKeyStream(head[:], head[:])
 	if binary.LittleEndian.Uint32(head[:]) != magicSync || head[4] != methodObfuscation {
-		return ErrHandshake
+		return errHandshake
 	}
 	return c.discard(int(head[5]))
 }
@@ -92,13 +91,10 @@ func (c *Conn) discard(n int) error {
 	return nil
 }
 
-// buildCipher keys RC4 with the MD5 of the key parts in order.
+// buildCipher is a datagram cipher that has thrown away the start of its
+// keystream, as eMule's streams do.
 func buildCipher(parts ...[]byte) *rc4.Cipher {
-	h := md5.New()
-	for _, part := range parts {
-		h.Write(part)
-	}
-	c, _ := rc4.NewCipher(h.Sum(nil))
+	c := buildDatagramCipher(parts...)
 	discard := make([]byte, rc4Discard)
 	c.XORKeyStream(discard, discard)
 	return c
@@ -181,7 +177,7 @@ func OpenServer(conn net.Conn, secret [16]byte, marker byte) (*Conn, error) {
 	}
 	c.in.XORKeyStream(head[:], head[:])
 	if binary.LittleEndian.Uint32(head[:]) != magicSync {
-		return nil, ErrHandshake
+		return nil, errHandshake
 	}
 	if err := c.discard(int(head[6])); err != nil {
 		return nil, err
@@ -227,7 +223,7 @@ func OpenIncoming(conn net.Conn, self wire.Hash) (net.Conn, error) {
 	// request[4] lists the methods the peer supports, request[5] its
 	// preferred one; obfuscation is the only method and always supported.
 	if binary.LittleEndian.Uint32(request) != magicSync {
-		return nil, ErrHandshake
+		return nil, errHandshake
 	}
 	if err := c.discard(int(request[6])); err != nil {
 		return nil, err

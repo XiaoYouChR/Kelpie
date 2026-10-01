@@ -44,14 +44,9 @@ func BuildKadDatagram(d KadDatagram, nodeID []byte, random uint32) []byte {
 	for matchPlainDatagram(marker) {
 		marker += 0x04
 	}
-	cipher := buildDatagramCipher(key, keyPart)
-	body := binary.LittleEndian.AppendUint32(nil, magicUDPSync)
-	body = append(body, 0)
-	body = binary.LittleEndian.AppendUint32(body, d.ReceiverKey)
-	body = binary.LittleEndian.AppendUint32(body, d.SenderKey)
-	body = append(body, d.Packet...)
-	cipher.XORKeyStream(body, body)
-	return append(append([]byte{marker}, keyPart...), body...)
+	packet := binary.LittleEndian.AppendUint32(nil, d.ReceiverKey)
+	packet = binary.LittleEndian.AppendUint32(packet, d.SenderKey)
+	return buildDatagram(marker, keyPart, buildDatagramCipher(key, keyPart), magicUDPSync, append(packet, d.Packet...))
 }
 
 // ParseKadDatagram decrypts a Kad datagram addressed to the node nodeID
@@ -61,21 +56,14 @@ func ParseKadDatagram(data, nodeID []byte, receiverKey uint32) (KadDatagram, boo
 	if len(data) <= kadHeader || matchPlainDatagram(data[0]) {
 		return KadDatagram{}, false
 	}
-	keyPart := data[1:3]
 	for _, key := range [][]byte{nodeID, binary.LittleEndian.AppendUint32(nil, receiverKey)} {
-		cipher := buildDatagramCipher(key, keyPart)
-		var head [5]byte
-		cipher.XORKeyStream(head[:], data[3:8])
-		if binary.LittleEndian.Uint32(head[:]) != magicUDPSync {
+		rest, ok := parseDatagram(data, buildDatagramCipher(key, data[1:3]), magicUDPSync, 0xFF)
+		if !ok {
 			continue
 		}
-		rest := append([]byte(nil), data[8:]...)
-		padding := int(head[4])
-		if len(rest) <= padding+8 {
+		if len(rest) <= 8 {
 			return KadDatagram{}, false
 		}
-		cipher.XORKeyStream(rest, rest)
-		rest = rest[padding:]
 		return KadDatagram{
 			ReceiverKey: binary.LittleEndian.Uint32(rest),
 			SenderKey:   binary.LittleEndian.Uint32(rest[4:]),

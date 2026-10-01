@@ -120,7 +120,7 @@ func TestIncomingPlainPassesThrough(t *testing.T) {
 func TestWrongUserHashFails(t *testing.T) {
 	a, b := buildPair(t)
 	go OpenOutgoing(a, wire.Hash{1}, [4]byte{1, 2, 3, 4})
-	if _, err := OpenIncoming(b, user); err != ErrHandshake {
+	if _, err := OpenIncoming(b, user); err != errHandshake {
 		t.Fatalf("err %v", err)
 	}
 }
@@ -153,7 +153,7 @@ func TestOutgoingRejectsBadAnswer(t *testing.T) {
 		io.ReadFull(b, make([]byte, 12))
 		b.Write([]byte{1, 2, 3, 4, 5, 6})
 	}()
-	if _, err := OpenOutgoing(a, user, [4]byte{1, 2, 3, 4}); err != ErrHandshake {
+	if _, err := OpenOutgoing(a, user, [4]byte{1, 2, 3, 4}); err != errHandshake {
 		t.Fatalf("err %v", err)
 	}
 }
@@ -277,7 +277,7 @@ func TestServerHandshakeRejectsBadMagic(t *testing.T) {
 		serverSide.Write(make([]byte, 96+7))
 	}()
 	clientSide.SetDeadline(time.Now().Add(5 * time.Second))
-	if _, err := OpenServer(clientSide, [16]byte{1}, 0x55); err != ErrHandshake {
-		t.Fatalf("err = %v, want ErrHandshake", err)
+	if _, err := OpenServer(clientSide, [16]byte{1}, 0x55); err != errHandshake {
+		t.Fatalf("err = %v, want errHandshake", err)
 	}
 }
