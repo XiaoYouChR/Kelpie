@@ -106,7 +106,7 @@ func Parse(protocol, opcode byte, body []byte) (wire.Packet, error) {
 	case opPong:
 		p = Pong{UDPPort: r.Uint16()}
 	case opFirewalledUDP:
-		p = FirewalledUDP{ErrorCode: r.Uint8(), TCPPort: r.Uint16()}
+		p = FirewalledUDP{ErrorCode: r.Uint8(), Port: r.Uint16()}
 	default:
 		return wire.Unknown{Proto: protocol, Op: opcode, Body: body}, nil
 	}
@@ -474,15 +474,18 @@ func (FirewalledRes) Protocol() byte          { return wire.ProtocolKad }
 func (FirewalledRes) Opcode() byte            { return opFirewalledRes }
 func (p FirewalledRes) Build(b []byte) []byte { return buildAddr(b, p.Addr) }
 
+// FirewalledUDP is the answer to a UDP firewall test: Port is the UDP port
+// it was sent to; a non-zero ErrorCode says the tester knew us already, so
+// the result proves nothing.
 type FirewalledUDP struct {
 	ErrorCode byte
-	TCPPort   uint16
+	Port      uint16
 }
 
 func (FirewalledUDP) Protocol() byte { return wire.ProtocolKad }
 func (FirewalledUDP) Opcode() byte   { return opFirewalledUDP }
 func (p FirewalledUDP) Build(b []byte) []byte {
-	return binary.LittleEndian.AppendUint16(append(b, p.ErrorCode), p.TCPPort)
+	return binary.LittleEndian.AppendUint16(append(b, p.ErrorCode), p.Port)
 }
 
 type Ping struct{}

@@ -72,7 +72,7 @@ func TestRoundTrip(t *testing.T) {
 		LegacyFirewalledReq{TCPPort: 4662},
 		FirewalledReq{TCPPort: 4661, ID: idA, Options: 3},
 		FirewalledRes{Addr: netip.MustParseAddr("127.0.0.1")},
-		FirewalledUDP{ErrorCode: 1, TCPPort: 4662},
+		FirewalledUDP{ErrorCode: 1, Port: 4662},
 		Ping{},
 		Pong{UDPPort: 4672},
 	}

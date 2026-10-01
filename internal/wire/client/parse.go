@@ -182,6 +182,10 @@ func parseEMule(r *wire.Reader, opcode byte) wire.Packet {
 	case opIPv6Changed:
 		// emule-qt accepts it under either protocol byte; so do we.
 		return IPv6Changed{Addr: r.IPv6()}
+	case opFirewallCheckUDPReq:
+		return FirewallCheckUDPReq{InternPort: r.Uint16(), ExternPort: r.Uint16(), Key: r.Uint32()}
+	case opKadFirewallAck:
+		return KadFirewallAck{}
 	}
 	return nil
 }

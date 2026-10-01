@@ -125,6 +125,7 @@ func (s *Session) setHello(h client.Hello) {
 		UDPPort:                    h.UDPPort,
 		KadPort:                    h.KadPort,
 		UDPVersion:                 h.Misc1.UDPVersion,
+		KadVersion:                 h.Misc2.KadVersion,
 		IPv6:                       h.IPv6,
 		EmuleVersion:               h.EmuleVersion,
 		IsEmule:                    h.EmuleVersion != 0,

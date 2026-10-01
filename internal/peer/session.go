@@ -53,6 +53,7 @@ type Capabilities struct {
 	UDPPort      uint16
 	KadPort      uint16
 	UDPVersion   byte
+	KadVersion   byte
 	IPv6         netip.Addr
 	EmuleVersion uint32
 	// IsEmule: the peer speaks the eMule extended protocol (CT_EMULE_VERSION

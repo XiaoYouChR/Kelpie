@@ -111,6 +111,15 @@ func (t *table) add(n Node, isVerified bool, now time.Time) *contact {
 	return c
 }
 
+func (t *table) hasIP(ip netip.Addr) bool {
+	for addr := range t.byAddr {
+		if addr.Addr() == ip {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *table) addToBucket(c *contact, isVerified bool) {
 	index := bucketIndex(t.self, c.ID)
 	b := &t.buckets[index]

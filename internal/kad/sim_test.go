@@ -24,9 +24,10 @@ type simDatagram struct {
 }
 
 // sim is a lossless in-process Kad network: every datagram goes through
-// its wire form and arrives before the clock moves again. A
-// firewall request stands for the TCP check the asked node's engine runs: it
-// always reaches the asker, which hears an OP_KAD_FWTCPCHECK_ACK.
+// its wire form and arrives before the clock moves again. The sim also
+// plays each node's engine: a TCP connection always succeeds, so a
+// FirewallCheck makes the asker hear an OP_KAD_FWTCPCHECK_ACK and a
+// UDPCheck reaches the tester as its OP_FWCHECKUDPREQ.
 type sim struct {
 	t      *testing.T
 	now    time.Time
@@ -80,6 +81,27 @@ func (s *sim) record(n *simNode, out output) {
 	for _, d := range out.datagrams {
 		s.queue = append(s.queue, simDatagram{from: n.addr, to: d.to, data: wire.BuildPacketDatagram(nil, d.packet)})
 	}
+	for _, r := range out.requests {
+		switch r := r.(type) {
+		case FirewallCheck:
+			if asker := s.byAddr[netip.AddrPortFrom(r.Addr.Addr(), r.KadPort)]; asker != nil {
+				asker.c.onFirewallAck(n.addr.Addr())
+			}
+		case UDPCheck:
+			if tester := s.nodeByIP(r.Addr.Addr()); tester != nil {
+				s.record(tester, tester.c.onMessage(FirewallUDP{IP: n.addr.Addr(), InternPort: r.InternPort, ExternPort: r.ExternPort, Key: r.Key}))
+			}
+		}
+	}
+}
+
+func (s *sim) nodeByIP(ip netip.Addr) *simNode {
+	for _, n := range s.nodes {
+		if n.addr.Addr() == ip {
+			return n
+		}
+	}
+	return nil
 }
 
 func (s *sim) drain() {
@@ -93,10 +115,6 @@ func (s *sim) drain() {
 		p, ok := parsePacket(d.data)
 		if !ok {
 			s.t.Fatalf("undecodable datagram %x", d.data)
-		}
-		switch p.(type) {
-		case kadwire.FirewalledReq, kadwire.LegacyFirewalledReq:
-			s.byAddr[d.from].c.onFirewallAck(d.to.Addr())
 		}
 		s.record(to, to.c.onPacket(d.from, p, s.now))
 	}

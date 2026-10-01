@@ -65,7 +65,9 @@ type Kad struct {
 	sends     chan Datagram
 	callbacks chan Callback
 	acks      chan netip.Addr
+	inbox     chan any
 	found     chan SourcesFound
+	requests  chan Request
 	received  chan Datagram
 	statuses  chan Status
 	state     atomic.Pointer[store.Kad]
@@ -86,7 +88,9 @@ func BuildKad(cfg Config) *Kad {
 		sends:     make(chan Datagram, queueSize),
 		callbacks: make(chan Callback, queueSize),
 		acks:      make(chan netip.Addr, queueSize),
+		inbox:     make(chan any, queueSize),
 		found:     make(chan SourcesFound, queueSize),
+		requests:  make(chan Request, queueSize),
 		received:  make(chan Datagram, queueSize),
 		statuses:  make(chan Status, 1),
 	}
@@ -136,7 +140,25 @@ func (k *Kad) SendFirewallAck(from netip.Addr) {
 	}
 }
 
+// RequestFirewallAck asks Kad to tell a node older than Kad version 7,
+// at its Kad endpoint to, that we reached its TCP port.
+func (k *Kad) RequestFirewallAck(to netip.AddrPort) { k.post(firewallAck{to}) }
+
+// RequestFirewallUDP asks Kad to answer a client's OP_FWCHECKUDPREQ.
+func (k *Kad) RequestFirewallUDP(r FirewallUDP) { k.post(r) }
+
+func (k *Kad) SendUDPCheckEnded(e UDPCheckEnded) { k.post(e) }
+
+func (k *Kad) post(m any) {
+	select {
+	case k.inbox <- m:
+	default:
+	}
+}
+
 func (k *Kad) Found() <-chan SourcesFound { return k.found }
+
+func (k *Kad) Requests() <-chan Request { return k.requests }
 
 func (k *Kad) Received() <-chan Datagram { return k.received }
 
@@ -209,6 +231,8 @@ func (k *Kad) Run(ctx context.Context) error {
 			out = c.requestCallback(cb)
 		case from := <-k.acks:
 			c.onFirewallAck(from)
+		case m := <-k.inbox:
+			out = c.onMessage(m)
 		}
 		for _, d := range out.datagrams {
 			conn.WriteTo(wire.BuildPacketDatagram(nil, d.packet), d.to)
@@ -216,6 +240,12 @@ func (k *Kad) Run(ctx context.Context) error {
 		for _, f := range out.found {
 			select {
 			case k.found <- f:
+			default:
+			}
+		}
+		for _, r := range out.requests {
+			select {
+			case k.requests <- r:
 			default:
 			}
 		}

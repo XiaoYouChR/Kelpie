@@ -168,3 +168,11 @@ func (callbackReq) Opcode() byte   { return opCallbackReq }
 func (p callbackReq) Build(b []byte) []byte {
 	return binary.LittleEndian.AppendUint16(buildID(buildID(b, p.BuddyID), p.Hash), p.TCPPort)
 }
+
+// firewalledAck is KADEMLIA_FIREWALLED_ACK_RES, sent to a node older than
+// Kad version 7 whose TCP port we reached (ClientList.cpp:600).
+type firewalledAck struct{}
+
+func (firewalledAck) Protocol() byte        { return wire.ProtocolKad }
+func (firewalledAck) Opcode() byte          { return opFirewalledAck }
+func (firewalledAck) Build(b []byte) []byte { return b }

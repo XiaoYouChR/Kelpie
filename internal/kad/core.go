@@ -44,6 +44,7 @@ type datagram struct {
 type output struct {
 	datagrams []datagram
 	found     []SourcesFound
+	requests  []Request
 }
 
 type find struct {
@@ -108,11 +109,14 @@ type core struct {
 	lookups          []*lookup
 	index            index
 	firewall         firewall
-	seeds            []netip.AddrPort
-	isConnected      bool
-	canPublish       bool
-	finds            []*find
-	publishes        []*publish
+	udp              udpCheck
+	// publicIP is our address as the last KADEMLIA_FIREWALLED_RES said.
+	publicIP    netip.Addr
+	seeds       []netip.AddrPort
+	isConnected bool
+	canPublish  bool
+	finds       []*find
+	publishes   []*publish
 
 	nextBootstrap    time.Time
 	nextSelfLookup   time.Time
@@ -130,6 +134,7 @@ func buildCore(cfg coreConfig, now time.Time) *core {
 		table:    buildTable(cfg.ID, now),
 		index:    index{files: map[wire.Hash]map[wire.Hash]indexed{}},
 		firewall: firewall{isLastFirewalled: true, asked: map[netip.Addr]bool{}},
+		udp:      buildUDPCheck(),
 	}
 }
 
@@ -214,6 +219,23 @@ func (c *core) onFirewallAck(from netip.Addr) {
 	}
 }
 
+// onMessage reacts to what the engine sends Kad besides wanted files.
+func (c *core) onMessage(m any) output {
+	switch m := m.(type) {
+	case firewallAck:
+		if m.to.Addr().Is4() {
+			c.send(m.to, firewalledAck{})
+		}
+	case FirewallUDP:
+		c.onFirewallUDP(m)
+	case UDPCheckEnded:
+		c.onUDPCheckEnded(m)
+	}
+	out := c.out
+	c.out = output{}
+	return out
+}
+
 func (c *core) status() Status {
 	return Status{Nodes: c.table.verifiedCount(), IsFirewalled: c.firewall.isFirewalled()}
 }
@@ -271,19 +293,39 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 		}
 	case kadwire.PublishRes:
 		c.onPublishRes(from, p)
+	case kadwire.FirewalledReq:
+		c.onFirewallCheck(from, p.TCPPort, p.ID, p.Options)
+	case kadwire.LegacyFirewalledReq:
+		c.onFirewallCheck(from, p.TCPPort, wire.Hash{}, 0)
 	case kadwire.FirewalledRes:
 		if c.rpcs.match(from, rpcFirewall, wire.Hash{}) != nil {
 			c.firewall.responses++
+			c.publicIP = p.Addr
 		}
 	case kadwire.Ping:
 		c.send(from, kadwire.Pong{UDPPort: from.Port()})
+	case kadwire.Pong:
+		c.onPong(from, p)
+	case kadwire.FirewalledUDP:
+		c.onFirewalledUDP(from, p)
 	case wire.Unknown:
 		if p.Op == opFirewalledAck && len(p.Body) == 0 {
 			c.onFirewallAck(from.Addr())
 		}
 	}
-	// FirewalledReq and LegacyFirewalledReq go unanswered: eMule answers
-	// only after it starts the TCP check, which is the engine's to run.
+}
+
+// onFirewallCheck is ProcessFirewalledRequest and
+// ProcessFirewalled2Request (KademliaUDPListener.cpp:1363-1430): we tell
+// the node its address at once and have the engine connect to its TCP port.
+func (c *core) onFirewallCheck(from netip.AddrPort, tcpPort uint16, user wire.Hash, options byte) {
+	if from.Addr() == c.publicIP && tcpPort == c.tcpPort {
+		return
+	}
+	c.send(from, kadwire.FirewalledRes{Addr: from.Addr()})
+	c.out.requests = append(c.out.requests, FirewallCheck{
+		Addr: netip.AddrPortFrom(from.Addr(), tcpPort), KadPort: from.Port(), UserHash: user, CryptOptions: options,
+	})
 }
 
 // buildContacts answers a routing query with verified contacts only, so we
@@ -386,6 +428,7 @@ func (c *core) runMaintenance(now time.Time) {
 	}
 	c.runRandomLookups(now)
 	c.runFirewallCheck(now)
+	c.runUDPCheck(now)
 }
 
 // runRandomLookups is CKademlia::Process's big timer: every
@@ -425,6 +468,7 @@ func (c *core) runFirewallCheck(now time.Time) {
 	f := &c.firewall
 	if !now.Before(f.next) {
 		f.start(now)
+		c.recheckUDP(now)
 	}
 	if f.responses+c.rpcs.count(rpcFirewall) >= firewallChecks {
 		return

@@ -23,6 +23,9 @@ const (
 	// randomLookup is eMule's NODE search: it asks one contact at a time
 	// and ends with the first answer, whose contacts fill the table.
 	randomLookup
+	// udpCheckLookup is eMule's NODEFWCHECKUDP: the contacts it hears of
+	// are UDP test clients, kept out of the routing table.
+	udpCheckLookup
 	sourceSearch
 	sourcePublish
 )
@@ -214,6 +217,13 @@ func (c *core) onRes(from netip.AddrPort, res kadwire.Res, now time.Time) {
 		return
 	}
 	c.table.add(Node{ID: r.node.ID, Addr: from, TCPPort: r.node.TCPPort, Version: r.node.Version}, true, now)
+	if l.kind == udpCheckLookup {
+		if !l.isDone {
+			l.lastResponse = now
+			c.addUDPCheckClients(res.Contacts)
+		}
+		return
+	}
 	for _, ct := range res.Contacts {
 		c.table.add(Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}, false, now)
 	}
@@ -308,7 +318,9 @@ func (c *core) sendAction(l *lookup, cand *candidate, now time.Time) {
 }
 
 // buildSourceTags describes us as an open source: CSearch::StorePacket for
-// STOREFILE when not firewalled. The storing node adds our IP.
+// STOREFILE when not firewalled (Search.cpp:640-650). The storing node adds
+// our IP, and our UDP port as it sees it unless a UDP test showed that our
+// own port is the one to use.
 func (c *core) buildSourceTags(size uint64) []wire.Tag {
 	sourceType := uint64(1)
 	if size > oldMaxFileSize {
@@ -318,12 +330,14 @@ func (c *core) buildSourceTags(size uint64) []wire.Tag {
 	if size > 0xFFFFFFFF {
 		sizeTag.Type = wire.TagUint64
 	}
-	return []wire.Tag{
+	tags := []wire.Tag{
 		{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: sourceType},
 		{Type: wire.TagUint16, ID: kadwire.TagSourcePort, Uint: uint64(c.tcpPort)},
-		{Type: wire.TagUint16, ID: kadwire.TagSourceUPort, Uint: uint64(c.udpPort)},
-		sizeTag,
 	}
+	if !c.udp.useExternPort {
+		tags = append(tags, wire.Tag{Type: wire.TagUint16, ID: kadwire.TagSourceUPort, Uint: uint64(c.udpPort)})
+	}
+	return append(tags, sizeTag)
 }
 
 // oldMaxFileSize is eMule's OLD_MAX_EMULE_FILE_SIZE: larger files are

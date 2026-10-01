@@ -25,11 +25,6 @@ import (
 	serverwire "github.com/XiaoYouChR/Kelpie/internal/wire/server"
 )
 
-// opKadFirewallAck is OP_KAD_FWTCPCHECK_ACK, which a Kad node checking our
-// TCP port sends over the connection it opened; wire/client leaves it
-// undecoded.
-const opKadFirewallAck byte = 0xA8
-
 // conn is one TCP connection: to a peer, or to the server.
 type conn struct {
 	id           uint64
@@ -345,6 +340,7 @@ func (e *Engine) closeConn(c *conn, reason string) {
 		return
 	}
 	e.queue.OnConnectionGone(c.id)
+	e.onKadConnClosed(c)
 	for _, h := range c.files {
 		r := e.runByHash[h]
 		if r == nil || r.transfer == nil {
@@ -393,10 +389,7 @@ func (e *Engine) onPacket(id uint64, p wire.Packet) {
 		e.runServer(e.server.OnPacket(c.remote, p, e.now()))
 		return
 	}
-	if u, ok := p.(wire.Unknown); ok && u.Proto == wire.ProtocolEMule && u.Op == opKadFirewallAck {
-		if e.kad != nil {
-			e.kad.SendFirewallAck(c.remote.Addr())
-		}
+	if e.onKadPacket(c, p) {
 		return
 	}
 	e.runSession(c, c.session.OnPacket(p, e.shareByHash, e.now()))
@@ -501,6 +494,9 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 		}
 	}
 	e.startFirstFile(c)
+	if !c.isClosed {
+		e.onKadHandshake(c)
+	}
 	if !c.isClosed {
 		e.runQueueActions(e.queue.OnConnected(c.id, toUploadPeer(c), e.now()))
 	}

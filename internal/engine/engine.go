@@ -131,6 +131,7 @@ type Engine struct {
 	sourceUsers     map[wire.Hash]map[wire.Hash]bool
 	sourceLowIDs    map[lowIDKey]map[wire.Hash]bool
 	uploadEndpoints map[uploadKey]uploadTarget
+	kadChecks       map[uint64]kadCheck
 	recentConnects  []time.Time
 	budgetCursor    int
 	lastSecond      time.Time
@@ -205,6 +206,7 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		sourceUsers:     map[wire.Hash]map[wire.Hash]bool{},
 		sourceLowIDs:    map[lowIDKey]map[wire.Hash]bool{},
 		uploadEndpoints: map[uploadKey]uploadTarget{},
+		kadChecks:       map[uint64]kadCheck{},
 	}
 	if config.PacketLog != nil {
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)
@@ -497,8 +499,9 @@ func (e *Engine) run() {
 	var found <-chan kad.SourcesFound
 	var received <-chan kad.Datagram
 	var statuses <-chan kad.Status
+	var requests <-chan kad.Request
 	if e.kad != nil {
-		found, received, statuses = e.kad.Found(), e.kad.Received(), e.kad.Statuses()
+		found, received, statuses, requests = e.kad.Found(), e.kad.Received(), e.kad.Statuses(), e.kad.Requests()
 	}
 	for {
 		select {
@@ -516,6 +519,8 @@ func (e *Engine) run() {
 			e.onDatagram(d.Addr, d.Data)
 		case s := <-statuses:
 			e.kadStatus = s
+		case r := <-requests:
+			e.onKadRequest(r)
 		}
 		e.refreshRuns()
 		e.refreshNetwork()

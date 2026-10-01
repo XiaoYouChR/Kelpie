@@ -28,6 +28,7 @@ type harness struct {
 	answering map[netip.AddrPort]Node
 	sent      []datagram
 	found     []SourcesFound
+	requests  []Request
 }
 
 func buildHarness(t *testing.T) *harness {
@@ -38,6 +39,7 @@ func buildHarness(t *testing.T) *harness {
 func (h *harness) record(out output) {
 	h.sent = append(h.sent, out.datagrams...)
 	h.found = append(h.found, out.found...)
+	h.requests = append(h.requests, out.requests...)
 	for _, d := range out.datagrams {
 		peer, ok := h.answering[d.to]
 		if !ok {
@@ -64,7 +66,7 @@ func (h *harness) receive(from netip.AddrPort, p wire.Packet) {
 }
 
 // clearSent forgets what was sent so far.
-func (h *harness) clearSent() { h.sent, h.found = nil, nil }
+func (h *harness) clearSent() { h.sent, h.found, h.requests = nil, nil, nil }
 
 type sent[T wire.Packet] struct {
 	to     netip.AddrPort
@@ -122,12 +124,17 @@ func TestBootstrapThenSelfLookup(t *testing.T) {
 	}
 	h.clearSent()
 	h.tick(time.Second)
-	reqs := packetsOf[kadwire.Req](h)
+	var reqs []sent[kadwire.Req]
+	for _, r := range packetsOf[kadwire.Req](h) {
+		if r.packet.Target == selfID {
+			reqs = append(reqs, r)
+		}
+	}
 	if len(reqs) != 2 {
 		t.Fatalf("self lookup sent %d requests, want one to each known contact", len(reqs))
 	}
 	for _, r := range reqs {
-		if r.packet.Target != selfID || r.packet.SearchType != kadwire.FindNode {
+		if r.packet.SearchType != kadwire.FindNode {
 			t.Fatalf("self lookup request %+v", r.packet)
 		}
 	}
@@ -407,11 +414,14 @@ func TestFirewallCheckGatesPublishing(t *testing.T) {
 	if p.FileID != fileHash || p.Source.ID != userHash {
 		t.Fatalf("publish %+v", p)
 	}
-	wantTags := map[byte]uint64{kadwire.TagSourceType: 1, kadwire.TagSourcePort: 4662, kadwire.TagSourceUPort: 4672, kadwire.TagFileSize: 5000}
+	wantTags := map[byte]uint64{kadwire.TagSourceType: 1, kadwire.TagSourcePort: 4662, kadwire.TagFileSize: 5000}
 	for id, v := range wantTags {
 		if tag, ok := p.Source.TagByID(id); !ok || tag.Uint != v {
 			t.Fatalf("publish tag %#x = %+v, want %d", id, tag, v)
 		}
+	}
+	if _, ok := p.Source.TagByID(kadwire.TagSourceUPort); ok {
+		t.Fatal("published our UDP port before a UDP test chose it over the NAT's")
 	}
 	l := h.c.lookupByTarget(sourcePublish, fileHash)
 	for _, pub := range pubs {
