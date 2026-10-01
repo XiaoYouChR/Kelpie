@@ -41,7 +41,7 @@ type link struct {
 	sent []wire.Packet
 }
 
-func buildConfig(t *testing.T, last byte) Config {
+func buildConfig(t testing.TB, last byte) Config {
 	t.Helper()
 	self, err := identity.CreateSelf()
 	if err != nil {
@@ -885,5 +885,21 @@ func TestHelloNamesBuddyAndKadVersion(t *testing.T) {
 	b.OnPacket(out.Send[0], nil, start)
 	if b.Capabilities().KadVersion != 7 {
 		t.Fatalf("kad version %d", b.Capabilities().KadVersion)
+	}
+}
+
+// eMule packs a block only when it shrinks (UploadDiskIOThread.cpp:581-583),
+// so a packed size beyond the block is a peer making us buffer without end.
+func TestCompressedPartLargerThanBlockCloses(t *testing.T) {
+	l := buildLink(t)
+	size := piece.BlockSize
+	file, _ := addShare(l.b, 1, size, true)
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
+	l.run(l.a, l.a.s.Start(file))
+	l.run(l.b, l.b.s.StartUpload())
+	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: size}}))
+	l.run(l.b, Output{Send: []wire.Packet{client.CompressedPart{Hash: file, Start: 0, PackedSize: 1 << 30, Data: make([]byte, 10)}}})
+	if l.a.closed != CloseProtocol {
+		t.Fatalf("closed = %q, want protocol", l.a.closed)
 	}
 }

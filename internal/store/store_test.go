@@ -12,7 +12,7 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
-func mustHash(t *testing.T, text string) wire.Hash {
+func mustHash(t testing.TB, text string) wire.Hash {
 	t.Helper()
 	hash, err := wire.ParseHash(text)
 	if err != nil {
@@ -98,8 +98,7 @@ func TestLoadGoed2k(t *testing.T) {
 	}
 }
 
-func TestSaveLoadRoundTrip(t *testing.T) {
-	folder := filepath.Join(t.TempDir(), "kelpie")
+func buildSampleState(t testing.TB) State {
 	state := buildState()
 	state.Identity = Identity{UserHash: mustHash(t, "FD3887E9230E53F744E5CA8FAF1A6F31"), PrivateKey: []byte{0x30, 0x82, 0x01}}
 	state.Kad = Kad{
@@ -127,7 +126,12 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		{Endpoint: netip.MustParseAddrPort("45.82.80.155:5687"), Failures: 2, Ping: 80, Users: 5000, Files: 9000, SoftFiles: 10000, UDPFlags: 0x7FB, TCPObfuscationPort: 5688, UDPObfuscationPort: 5689, PingedAt: lastSeen},
 		{Host: "dyn.example", Port: 4661, Failures: 1},
 	}
+	return state
+}
 
+func TestSaveLoadRoundTrip(t *testing.T) {
+	folder := filepath.Join(t.TempDir(), "kelpie")
+	state := buildSampleState(t)
 	if err := Save(folder, state); err != nil {
 		t.Fatal(err)
 	}

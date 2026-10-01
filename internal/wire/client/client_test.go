@@ -52,7 +52,7 @@ func roundTrip(t *testing.T, p wire.Packet, parse func(byte, byte, []byte) (wire
 	}
 }
 
-func TestTCPRoundTrip(t *testing.T) {
+func samplePackets() []wire.Packet {
 	hello := Hello{
 		UserHash:     userHash,
 		ClientID:     0x04030201,
@@ -74,7 +74,7 @@ func TestTCPRoundTrip(t *testing.T) {
 	}
 	answer := HelloAnswer(hello)
 	answer.YourIP = netip.MustParseAddr("2a01:4f8::2")
-	packets := []wire.Packet{
+	return []wire.Packet{
 		hello,
 		answer,
 		Hello{UserHash: userHash, ClientID: 7},
@@ -155,13 +155,16 @@ func TestTCPRoundTrip(t *testing.T) {
 		BuddyPing{},
 		BuddyPong{},
 	}
-	for _, p := range packets {
+}
+
+func TestTCPRoundTrip(t *testing.T) {
+	for _, p := range samplePackets() {
 		roundTrip(t, p, Parse)
 	}
 }
 
-func TestUDPRoundTrip(t *testing.T) {
-	packets := []wire.Packet{
+func sampleUDPPackets() []wire.Packet {
+	return []wire.Packet{
 		ReaskFilePing{Hash: fileHash},
 		ReaskFilePing{Hash: fileHash, HasCompleteSources: true, CompleteSources: 4},
 		ReaskFilePing{Hash: fileHash, HasParts: true, Parts: parts(), HasCompleteSources: true, CompleteSources: 4},
@@ -173,7 +176,10 @@ func TestUDPRoundTrip(t *testing.T) {
 		ReaskCallbackUDP{BuddyID: userHash, Ping: ReaskFilePing{Hash: fileHash, HasCompleteSources: true, CompleteSources: 4}},
 		DirectCallbackReq{TCPPort: 4662, UserHash: userHash, ConnectOptions: 0x0B},
 	}
-	for _, p := range packets {
+}
+
+func TestUDPRoundTrip(t *testing.T) {
+	for _, p := range sampleUDPPackets() {
 		raw := wire.BuildPacketDatagram(nil, p)
 		frame, err := wire.ParseDatagram(raw)
 		if err != nil {

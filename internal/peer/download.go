@@ -459,10 +459,9 @@ func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint3
 	s.down.lastData = now
 	f := d.inFlight[i]
 	size := f.block.End - f.block.Begin
-	// zlib's compressBound: no sender packs a block larger than this, so
-	// the stream we hold stays within it.
-	maxPacked := size + size>>12 + size>>14 + size>>25 + 13
-	if int64(packedSize) > maxPacked || len(f.packed)+len(data) > int(packedSize) {
+	// eMule packs into a buffer 300 bytes larger than the block and sends
+	// the block plain unless packing shrinks it (UploadDiskIOThread.cpp:581-583).
+	if int64(packedSize) > size+300 || len(f.packed)+len(data) > int(packedSize) {
 		out.Close = CloseProtocol
 		return
 	}
