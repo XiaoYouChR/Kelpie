@@ -28,7 +28,13 @@ type run struct {
 	share     peer.Share
 	published piece.Set
 	progress  Progress
+	// asked maps each user we sent the file request to the last time we did.
+	asked map[wire.Hash]time.Time
 }
+
+// fileReaskTime is aMule's FILEREASKTIME (Constants.h:35), the transfer's
+// reask interval.
+const fileReaskTime = 1300 * time.Second
 
 func (e *Engine) onCommand(command Command) {
 	switch c := command.(type) {
@@ -64,7 +70,7 @@ func (e *Engine) startRun(c RunCommand) *Error {
 	if e.runByHash[file.Hash] != nil {
 		return &Error{Code: CodeTransferBusy, Message: "another run is open for " + file.Hash.String()}
 	}
-	r := &run{id: c.ID, mode: c.Mode, file: file, path: c.File}
+	r := &run{id: c.ID, mode: c.Mode, file: file, path: c.File, asked: map[wire.Hash]time.Time{}}
 	var state *store.Transfer
 	if old, ok := e.state.Transfers[file.Hash]; ok && old.File == c.File {
 		state = &old

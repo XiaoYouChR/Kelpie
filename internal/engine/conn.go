@@ -461,7 +461,7 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 			e.runTransferActions(r, r.transfer.OnBlockReceived(c.id, ev.Block, ev.Data, now))
 		}
 	case peer.UploadRequested:
-		if r := e.downloadByHash(ev.File); r != nil {
+		if r := e.downloadByHash(ev.File); r != nil && e.isReaskDue(r, c.session.UserHash()) {
 			e.addFile(c, r)
 		}
 		e.runQueueActions(e.queue.OnRequest(c.id, toUploadPeer(c), ev.File, now))
@@ -495,8 +495,8 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	}
 	if !c.isOutgoing {
 		for _, h := range e.matchKnownSource(ev.UserHash, caps) {
-			if !c.isClosed {
-				e.addFile(c, e.runByHash[h])
+			if r := e.runByHash[h]; !c.isClosed && e.isReaskDue(r, ev.UserHash) {
+				e.addFile(c, r)
 			}
 		}
 	}
@@ -506,9 +506,20 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	}
 }
 
+// isReaskDue tells whether a connection the peer opened may carry our file
+// request for r. aMule sends it on an incoming connection only when it was
+// about to ask that source anyway (BaseClient.cpp:1688-1702); asking again
+// within MIN_REQUESTTIME gets us banned as aggressive
+// (ClientTCPSocket.cpp:539).
+func (e *Engine) isReaskDue(r *run, user wire.Hash) bool {
+	asked, ok := r.asked[user]
+	return !ok || e.now().Sub(asked) >= fileReaskTime
+}
+
 // addTransferPeer tells a download that a handshaken connection serves it.
 func (e *Engine) addTransferPeer(c *conn, r *run) {
 	user := c.session.UserHash()
+	r.asked[user] = e.now()
 	e.addKnownSource(r.file.Hash, transfer.Source{UserHash: user})
 	caps := c.session.Capabilities()
 	hello := transfer.Hello{
