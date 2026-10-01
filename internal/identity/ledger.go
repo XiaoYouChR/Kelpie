@@ -1,0 +1,170 @@
+// Derived from goed2k client_credits.go.
+
+package identity
+
+import (
+	"bytes"
+	"math"
+	"net/netip"
+	"sort"
+
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
+)
+
+// Credit is one user's persisted record. PublicKey is set once the user
+// passes Secure User Identification and never changes afterwards.
+type Credit struct {
+	User       wire.Hash
+	Uploaded   uint64
+	Downloaded uint64
+	PublicKey  []byte
+}
+
+type identState byte
+
+const (
+	identUnavailable identState = iota
+	identNeeded
+	identVerified
+	identFailed
+)
+
+type account struct {
+	credit     Credit
+	state      identState
+	verifiedIP netip.Addr
+	offeredKey []byte
+}
+
+// Ledger keeps per-user credits and, for this process only, each user's
+// identification state. It follows eMule: a user with no known key and no
+// offered key is credited without identification; once a key is known or
+// offered, nothing is credited until the user is identified from the address
+// it is talking from.
+type Ledger struct {
+	accounts map[wire.Hash]*account
+}
+
+func BuildLedger(credits []Credit) *Ledger {
+	ledger := &Ledger{accounts: make(map[wire.Hash]*account, len(credits))}
+	for _, credit := range credits {
+		state := identUnavailable
+		if len(credit.PublicKey) > 0 {
+			state = identNeeded
+		}
+		ledger.accounts[credit.User] = &account{credit: credit, state: state}
+	}
+	return ledger
+}
+
+func (l *Ledger) accountByUser(user wire.Hash) *account {
+	if a, ok := l.accounts[user]; ok {
+		return a
+	}
+	a := &account{credit: Credit{User: user}}
+	l.accounts[user] = a
+	return a
+}
+
+// isTrusted reports whether credits may be counted and used for this user at ip.
+func (a *account) isTrusted(ip netip.Addr) bool {
+	switch a.state {
+	case identUnavailable:
+		return true
+	case identVerified:
+		return a.verifiedIP == ip
+	}
+	return false
+}
+
+// PublicKeyByUser is the key a signature from user must be checked against:
+// the stored key if any, otherwise the key the user offered. Nil when neither
+// is known, in which case the request is StateKeyAndSignatureNeeded.
+func (l *Ledger) PublicKeyByUser(user wire.Hash) []byte {
+	a, ok := l.accounts[user]
+	if !ok {
+		return nil
+	}
+	if len(a.credit.PublicKey) > 0 {
+		return a.credit.PublicKey
+	}
+	return a.offeredKey
+}
+
+// OnKeyReceived records a key offered in OP_PUBLICKEY. A stored key never
+// changes, so a different key offered for a known user is ignored and that
+// user's signature will fail against the stored key.
+func (l *Ledger) OnKeyReceived(user wire.Hash, key []byte) {
+	a := l.accountByUser(user)
+	if len(a.credit.PublicKey) > 0 {
+		return
+	}
+	a.offeredKey = bytes.Clone(key)
+	a.state = identNeeded
+}
+
+// OnIdentified records that user at ip signed with PublicKeyByUser(user).
+// Credits gathered before the first identification are unproven, so they are
+// reset to one byte each, as eMule does.
+func (l *Ledger) OnIdentified(user wire.Hash, ip netip.Addr) {
+	a := l.accountByUser(user)
+	if len(a.credit.PublicKey) == 0 {
+		a.credit.PublicKey = a.offeredKey
+		if a.credit.Downloaded > 0 {
+			a.credit.Downloaded = 1
+			a.credit.Uploaded = 1
+		}
+	}
+	a.offeredKey = nil
+	a.state = identVerified
+	a.verifiedIP = ip
+}
+
+// OnIdentityFailed records a signature that did not match. A user already
+// identified from another address keeps that identification.
+func (l *Ledger) OnIdentityFailed(user wire.Hash) {
+	a := l.accountByUser(user)
+	if a.state == identNeeded {
+		a.state = identFailed
+	}
+}
+
+func (l *Ledger) OnTransferred(user wire.Hash, ip netip.Addr, uploadedToThem, downloadedFromThem int64) {
+	a := l.accountByUser(user)
+	if !a.isTrusted(ip) {
+		return
+	}
+	a.credit.Uploaded += uint64(uploadedToThem)
+	a.credit.Downloaded += uint64(downloadedFromThem)
+}
+
+// Ratio is the upload queue score multiplier for user at ip, from 1 to 10.
+func (l *Ledger) Ratio(user wire.Hash, ip netip.Addr) float64 {
+	a, ok := l.accounts[user]
+	if !ok || !a.isTrusted(ip) || a.credit.Downloaded < 1000000 {
+		return 1
+	}
+	ratio := 10.0
+	if a.credit.Uploaded > 0 {
+		ratio = float64(a.credit.Downloaded) * 2 / float64(a.credit.Uploaded)
+	}
+	ratio = math.Min(ratio, math.Sqrt(float64(a.credit.Downloaded)/1048576+2))
+	return math.Max(1, math.Min(10, ratio))
+}
+
+// ToCredits lists every user with credits or a stored key, sorted by user.
+func (l *Ledger) ToCredits() []Credit {
+	credits := make([]Credit, 0, len(l.accounts))
+	for _, a := range l.accounts {
+		if a.credit.Uploaded == 0 && a.credit.Downloaded == 0 && len(a.credit.PublicKey) == 0 {
+			continue
+		}
+		credit := a.credit
+		credit.PublicKey = bytes.Clone(credit.PublicKey)
+		credits = append(credits, credit)
+	}
+	sort.Slice(credits, func(i, j int) bool {
+		return bytes.Compare(credits[i].User[:], credits[j].User[:]) < 0
+	})
+	return credits
+}
