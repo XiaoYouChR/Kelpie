@@ -154,6 +154,26 @@ func TestUDPSearchSkipsLargeFilesWithoutSupport(t *testing.T) {
 	}
 }
 
+func TestUDPSearchSkipsFilesWithEnoughSources(t *testing.T) {
+	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}, {Endpoint: ep("1.0.0.2:4661"), UDPFlags: getSources2}}
+	wanted := []Wanted{
+		{File: fileHash(1), Size: 100, Sources: maxSourcesUDP - 1},
+		{File: fileHash(2), Size: 100, Sources: maxSourcesUDP},
+	}
+	s, _ := loggedIn(t, entries, highID, 0, wanted)
+	var asked []wire.Hash
+	for now := start; now.Before(start.Add(10 * time.Second)); now = now.Add(time.Second) {
+		for _, d := range searches(s.OnTick(now, wanted)) {
+			for _, f := range d.Packet.(serverwire.GlobGetSources2).Files {
+				asked = append(asked, f.Hash)
+			}
+		}
+	}
+	if !reflect.DeepEqual(asked, []wire.Hash{fileHash(1)}) {
+		t.Fatalf("asked %v, want only the file short of sources", asked)
+	}
+}
+
 func TestUDPSearchNeedsServerConnection(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661")}, {Endpoint: ep("1.0.0.2:4661"), UDPFlags: getSources2}}
 	s := BuildServer(config, entries)

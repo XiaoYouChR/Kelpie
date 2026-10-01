@@ -11,6 +11,8 @@ import (
 type Search struct {
 	Hash wire.Hash
 	Size int64
+	// Sources is how many usable sources the file has.
+	Sources int
 }
 
 // Publish asks Kad to announce us as a source of a file.

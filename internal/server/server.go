@@ -39,6 +39,14 @@ const (
 	// the connection to NAT timeouts. 20 minutes is far below eMule's own
 	// source-request traffic on the same connection.
 	keepAliveTime = 20 * time.Minute
+
+	// A file with this many sources is no longer searched over TCP, or
+	// over UDP: GetMaxSourcePerFileSoft and GetMaxSourcePerFileUDP of the
+	// transfer's 400 MaxSourcesPerFile, capped at MAX_SOURCES_FILE_SOFT and
+	// MAX_SOURCES_FILE_UDP (aMule PartFile.cpp:1683, 4557-4573,
+	// Constants.h:50-51; eMule DownloadQueue.cpp:927 for UDP).
+	maxSourcesSoft = 360
+	maxSourcesUDP  = 50
 )
 
 // Config is what the login needs about us.
@@ -53,14 +61,16 @@ type Config struct {
 }
 
 // Wanted is one file the engine shares or downloads, passed on every tick.
-// Incomplete files are searched for sources; shared files are offered to
-// the connected server.
+// Incomplete files are searched for sources until they have enough;
+// shared files are offered to the connected server.
 type Wanted struct {
 	File       wire.Hash
 	Size       uint64
 	Name       string
 	IsComplete bool
 	IsShared   bool
+	// Sources is how many usable sources the file has.
+	Sources int
 }
 
 // Source is one peer a server named for a file. A LowID source has no
@@ -612,7 +622,7 @@ func (s *Server) runSourceRequests(now time.Time, out *Output) {
 	var due []Wanted
 	for _, w := range s.wanted {
 		at, isAsked := s.askedAt[w.File]
-		if w.IsComplete || (isAsked && now.Sub(at) < sourceReaskTime) || !s.canTCP(w.Size) {
+		if w.IsComplete || w.Sources >= maxSourcesSoft || (isAsked && now.Sub(at) < sourceReaskTime) || !s.canTCP(w.Size) {
 			continue
 		}
 		due = append(due, w)

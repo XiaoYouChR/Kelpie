@@ -312,6 +312,17 @@ func TestLargeFileSourcesNeedServerSupport(t *testing.T) {
 	}
 }
 
+func TestFileWithEnoughSourcesIsNotAsked(t *testing.T) {
+	wanted := []Wanted{
+		{File: fileHash(1), Size: 100, Sources: maxSourcesSoft - 1},
+		{File: fileHash(2), Size: 100, Sources: maxSourcesSoft},
+	}
+	_, out := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, 0, wanted)
+	if got := sent[serverwire.GetSources](out); len(got) != 1 || got[0].Hash != fileHash(1) {
+		t.Fatalf("got %+v, want only the file short of sources", got)
+	}
+}
+
 // OP_GETSOURCES gets plain OP_FOUNDSOURCES even after a login that
 // supports obfuscation; only OP_GETSOURCES_OBFU brings the user hashes that
 // obfuscated connections need.

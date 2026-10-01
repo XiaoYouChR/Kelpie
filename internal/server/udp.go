@@ -225,7 +225,7 @@ func (s *Server) searchFiles(udpFlags uint32) []Wanted {
 	n := len(s.wanted)
 	for i := range n {
 		w := s.wanted[(s.udp.fileStart+i)%n]
-		if !w.IsComplete && (w.Size <= largeFileSize || udpFlags&serverwire.UDPFlagLargeFiles != 0) {
+		if !w.IsComplete && w.Sources < maxSourcesUDP && (w.Size <= largeFileSize || udpFlags&serverwire.UDPFlagLargeFiles != 0) {
 			files = append(files, w)
 		}
 	}

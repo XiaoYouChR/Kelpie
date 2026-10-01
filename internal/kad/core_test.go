@@ -372,6 +372,22 @@ func TestSetWantedCancelsDroppedSearch(t *testing.T) {
 	}
 }
 
+func TestFileWithEnoughSourcesIsNotSearched(t *testing.T) {
+	h := buildHarness(t)
+	req := runSearch(t, h)
+	h.c.setWanted(Wanted{Find: []Search{{Hash: fileHash, Size: 1000, Sources: maxSourcesUDP}}}, h.now)
+	h.receive(req.to, kadwire.SearchRes{Target: fileHash, Results: []kadwire.Entry{buildOpenEntry(mustHash("A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1"), "1.2.3.4", 4662)}})
+	if len(h.found) != 0 || h.c.lookupByTarget(sourceSearch, fileHash) != nil {
+		t.Fatal("search kept running once the file had enough sources")
+	}
+	for range 3 * 60 {
+		h.tick(time.Minute)
+		if h.c.lookupByTarget(sourceSearch, fileHash) != nil {
+			t.Fatal("searched a file that has enough sources")
+		}
+	}
+}
+
 func TestFirewallCheckGatesPublishing(t *testing.T) {
 	h := buildHarness(t)
 	h.connect(fileHash, 6)

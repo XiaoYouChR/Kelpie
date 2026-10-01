@@ -196,7 +196,8 @@ func toKadCallback(a transfer.RequestKadCallback, file wire.Hash) kad.Callback {
 }
 
 // buildServerWanted lists every running Transfer: incomplete ones are
-// searched, those with verified parts are offered.
+// searched until they have enough sources, those with verified parts are
+// offered. The source count is the last Progress, at most a second old.
 func (e *Engine) buildServerWanted() []server.Wanted {
 	var wanted []server.Wanted
 	for _, r := range e.runList {
@@ -209,6 +210,7 @@ func (e *Engine) buildServerWanted() []server.Wanted {
 			Name:       r.file.Name,
 			IsComplete: r.share.Parts.IsFull(),
 			IsShared:   r.published.Count() > 0,
+			Sources:    r.progress.Peers,
 		})
 	}
 	return wanted
@@ -223,7 +225,7 @@ func (e *Engine) buildKadWanted() kad.Wanted {
 			continue
 		}
 		if r.mode == ModeDownload {
-			wanted.Find = append(wanted.Find, kad.Search{Hash: r.file.Hash, Size: r.file.Size})
+			wanted.Find = append(wanted.Find, kad.Search{Hash: r.file.Hash, Size: r.file.Size, Sources: r.progress.Peers})
 		}
 		if r.published.Count() > 0 {
 			wanted.Publish = append(wanted.Publish, kad.Publish{Hash: r.file.Hash, Size: r.file.Size})

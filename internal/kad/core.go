@@ -39,6 +39,10 @@ const (
 	// Kad versions 8 and up read TAG_KADMISCOPTIONS and answer it with
 	// KADEMLIA2_HELLO_RES_ACK (KADEMLIA_VERSION8_49b).
 	versionMiscOptions = 8
+	// maxSourcesUDP is GetMaxSourcePerFileUDP: a file with this many sources
+	// is not searched, and its running search stops (aMule
+	// PartFile.cpp:1648-1675, 4566-4573; MAX_SOURCES_FILE_UDP, Constants.h:51).
+	maxSourcesUDP = 50
 )
 
 // keys are the verify keys a datagram carried, both 0 on a plain one. The
@@ -197,6 +201,9 @@ func (c *core) setWanted(w Wanted, now time.Time) {
 		}
 		delete(finds, s.Hash)
 		f.Search = s
+		if s.Sources >= maxSourcesUDP {
+			c.cancelLookup(f.lookup)
+		}
 		c.finds = append(c.finds, f)
 	}
 	for _, f := range finds {
@@ -695,7 +702,7 @@ func (c *core) runFirewallCheck(now time.Time) {
 func (c *core) runWanted(now time.Time) {
 	if !now.Before(c.nextFileSearch) && c.lookupCount(sourceSearch) < maxFileSearches {
 		for _, f := range c.finds {
-			if (f.lookup != nil && !f.lookup.isDone) || now.Before(f.next) {
+			if f.Sources >= maxSourcesUDP || (f.lookup != nil && !f.lookup.isDone) || now.Before(f.next) {
 				continue
 			}
 			l := c.startLookup(sourceSearch, f.Hash, uint64(f.Size), now)
