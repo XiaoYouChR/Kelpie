@@ -69,18 +69,17 @@ var exceptions = map[edge]string{
 	// TODO: run.go:88 matches fs.ErrNotExist from disk.Real; the disk seam
 	// should name its own not-found error.
 	{"internal/engine", "io/fs"}: "engine sees the disk seam's implementation errors",
-	// Decision needed: the store writes state.json with os directly, not
-	// through disk (store.go). It is a leaf in ADR-0005 but not one of the
-	// three seams in CLAUDE.md.
-	{"internal/store", "os"}:    "store bypasses the disk seam",
-	{"internal/store", "io/fs"}: "store bypasses the disk seam",
-	// Decision needed: nat talks to the router with its own sockets, HTTP,
-	// os/exec and wall clock. The engine only reaches it through Start, so
-	// fakes never run it; it acts as a fourth seam.
-	{"internal/nat", "net"}:        "nat bypasses the transport seam",
-	{"internal/nat", "net/http"}:   "nat bypasses the transport seam",
-	{"internal/nat", "os/exec"}:    "nat runs a process",
-	{"internal/nat", "wall clock"}: "nat bypasses the clock seam",
+	// Allowed, not debt: the store is a leaf I/O actor (ADR-0005) whose only
+	// job is the atomic write of state.json; tests point it at a temp folder.
+	{"internal/store", "os"}:    "store is a leaf I/O actor",
+	{"internal/store", "io/fs"}: "store is a leaf I/O actor",
+	// Allowed, not debt: nat is its own seam to the router, reached only
+	// through Start and tested against httptest/UDP fakes; the eD2k fakes
+	// never need it.
+	{"internal/nat", "net"}:        "nat is the router seam",
+	{"internal/nat", "net/http"}:   "nat is the router seam",
+	{"internal/nat", "os/exec"}:    "nat is the router seam",
+	{"internal/nat", "wall clock"}: "nat is the router seam",
 }
 
 type edge struct{ from, to string }
