@@ -430,7 +430,7 @@ func (t *Transfer) OnQueued(peer uint64, rank int, now time.Time) []Action {
 	}
 	var actions []Action
 	if s.state == stateDownloading {
-		t.picker.Cancel(peer)
+		t.picker.cancel(peer)
 		actions = append(actions, t.sendReceived(s, now)...)
 	}
 	return append(actions, t.setQueued(s, rank, now))
@@ -530,7 +530,7 @@ func (t *Transfer) removeCorrupt(peer uint64, now time.Time) []Action {
 // of it to other peers.
 func (t *Transfer) removePeer(peer uint64, now time.Time) []Action {
 	delete(t.peers, peer)
-	t.picker.OnPeerGone(peer)
+	t.picker.onPeerGone(peer)
 	if peer == t.hashSetPeer {
 		t.hashSetPeer = 0
 	}
@@ -695,7 +695,7 @@ func (t *Transfer) Sources() []Source {
 func (t *Transfer) removeExpired(now time.Time) {
 	maps.DeleteFunc(t.bannedHashes, func(_ wire.Hash, until time.Time) bool { return !now.Before(until) })
 	maps.DeleteFunc(t.bannedEndpoints, func(_ netip.AddrPort, until time.Time) bool { return !now.Before(until) })
-	senders := t.picker.Senders()
+	senders := t.picker.senders()
 	maps.DeleteFunc(t.senders, func(peer uint64, _ *source) bool {
 		return t.peers[peer] == nil && !slices.Contains(senders, peer)
 	})

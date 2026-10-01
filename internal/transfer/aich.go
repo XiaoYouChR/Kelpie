@@ -165,7 +165,7 @@ func (t *Transfer) isAsked(peer uint64) bool {
 // peer that sent a block of it.
 func (t *Transfer) removePart(part int, now time.Time) []Action {
 	var actions []Action
-	for _, peer := range t.picker.OnPartFailed(part) {
+	for _, peer := range t.picker.onPartFailed(part) {
 		actions = append(actions, t.removeCorrupt(peer, now)...)
 	}
 	return actions
@@ -220,7 +220,7 @@ func (t *Transfer) OnBlocksHashed(part int, hashes []wire.AICHHash, now time.Tim
 			continue
 		}
 		isCorrupt = true
-		for _, sender := range t.picker.OnBlockFailed(piece.BlockOf(t.file.Size, part, i)) {
+		for _, sender := range t.picker.onBlockFailed(piece.BlockOf(t.file.Size, part, i)) {
 			if !slices.Contains(senders, sender) {
 				senders = append(senders, sender)
 			}
