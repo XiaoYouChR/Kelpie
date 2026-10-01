@@ -18,18 +18,20 @@ var ErrInvalid = errors.New("invalid ed2k file link")
 const maxSize int64 = 256 << 30
 
 // File is what an eD2k file link says about a file. PartHashes is empty unless
-// the link carries a hash set that matches the file hash; Sources holds only
-// the sources given as IP:port.
+// the link carries a hash set that matches the file hash; AICHHash is zero
+// unless the link carries one; Sources holds only the sources given as
+// IP:port.
 type File struct {
 	Name       string
 	Size       int64
 	Hash       wire.Hash
 	PartHashes []wire.Hash
+	AICHHash   wire.AICHHash
 	Sources    []netip.AddrPort
 }
 
 // Parse reads ed2k://|file|<name>|<size>|<hash>|[h=<AICH>|][p=<hashes>|]/[|sources,<ip:port>,...|/].
-// Unknown fields, the AICH hash and HTTP sources are ignored.
+// Unknown fields and HTTP sources are ignored.
 func Parse(text string) (File, error) {
 	text = strings.TrimSpace(text)
 	const scheme = "ed2k://"
@@ -58,6 +60,10 @@ func Parse(text string) (File, error) {
 		switch {
 		case strings.HasPrefix(field, "p="):
 			file.PartHashes = parsePartHashes(field[len("p="):], file.Size, file.Hash)
+		case strings.HasPrefix(field, "h="):
+			// aMule rejects the link over a malformed AICH hash
+			// (ED2KLink.cpp:260-267); like a bad hash set, it is only dropped.
+			file.AICHHash, _ = wire.ParseAICHHash(field[len("h="):])
 		case strings.HasPrefix(strings.ToLower(field), "sources,"):
 			file.Sources = append(file.Sources, parseSources(field)...)
 		}

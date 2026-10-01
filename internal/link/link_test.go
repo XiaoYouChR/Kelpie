@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/XiaoYouChR/Kelpie/internal/link"
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
 type vector struct {
@@ -77,5 +78,23 @@ func TestParseReadsIPSources(t *testing.T) {
 	}
 	if !slices.Equal(file.Sources, want) {
 		t.Fatalf("Sources = %v, want %v", file.Sources, want)
+	}
+}
+
+func TestParseReadsAICHHash(t *testing.T) {
+	file, err := link.Parse("ed2k://|file|a|5|31D6CFE0D16AE931B73C59D7E0C089C0|h=dztdjp5oxqbuqkmbawjd2dzg4r5kgp7v|/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := file.AICHHash.String(); got != "DZTDJP5OXQBUQKMBAWJD2DZG4R5KGP7V" {
+		t.Fatalf("AICHHash = %s", got)
+	}
+
+	file, err = link.Parse("ed2k://|file|a|5|31D6CFE0D16AE931B73C59D7E0C089C0|h=NOTBASE32!|/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.AICHHash != (wire.AICHHash{}) {
+		t.Fatalf("kept a malformed AICH hash: %s", file.AICHHash)
 	}
 }
