@@ -70,7 +70,7 @@ func login(t *testing.T, host *transport.Host, to netip.AddrPort) (net.Conn, pac
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	send(t, conn, packet.Login{Port: peerPort, Name: "test"})
+	send(t, conn, packet.Login{UserHash: wire.Hash{0x55}, Port: peerPort, Name: "test", Flags: packet.CapSupportCrypt | packet.CapRequestCrypt})
 	id := receive[packet.IDChange](t, conn)
 	receive[packet.ServerStatus](t, conn)
 	receive[packet.ServerIdent](t, conn)
@@ -226,8 +226,9 @@ func TestCallbackRelay(t *testing.T) {
 
 	send(t, high, packet.CallbackRequest{ClientID: lowID.ClientID})
 	got := receive[packet.CallbackRequested](t, low)
-	if got.Addr != netip.MustParseAddrPort("10.0.0.2:4662") {
-		t.Errorf("callback asks to connect to %v", got.Addr)
+	want := packet.CallbackRequested{Addr: netip.MustParseAddrPort("10.0.0.2:4662"), CryptOptions: 0x03, UserHash: wire.Hash{0x55}}
+	if got != want {
+		t.Errorf("callback = %+v, want %+v", got, want)
 	}
 	send(t, high, packet.CallbackRequest{ClientID: lowID.ClientID + 100})
 	receive[packet.CallbackFailed](t, high)

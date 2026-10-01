@@ -144,3 +144,35 @@ func TestUpdateLearnedKeepsListedNames(t *testing.T) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
 	}
 }
+
+// A LowID seeder reaches the downloader through a server callback; the
+// server passes on the downloader's crypt options and user hash, so the
+// callback connection is obfuscated.
+func TestCallbackIsObfuscated(t *testing.T) {
+	w := buildWorld(t)
+	srv := w.startFakeServer("198.51.100.100")
+	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+	a.host.SetLowID(true)
+	log := &lockedBuffer{}
+	a.config.PacketLog = log
+	for _, n := range []*node{a, b} {
+		n.setServer(srv)
+		n.start()
+	}
+	f := buildTestFile("callback.bin", 500_000, 21)
+	a.seed(1, f)
+	for _, n := range []*node{a, b} {
+		w.waitFor("server login", func() bool { return n.events.lastNetwork().IsServerConnected })
+	}
+	if a.events.lastNetwork().IsHighID || !b.events.lastNetwork().IsHighID {
+		t.Fatalf("a %+v, b %+v: want a LowID, b HighID", a.events.lastNetwork(), b.events.lastNetwork())
+	}
+	settle := w.clock.Now().Add(10 * time.Second)
+	w.waitFor("seed offered", func() bool { return !w.clock.Now().Before(settle) })
+	path := b.download(2, f)
+	requireEndedOK(t, w.waitEnded(b, 2))
+	b.requireData(path, f.data)
+	if text := log.String(); !strings.Contains(text, "open "+b.endpoint().String()+" obfuscated=true") {
+		t.Fatalf("callback connection not obfuscated:\n%s", text)
+	}
+}

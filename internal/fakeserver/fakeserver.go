@@ -65,11 +65,15 @@ type Server struct {
 
 // client is one logged-in connection.
 type client struct {
-	conn  net.Conn
-	addr  netip.Addr
-	id    uint32
-	port  uint16
-	files map[wire.Hash]struct{}
+	conn net.Conn
+	addr netip.Addr
+	id   uint32
+	port uint16
+	user wire.Hash
+	// cryptOptions are the login's crypt capabilities in the CryptOptions
+	// layout: supported, requested, required in bits 0-2.
+	cryptOptions byte
+	files        map[wire.Hash]struct{}
 
 	writeMu sync.Mutex
 }
@@ -200,7 +204,14 @@ func (s *Server) runConn(ctx context.Context, conn net.Conn) {
 
 func (s *Server) onLogin(ctx context.Context, conn net.Conn, login packet.Login) *client {
 	addr := conn.RemoteAddr().(*net.TCPAddr).AddrPort().Addr().Unmap()
-	c := &client{conn: conn, addr: addr, port: login.Port, files: map[wire.Hash]struct{}{}}
+	c := &client{
+		conn:         conn,
+		addr:         addr,
+		port:         login.Port,
+		user:         login.UserHash,
+		cryptOptions: byte(login.Flags>>9) & 0x07,
+		files:        map[wire.Hash]struct{}{},
+	}
 	if addr.Is4() && s.probeHighID(ctx, netip.AddrPortFrom(addr, login.Port)) {
 		c.id = wire.ToClientID(addr)
 	}
@@ -273,7 +284,7 @@ func (s *Server) onCallbackRequest(c *client, p packet.CallbackRequest) {
 		c.send(packet.CallbackFailed{})
 		return
 	}
-	target.send(packet.CallbackRequested{Addr: netip.AddrPortFrom(c.addr, c.port)})
+	target.send(packet.CallbackRequested{Addr: netip.AddrPortFrom(c.addr, c.port), CryptOptions: c.cryptOptions, UserHash: c.user})
 }
 
 // sourcesByFile is every client other than except sharing file, at most
