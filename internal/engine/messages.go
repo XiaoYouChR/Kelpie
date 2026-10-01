@@ -2,6 +2,7 @@ package engine
 
 import (
 	"io"
+	"net/netip"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
@@ -50,6 +51,9 @@ type Config struct {
 	// PacketLog, when set, gets one line per TCP packet sent or received
 	// and per closed connection, for debugging against real peers.
 	PacketLog io.Writer
+	// LocalAddrs are the host's interface addresses at start, which tell
+	// our own address apart in a source list.
+	LocalAddrs []netip.Addr
 }
 
 type Progress struct {

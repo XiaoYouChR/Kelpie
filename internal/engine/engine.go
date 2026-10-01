@@ -33,14 +33,12 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
 
-// Ports are the engine's only ways out: sockets, files, time and randomness,
-// and the host's interface addresses as they were at start.
+// Ports are the engine's only ways out: sockets, files, time and randomness.
 type Ports struct {
-	Transport  transport.Transport
-	Disk       disk.Disk
-	Clock      clock.Clock
-	Rand       *rand.Rand
-	LocalAddrs []netip.Addr
+	Transport transport.Transport
+	Disk      disk.Disk
+	Clock     clock.Clock
+	Rand      *rand.Rand
 }
 
 const (
@@ -166,18 +164,11 @@ type uploadKey struct {
 func Start(config Config, events Events) (*Engine, error) {
 	var seed [32]byte
 	crand.Read(seed[:])
-	// Without the interface addresses only the public IP tells our own
-	// sources apart, so a failure is just logged.
-	localAddrs, err := transport.ProbeLocalAddrs()
-	if err != nil {
-		log.Printf("engine: interface addresses: %v", err)
-	}
 	ports := Ports{
-		Transport:  transport.Real{},
-		Disk:       disk.Real{},
-		Clock:      clock.Real{},
-		Rand:       rand.New(rand.NewChaCha8(seed)),
-		LocalAddrs: localAddrs,
+		Transport: transport.Real{},
+		Disk:      disk.Real{},
+		Clock:     clock.Real{},
+		Rand:      rand.New(rand.NewChaCha8(seed)),
 	}
 	var mapPorts openNAT
 	if config.EnableUPnP {
