@@ -518,7 +518,32 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		if r := e.downloadByHash(ev.File); r != nil {
 			e.addSources(r, toExchangeSources(ev.Sources), transfer.ChannelExchange)
 		}
+	case peer.RootReceived:
+		if r := e.downloadByHash(ev.File); r != nil {
+			r.transfer.OnRoot(c.id, ev.Root)
+		}
+	case peer.RecoveryReceived:
+		if r := e.downloadByHash(ev.File); r != nil {
+			e.runTransferActions(r, r.transfer.OnRecovery(c.id, ev.Part, ev.Root, ev.Entries, now))
+		}
+	case peer.RecoveryFailed:
+		if r := e.downloadByHash(ev.File); r != nil {
+			e.runTransferActions(r, r.transfer.OnRecoveryFailed(c.id, now))
+		}
+	case peer.TreeWanted:
+		e.requestTree(ev.File)
 	}
+}
+
+// requestTree hashes the AICH tree of a complete file we share that was
+// not hashed when its run started.
+func (e *Engine) requestTree(file wire.Hash) {
+	r := e.runByHash[file]
+	if r == nil || r.transfer == nil || r.tree != nil || r.isTreeHashing || !r.share.Parts.IsFull() {
+		return
+	}
+	r.isTreeHashing = true
+	e.sendDiskJob(diskJob{kind: jobHashTree, run: r.id, file: r.handle, size: r.file.Size})
 }
 
 func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {

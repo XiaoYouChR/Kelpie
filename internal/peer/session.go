@@ -72,6 +72,7 @@ type Capabilities struct {
 	HasSourceExchange2         bool
 	HasExtendedSources         bool
 	HasExtendedSourcesSkipTags bool
+	HasAICH                    bool
 	// CryptOptions is the peer's obfuscation setting from its Hello, in
 	// Source's layout.
 	CryptOptions byte
@@ -87,6 +88,7 @@ type Session struct {
 	lastActive   time.Time
 	// earlyEmuleInfo is an OP_EMULEINFO that came before the peer's Hello.
 	earlyEmuleInfo *client.EmuleInfo
+	recovery       *recoveryRequest
 
 	ident identState
 	down  downloadState
@@ -174,6 +176,10 @@ func (s *Session) OnPacket(p wire.Packet, shares Shares, now time.Time) Output {
 		s.onCompressedPart(p.Hash, int64(p.Start), p.PackedSize, p.Data, now, &out)
 	case client.CompressedPart64:
 		s.onCompressedPart(p.Hash, int64(p.Start), p.PackedSize, p.Data, now, &out)
+	case client.AICHFileHashAnswer:
+		s.onRoot(p.Hash, p.Root, &out)
+	case client.AICHAnswer:
+		s.onRecoveryAnswer(p, &out)
 
 	case client.FileRequest:
 		s.onFileRequest(p, shares, &out)
@@ -193,6 +199,14 @@ func (s *Session) OnPacket(p wire.Packet, shares Shares, now time.Time) Output {
 		s.onPartsRequest(p.Hash, toBlocks64(p), shares, &out)
 	case client.CancelTransfer:
 		s.onUploadCancelled(&out)
+	case client.AICHFileHashRequest:
+		if share, ok := shares(p.Hash); ok {
+			if answer, ok := s.onRootRequest(p.Hash, share, &out); ok {
+				out.send(answer)
+			}
+		}
+	case client.AICHRequest:
+		s.onRecoveryRequest(p, shares, &out)
 
 	case client.RequestSources2:
 		s.onSourcesRequest(p, shares, now, &out)

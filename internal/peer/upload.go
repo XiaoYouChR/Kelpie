@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/aich"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
@@ -20,12 +21,14 @@ const (
 )
 
 // Share is one of our files as offered to peers. Parts is what we can
-// upload; PartHashes is empty for files below one part.
+// upload; PartHashes is empty for files below one part. Tree is the AICH
+// tree of a complete file, nil until built.
 type Share struct {
 	Name       string
 	Size       int64
 	Parts      piece.Set
 	PartHashes []wire.Hash
+	Tree       *aich.Tree
 }
 
 // Shares looks up a file we offer.
@@ -183,6 +186,10 @@ func (s *Session) onMultiPacket(file wire.Hash, size uint64, requests []wire.Pac
 			answer.Answers = append(answer.Answers, client.FileStatus{Hash: file, Parts: toStatus(share)})
 		case client.RequestSources2:
 			sourcesRequest = &r
+		case client.AICHFileHashRequest:
+			if root, ok := s.onRootRequest(file, share, out); ok {
+				answer.Answers = append(answer.Answers, root)
+			}
 		}
 	}
 	if len(answer.Answers) > 0 {

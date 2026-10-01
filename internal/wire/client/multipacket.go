@@ -7,8 +7,8 @@ import (
 )
 
 // MultiPacket is OP_MULTIPACKET: several requests for one file in one frame.
-// Requests holds FileRequest, SetRequestFileID, RequestSources and
-// RequestSources2 values, whose Hash is the MultiPacket's. Sub-requests are
+// Requests holds FileRequest, SetRequestFileID, RequestSources,
+// RequestSources2 and AICHFileHashRequest values, whose Hash is the MultiPacket's. Sub-requests are
 // not length-prefixed, so an unknown one ends parsing and is kept, with
 // everything after it, as a trailing wire.Unknown.
 type MultiPacket struct {
@@ -23,8 +23,8 @@ type MultiPacketExt struct {
 	Requests []wire.Packet
 }
 
-// MultiPacketAnswer is OP_MULTIPACKETANSWER. Answers holds FileNameAnswer
-// and FileStatus values, plus a trailing wire.Unknown as in MultiPacket.
+// MultiPacketAnswer is OP_MULTIPACKETANSWER. Answers holds FileNameAnswer,
+// FileStatus and AICHFileHashAnswer values, plus a trailing wire.Unknown as in MultiPacket.
 type MultiPacketAnswer struct {
 	Hash    wire.Hash
 	Answers []wire.Packet
@@ -55,6 +55,8 @@ func (m MultiPacketAnswer) Build(b []byte) []byte {
 			b = wire.BuildString(b, p.Name)
 		case FileStatus:
 			b = wire.BuildBitfield(b, p.Parts)
+		case AICHFileHashAnswer:
+			b = append(b, p.Root[:]...)
 		case wire.Unknown:
 			b = append(b, p.Body...)
 		}
@@ -109,6 +111,8 @@ func parseRequests(r *wire.Reader, hash wire.Hash) []wire.Packet {
 			out = append(out, RequestSources{Hash: hash})
 		case opRequestSources2:
 			out = append(out, RequestSources2{Version: r.Uint8(), Options: r.Uint16(), Hash: hash})
+		case opAICHFileHashRequest:
+			out = append(out, AICHFileHashRequest{Hash: hash})
 		default:
 			return append(out, wire.Unknown{Proto: wire.ProtocolEMule, Op: op, Body: r.Bytes(r.Len())})
 		}
@@ -125,6 +129,8 @@ func parseMultiPacketAnswer(r *wire.Reader) MultiPacketAnswer {
 			m.Answers = append(m.Answers, FileNameAnswer{Hash: m.Hash, Name: r.String()})
 		case opFileStatus:
 			m.Answers = append(m.Answers, FileStatus{Hash: m.Hash, Parts: r.Bitfield()})
+		case opAICHFileHashAnswer:
+			m.Answers = append(m.Answers, AICHFileHashAnswer{Hash: m.Hash, Root: r.AICHHash()})
 		default:
 			m.Answers = append(m.Answers, wire.Unknown{Proto: wire.ProtocolEMule, Op: op, Body: r.Bytes(r.Len())})
 			return m

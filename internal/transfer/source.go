@@ -484,7 +484,7 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 		t.isHashSetAsked = false
 	}
 	s.isConnected = false
-	actions := t.sendReceived(s, now)
+	actions := append(t.onRecoveryPeerGone(peer, now), t.sendReceived(s, now)...)
 	switch {
 	case s.state == stateAsking && !s.hasAnswered:
 		return append(actions, t.setFailed(s, reason, now))
@@ -532,6 +532,7 @@ func (t *Transfer) removeCorrupt(peer uint64, now time.Time) []Action {
 		delete(t.peers, peer)
 		t.picker.OnPeerGone(peer)
 		actions = append(actions, Close{Peer: peer, Reason: "corrupt data"})
+		actions = append(actions, t.onRecoveryPeerGone(peer, now)...)
 	}
 	return actions
 }

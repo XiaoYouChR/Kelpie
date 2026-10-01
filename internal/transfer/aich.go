@@ -1,0 +1,256 @@
+package transfer
+
+import (
+	"maps"
+	"math/rand/v2"
+	"net/netip"
+	"slices"
+	"time"
+
+	"github.com/XiaoYouChR/Kelpie/internal/aich"
+	"github.com/XiaoYouChR/Kelpie/internal/piece"
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
+	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
+)
+
+// A root reported by sources is trusted once this many address prefixes
+// sent it and they are this share of all prefixes that sent a root
+// (MINUNIQUEIPS_TOTRUST and MINPERCENTAGE_TOTRUST, SHAHashSet.cpp:43-44).
+const (
+	minTrustPrefixes = 10
+	minTrustPercent  = 92
+)
+
+// RequestRecovery asks a peer for the AICH recovery data of a part that
+// failed its MD4 check; the engine answers with OnRecovery or
+// OnRecoveryFailed.
+type RequestRecovery struct {
+	Peer uint64
+	Part int
+	Root wire.AICHHash
+}
+
+// HashBlocks reads [Begin, End) back from disk and hashes each block with
+// SHA-1; the engine answers with OnBlocksHashed or OnDiskFailed.
+type HashBlocks struct {
+	Part  int
+	Begin int64
+	End   int64
+}
+
+func (RequestRecovery) isAction() {}
+func (HashBlocks) isAction()      {}
+
+// aichState is the file's AICH root and the repairs of parts that failed
+// their MD4 check.
+type aichState struct {
+	root      wire.AICHHash
+	isTrusted bool
+	// isLinked: the root came with the link, aMule's AICH_VERIFIED; votes do
+	// not change it.
+	isLinked bool
+	// isBroken: a repair found every block good in a part MD4 rejected, so
+	// the root cannot be right (aMule AICH_ERROR, PartFile.cpp:3970-3979).
+	isBroken bool
+	votes    []rootVote
+	// roots holds the root each connected peer reported.
+	roots map[uint64]wire.AICHHash
+	// asked maps a part under repair to the peer asked for its recovery data.
+	asked map[int]uint64
+	// verified holds a part's checked block hashes until ours are hashed.
+	verified map[int][]wire.AICHHash
+	random   *rand.Rand
+}
+
+type rootVote struct {
+	root     wire.AICHHash
+	prefixes map[netip.Prefix]bool
+}
+
+func buildAICHState(root wire.AICHHash, random *rand.Rand) aichState {
+	s := aichState{
+		roots:    map[uint64]wire.AICHHash{},
+		asked:    map[int]uint64{},
+		verified: map[int][]wire.AICHHash{},
+		random:   random,
+	}
+	if root != (wire.AICHHash{}) {
+		s.root, s.isTrusted, s.isLinked = root, true, true
+	}
+	return s
+}
+
+// OnRoot records the AICH root a connected peer reported for the file and
+// counts it as that peer's vote (aMule UntrustedHashReceived,
+// SHAHashSet.cpp:930-1010).
+func (t *Transfer) OnRoot(peer uint64, root wire.AICHHash) {
+	s := t.peers[peer]
+	if !t.isDownloading() || s == nil {
+		return
+	}
+	t.aich.roots[peer] = root
+	if t.aich.isLinked || t.aich.isBroken {
+		return
+	}
+	prefix := toVotePrefix(s.Endpoint.Addr())
+	i := slices.IndexFunc(t.aich.votes, func(v rootVote) bool { return v.root == root })
+	if i < 0 {
+		t.aich.votes = append(t.aich.votes, rootVote{root: root, prefixes: map[netip.Prefix]bool{}})
+		i = len(t.aich.votes) - 1
+	}
+	t.aich.votes[i].prefixes[prefix] = true
+
+	total, best := 0, 0
+	for i, v := range t.aich.votes {
+		total += len(v.prefixes)
+		if len(v.prefixes) > len(t.aich.votes[best].prefixes) {
+			best = i
+		}
+	}
+	count := len(t.aich.votes[best].prefixes)
+	t.aich.root = t.aich.votes[best].root
+	t.aich.isTrusted = count >= minTrustPrefixes && 100*count/total >= minTrustPercent
+}
+
+// toVotePrefix counts IPv4 voters per /20, as aMule's AddSigningIP masks
+// them (SHAHashSet.cpp:743). aMule has no IPv6; a /48 is one site.
+func toVotePrefix(addr netip.Addr) netip.Prefix {
+	addr = addr.Unmap()
+	bits := 20
+	if addr.Is6() {
+		bits = 48
+	}
+	prefix, _ := addr.Prefix(bits)
+	return prefix
+}
+
+// requestRecovery asks a source for the recovery data of a part that failed its
+// MD4 check (aMule RequestAICHRecovery, PartFile.cpp:3813-3891): one that
+// reported the trusted root and has no request pending, HighID first, at
+// random. Without one the part is thrown away whole.
+func (t *Transfer) requestRecovery(part int, now time.Time) []Action {
+	begin := int64(part) * piece.PartSize
+	end := min(begin+piece.PartSize, t.file.Size)
+	if !t.aich.isTrusted || t.aich.isBroken || end-begin <= piece.BlockSize {
+		return t.removePart(part, now)
+	}
+	var highIDs, lowIDs []uint64
+	for _, peer := range slices.Sorted(maps.Keys(t.aich.roots)) {
+		s := t.peers[peer]
+		if s == nil || t.aich.roots[peer] != t.aich.root || t.isAsked(peer) {
+			continue
+		}
+		if s.ClientID == 0 {
+			highIDs = append(highIDs, peer)
+		} else {
+			lowIDs = append(lowIDs, peer)
+		}
+	}
+	candidates := highIDs
+	if len(candidates) == 0 {
+		candidates = lowIDs
+	}
+	if len(candidates) == 0 {
+		return t.removePart(part, now)
+	}
+	peer := candidates[t.aich.random.IntN(len(candidates))]
+	t.aich.asked[part] = peer
+	return []Action{RequestRecovery{Peer: peer, Part: part, Root: t.aich.root}}
+}
+
+func (t *Transfer) isAsked(peer uint64) bool {
+	for _, asked := range t.aich.asked {
+		if asked == peer {
+			return true
+		}
+	}
+	return false
+}
+
+// removePart throws away a part that failed its MD4 check and bans every
+// peer that sent a block of it.
+func (t *Transfer) removePart(part int, now time.Time) []Action {
+	var actions []Action
+	for _, peer := range t.picker.OnPartFailed(part) {
+		actions = append(actions, t.removeCorrupt(peer, now)...)
+	}
+	return actions
+}
+
+// OnRecovery takes the recovery data a peer sent for part. Data that does
+// not lead to the trusted root counts as a failed answer.
+func (t *Transfer) OnRecovery(peer uint64, part int, root wire.AICHHash, entries []client.AICHEntry, now time.Time) []Action {
+	if asked, ok := t.aich.asked[part]; !ok || asked != peer || !t.isDownloading() {
+		return nil
+	}
+	hashes, ok := aich.MatchRecovery(t.aich.root, t.file.Size, part, entries)
+	if !ok || root != t.aich.root || !t.aich.isTrusted {
+		return t.OnRecoveryFailed(peer, now)
+	}
+	delete(t.aich.asked, part)
+	t.aich.verified[part] = hashes
+	begin := int64(part) * piece.PartSize
+	return []Action{HashBlocks{Part: part, Begin: begin, End: min(begin+piece.PartSize, t.file.Size)}}
+}
+
+// OnRecoveryFailed: the peer could not give the recovery data it was asked
+// for. Its root is forgotten and another source is asked
+// (ClientAICHRequestFailed, SHAHashSet.cpp:1014-1028).
+func (t *Transfer) OnRecoveryFailed(peer uint64, now time.Time) []Action {
+	delete(t.aich.roots, peer)
+	for part, asked := range t.aich.asked {
+		if asked == peer {
+			delete(t.aich.asked, part)
+			if t.isDownloading() {
+				return t.requestRecovery(part, now)
+			}
+		}
+	}
+	return nil
+}
+
+// OnBlocksHashed compares our blocks of a part under repair with the
+// checked ones: the good blocks stay, the bad ones are downloaded again and
+// their senders banned (AICHRecoveryDataAvailable, PartFile.cpp:3895-4010).
+func (t *Transfer) OnBlocksHashed(part int, hashes []wire.AICHHash, now time.Time) []Action {
+	verified, ok := t.aich.verified[part]
+	delete(t.aich.verified, part)
+	if !ok || !t.isDownloading() {
+		return nil
+	}
+	// A block written before a restart has no known sender, so a bad block
+	// is noted apart from who sent it.
+	isCorrupt := false
+	var senders []uint64
+	begin := int64(part) * piece.PartSize
+	for i, hash := range verified {
+		if i < len(hashes) && hashes[i] == hash {
+			continue
+		}
+		isCorrupt = true
+		for _, sender := range t.picker.OnBlockFailed(t.picker.BlockAt(begin + int64(i)*piece.BlockSize)) {
+			if !slices.Contains(senders, sender) {
+				senders = append(senders, sender)
+			}
+		}
+	}
+	if !isCorrupt {
+		t.aich.isBroken, t.aich.isTrusted = true, false
+		return t.removePart(part, now)
+	}
+	var actions []Action
+	for _, peer := range senders {
+		actions = append(actions, t.removeCorrupt(peer, now)...)
+	}
+	return actions
+}
+
+// onRecoveryPeerGone drops a peer that is gone and asks another source for
+// the part it was asked about.
+func (t *Transfer) onRecoveryPeerGone(peer uint64, now time.Time) []Action {
+	if !t.isAsked(peer) {
+		delete(t.aich.roots, peer)
+		return nil
+	}
+	return t.OnRecoveryFailed(peer, now)
+}

@@ -82,6 +82,12 @@ func (r *Reader) Hash() Hash {
 	return h
 }
 
+func (r *Reader) AICHHash() AICHHash {
+	var h AICHHash
+	copy(h[:], r.Bytes(20))
+	return h
+}
+
 // String reads a string with a uint16 length prefix.
 func (r *Reader) String() string {
 	return string(r.Bytes(int(r.Uint16())))

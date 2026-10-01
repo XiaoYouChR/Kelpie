@@ -47,6 +47,11 @@ const (
 	opRequestParts64    byte = 0xA3
 	opMultiPacketExt    byte = 0xA4
 
+	opAICHRequest         byte = 0x9B
+	opAICHAnswer          byte = 0x9C
+	opAICHFileHashAnswer  byte = 0x9D
+	opAICHFileHashRequest byte = 0x9E
+
 	opReaskFilePing byte = 0x90
 	opReaskAck      byte = 0x91
 	opFileNotFound  byte = 0x92
@@ -179,6 +184,14 @@ func parseEMule(r *wire.Reader, opcode byte) wire.Packet {
 		return parseMultiPacketExt(r)
 	case opMultiPacketAnswer:
 		return parseMultiPacketAnswer(r)
+	case opAICHFileHashRequest:
+		return AICHFileHashRequest{Hash: r.Hash()}
+	case opAICHFileHashAnswer:
+		return AICHFileHashAnswer{Hash: r.Hash(), Root: r.AICHHash()}
+	case opAICHRequest:
+		return AICHRequest{Hash: r.Hash(), Part: r.Uint16(), Root: r.AICHHash()}
+	case opAICHAnswer:
+		return parseAICHAnswer(r)
 	case opIPv6Changed:
 		// emule-qt accepts it under either protocol byte; so do we.
 		return IPv6Changed{Addr: r.IPv6()}
