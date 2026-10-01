@@ -95,8 +95,10 @@ type Transfer struct {
 	sources         []*source
 	peers           map[uint64]*source
 	senders         map[uint64]*source
-	bannedHashes    map[wire.Hash]bool
-	bannedEndpoints map[netip.AddrPort]bool
+	// bannedHashes and bannedEndpoints map a banned source to when its ban
+	// ends.
+	bannedHashes    map[wire.Hash]time.Time
+	bannedEndpoints map[netip.AddrPort]time.Time
 
 	// tick is the engine's state as of the last OnTick.
 	tick Tick
@@ -123,8 +125,8 @@ func Build(options Options, now time.Time) *Transfer {
 		hashSetAskedPeers: map[uint64]bool{},
 		peers:             map[uint64]*source{},
 		senders:           map[uint64]*source{},
-		bannedHashes:      map[wire.Hash]bool{},
-		bannedEndpoints:   map[netip.AddrPort]bool{},
+		bannedHashes:      map[wire.Hash]time.Time{},
+		bannedEndpoints:   map[netip.AddrPort]time.Time{},
 		aich:              buildAICHState(options.File.AICHHash, options.Random),
 	}
 	if state := options.State; state != nil && state.File == options.Path && state.Size == options.File.Size {

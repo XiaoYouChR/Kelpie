@@ -603,6 +603,9 @@ func (e *Engine) onTick() {
 	}
 	e.runTransfers(now)
 	e.refreshUploadEndpoints()
+	e.refreshKnownSources()
+	e.refreshAsked()
+	e.refreshA4AF()
 	e.runServer(e.server.OnTick(now, e.buildServerWanted()))
 	e.runBuddy(now)
 	if e.kad != nil {
@@ -613,6 +616,7 @@ func (e *Engine) onTick() {
 	}
 	if now.Sub(e.lastSave) >= saveInterval {
 		e.lastSave = now
+		e.ledger.RemoveIdle(now)
 		e.requestSave()
 	}
 }

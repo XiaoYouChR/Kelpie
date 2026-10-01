@@ -121,6 +121,10 @@ func loadRange(w io.Writer, file disk.File, begin, end int64) error {
 
 func (e *Engine) onDiskDone(d diskDone) {
 	e.disk.onDone()
+	if d.job.kind == jobRead {
+		e.onBlockRead(d)
+		return
+	}
 	r := e.runs[d.job.run]
 	if r == nil {
 		return
@@ -156,10 +160,6 @@ func (e *Engine) onDiskDone(d diskDone) {
 	case jobHashPart:
 		e.runTransferActions(r, r.transfer.OnPartHashed(d.job.part, d.digest, now))
 		e.refreshShare(r)
-	case jobRead:
-		if c := e.conns[d.job.conn]; c != nil && c.session != nil {
-			e.onBlockRead(c, d.job.hash, d.job.block, d.data)
-		}
 	case jobHashBlocks:
 		e.runTransferActions(r, r.transfer.OnBlocksHashed(d.job.part, d.leaves, now))
 	case jobHashTree:

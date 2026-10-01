@@ -18,6 +18,10 @@ const (
 	// eMule's AddReqBlock refuses a requested range longer than three
 	// EMBLOCKSIZE blocks.
 	maxRequestSize = 3 * piece.BlockSize
+	// maxUploadBlocks bounds the blocks a peer may have requested and not
+	// yet received, and the sent blocks remembered: aMule keeps at most 32
+	// requests open to one uploader (DownloadClient.cpp:603).
+	maxUploadBlocks = 32
 )
 
 // Share is one of our files as offered to peers. Parts is what we can
@@ -49,9 +53,11 @@ type uploadState struct {
 	parts       map[wire.Hash]piece.Set
 	isUploading bool
 	sizes       map[wire.Hash]int64
-	// blocks holds every block requested during this slot; true once sent,
-	// so a peer re-listing blocks still in flight gets each only once.
+	// blocks holds the blocks requested and not yet sent (false) and the
+	// last ones sent (true, oldest first in sent), so a peer re-listing
+	// blocks still in flight gets each only once.
 	blocks map[uploadBlock]bool
+	sent   []uploadBlock
 }
 
 // StartUpload gives the peer an upload slot.
@@ -59,6 +65,7 @@ func (s *Session) StartUpload() Output {
 	var out Output
 	s.up.isUploading = true
 	clear(s.up.blocks)
+	s.up.sent = nil
 	out.send(client.AcceptUploadRequest{})
 	return out
 }
@@ -69,6 +76,7 @@ func (s *Session) StopUpload() Output {
 	if s.up.isUploading {
 		s.up.isUploading = false
 		clear(s.up.blocks)
+		s.up.sent = nil
 		out.send(client.OutOfParts{})
 	}
 	return out
@@ -94,6 +102,10 @@ func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Outp
 		return out
 	}
 	s.up.blocks[key] = true
+	if s.up.sent = append(s.up.sent, key); len(s.up.sent) > maxUploadBlocks {
+		delete(s.up.blocks, s.up.sent[0])
+		s.up.sent = s.up.sent[1:]
+	}
 	isLarge := s.up.sizes[file] > largeFileSize
 	if s.caps.CanCompress {
 		if packed := toDeflated(data); len(packed) < len(data) {
@@ -276,7 +288,8 @@ func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, shares Sh
 	var fresh []piece.Block
 	for _, b := range blocks {
 		key := uploadBlock{file, b}
-		if _, seen := s.up.blocks[key]; seen || b.End > share.Size || b.End-b.Begin > maxRequestSize {
+		isFull := len(s.up.blocks)-len(s.up.sent) >= maxUploadBlocks
+		if _, seen := s.up.blocks[key]; seen || isFull || b.End > share.Size || b.End-b.Begin > maxRequestSize {
 			continue
 		}
 		s.up.blocks[key] = false
@@ -290,6 +303,7 @@ func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, shares Sh
 func (s *Session) onUploadCancelled(out *Output) {
 	s.up.isUploading = false
 	clear(s.up.blocks)
+	s.up.sent = nil
 	out.add(UploadCancelled{})
 }
 

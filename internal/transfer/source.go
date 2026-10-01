@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"time"
@@ -29,6 +30,9 @@ const (
 	callbackTimeout = 40 * time.Second
 	// deadSourceTime is DeadSourceList.cpp's BLOCKTIME for a file's own list.
 	deadSourceTime = 45 * time.Minute
+	// banTime is CLIENTBANTIME (Constants.h:66), how long a source that sent
+	// corrupt data stays refused.
+	banTime = 2 * time.Hour
 
 	serverReaskTime       = 15 * time.Minute // SERVERREASKTIME
 	globalServerReaskTime = 30 * time.Minute // UDPSERVERREASKTIME
@@ -198,9 +202,9 @@ func (t *Transfer) matchingSource(found Source) *source {
 	return nil
 }
 
-func (t *Transfer) isBanned(found Source) bool {
-	return found.UserHash != (wire.Hash{}) && t.bannedHashes[found.UserHash] ||
-		found.Endpoint.IsValid() && t.bannedEndpoints[found.Endpoint]
+func (t *Transfer) isBanned(found Source, now time.Time) bool {
+	return found.UserHash != (wire.Hash{}) && now.Before(t.bannedHashes[found.UserHash]) ||
+		found.Endpoint.IsValid() && now.Before(t.bannedEndpoints[found.Endpoint])
 }
 
 func (t *Transfer) isUsable(found Source) bool {
@@ -255,7 +259,7 @@ func (t *Transfer) OnSourcesFound(found []Source, channel Channel, now time.Time
 func (t *Transfer) addSource(found Source, channel Channel, now time.Time) []Action {
 	// A LowID source can only be reached by a callback, which a firewalled
 	// client cannot get (aMule CPartFile::CanAddSource, PartFile.cpp:1769).
-	if !t.isUsable(found) || t.isBanned(found) || found.ClientID != 0 && t.tick.IsFirewalled {
+	if !t.isUsable(found) || t.isBanned(found, now) || found.ClientID != 0 && t.tick.IsFirewalled {
 		return nil
 	}
 	if s := t.matchingSource(found); s != nil {
@@ -354,7 +358,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Ac
 		found.ClientID = hello.ClientID
 		found.Server = hello.Server
 	}
-	if t.isBanned(found) {
+	if t.isBanned(found, now) {
 		return []Action{Close{Peer: peer, Reason: "banned"}}
 	}
 	s := t.connectedSource(hello)
@@ -533,10 +537,10 @@ func (t *Transfer) removeCorrupt(peer uint64, now time.Time) []Action {
 		return nil
 	}
 	if s.UserHash != (wire.Hash{}) {
-		t.bannedHashes[s.UserHash] = true
+		t.bannedHashes[s.UserHash] = now.Add(banTime)
 	}
 	if s.Endpoint.IsValid() {
-		t.bannedEndpoints[s.Endpoint] = true
+		t.bannedEndpoints[s.Endpoint] = now.Add(banTime)
 	}
 	t.removeSource(s)
 	event := t.buildTrace(now, s, EventClosed)
@@ -564,6 +568,7 @@ func (t *Transfer) OnTick(tick Tick) []Action {
 		return actions
 	}
 	t.tick = tick
+	t.removeExpired(tick.Now)
 	if tick.IsFirewalled {
 		t.sources = slices.DeleteFunc(t.sources, func(s *source) bool { return s.ClientID != 0 && !s.isConnected })
 	}
@@ -715,4 +720,25 @@ func (t *Transfer) requestSources(tick Tick) []Action {
 		actions = append(actions, RequestSources{Channel: ChannelKad})
 	}
 	return actions
+}
+
+// Sources lists the sources the transfer keeps.
+func (t *Transfer) Sources() []Source {
+	sources := make([]Source, len(t.sources))
+	for i, s := range t.sources {
+		sources[i] = s.Source
+	}
+	return sources
+}
+
+// removeExpired forgets bans that ended, and the senders of connections
+// that are gone and named by no block still waiting for its part hash: only
+// those can still be banned for corrupt data.
+func (t *Transfer) removeExpired(now time.Time) {
+	maps.DeleteFunc(t.bannedHashes, func(_ wire.Hash, until time.Time) bool { return !now.Before(until) })
+	maps.DeleteFunc(t.bannedEndpoints, func(_ netip.AddrPort, until time.Time) bool { return !now.Before(until) })
+	senders := t.picker.Senders()
+	maps.DeleteFunc(t.senders, func(peer uint64, _ *source) bool {
+		return t.peers[peer] == nil && !slices.Contains(senders, peer)
+	})
 }

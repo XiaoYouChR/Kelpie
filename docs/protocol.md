@@ -101,7 +101,8 @@ Engine Process and fails with `START_FAILED`.
 
 ## Trace
 
-One JSON line per event, appended to `traceFile`:
+One JSON line per event, appended to `traceFile`. While the file falls more
+than 65536 lines behind, further lines are dropped.
 
 ```json
 {"time": 1767225600123, "hash": "31D6...", "source": "1.2.3.4:4662", "event": "found", "channel": "server"}

@@ -33,6 +33,16 @@ func toTraceLine(ev transfer.TraceEvent) traceLine {
 	return line
 }
 
+// maxTraceBacklog bounds the lines waiting for a slow trace file; more are
+// dropped, since the trace is only a diagnostic.
+const maxTraceBacklog = 65536
+
+func (e *Engine) sendTrace(ev transfer.TraceEvent) {
+	if e.trace != nil && len(e.trace.backlog) < maxTraceBacklog {
+		e.trace.send(toTraceLine(ev))
+	}
+}
+
 // runTraceWriter is the trace file's leaf; it appends each line and reports
 // it written so the hub can send the next.
 func (e *Engine) runTraceWriter(file *os.File, lines <-chan traceLine) {

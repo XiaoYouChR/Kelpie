@@ -89,9 +89,18 @@ func (r *Reader) Tag() Tag {
 	return t
 }
 
+// maxTags bounds one tag list. A compact tag of 3 bytes decodes into a
+// Tag of about 100, so an unbounded list in a 2 MB frame would take 64 MB;
+// Kad counts tags in one byte, and no eD2k list comes near it.
+const maxTags = 255
+
 // Tags reads a uint32 count followed by that many tags.
 func (r *Reader) Tags() []Tag {
 	count := r.Uint32()
+	if count > maxTags {
+		r.SetErr(fmt.Errorf("wire: %d tags exceed %d", count, maxTags))
+		return nil
+	}
 	if uint64(count) > uint64(r.Len()/2) {
 		r.SetErr(fmt.Errorf("wire: %d tags cannot fit in %d bytes", count, r.Len()))
 		return nil

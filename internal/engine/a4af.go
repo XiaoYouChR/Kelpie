@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"maps"
 	"net/netip"
 	"time"
 
@@ -199,4 +200,14 @@ func (e *Engine) swapTarget(c *conn, user, file wire.Hash, isAnyFile bool) *run 
 		}
 	}
 	return fallback
+}
+
+// refreshA4AF forgets clients no download holds any more and that have no
+// swap suspension left: they no longer change any decision.
+func (e *Engine) refreshA4AF() {
+	now := e.now()
+	maps.DeleteFunc(e.a4afClients, func(_ wire.Hash, client *a4afClient) bool {
+		maps.DeleteFunc(client.suspended, func(_ wire.Hash, until time.Time) bool { return !now.Before(until) })
+		return len(client.suspended) == 0 && !now.Before(client.lastAsked.Add(a4afTime))
+	})
 }

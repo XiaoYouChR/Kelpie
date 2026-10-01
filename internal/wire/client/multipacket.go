@@ -11,7 +11,9 @@ import (
 // Requests holds FileRequest, SetRequestFileID, RequestSources,
 // RequestSources2 and AICHFileHashRequest values, whose Hash is the MultiPacket's. Sub-requests are
 // not length-prefixed, so an unknown one ends parsing and is kept, with
-// everything after it, as a trailing wire.Unknown.
+// everything after it, as a trailing wire.Unknown. A repeated opcode is read
+// and dropped: eMule sends each once, and keeping every repeat would turn a
+// frame of one-byte requests into millions of values.
 type MultiPacket struct {
 	Hash     wire.Hash
 	Requests []wire.Packet
@@ -189,8 +191,10 @@ func parseMultiPacketExt2(r *wire.Reader) MultiPacketExt2 {
 
 func parseRequests(r *wire.Reader, hash wire.Hash) []wire.Packet {
 	var out []wire.Packet
+	var isSeen [256]bool
 	for r.Len() > 0 && r.Err() == nil {
 		op := r.Uint8()
+		var p wire.Packet
 		switch op {
 		case opRequestFileName:
 			f := FileRequest{Hash: hash}
@@ -200,17 +204,21 @@ func parseRequests(r *wire.Reader, hash wire.Hash) []wire.Packet {
 			if ExtendedRequestsVersion >= 2 {
 				f.HasCompleteSources, f.CompleteSources = true, r.Uint16()
 			}
-			out = append(out, f)
+			p = f
 		case opSetRequestFileID:
-			out = append(out, SetRequestFileID{Hash: hash})
+			p = SetRequestFileID{Hash: hash}
 		case opRequestSources:
-			out = append(out, RequestSources{Hash: hash})
+			p = RequestSources{Hash: hash}
 		case opRequestSources2:
-			out = append(out, RequestSources2{Version: r.Uint8(), Options: r.Uint16(), Hash: hash})
+			p = RequestSources2{Version: r.Uint8(), Options: r.Uint16(), Hash: hash}
 		case opAICHFileHashRequest:
-			out = append(out, AICHFileHashRequest{Hash: hash})
+			p = AICHFileHashRequest{Hash: hash}
 		default:
 			return append(out, wire.Unknown{Proto: wire.ProtocolEMule, Op: op, Body: r.Bytes(r.Len())})
+		}
+		if !isSeen[op] {
+			isSeen[op] = true
+			out = append(out, p)
 		}
 	}
 	return out
@@ -230,17 +238,23 @@ func parseMultiPacketAnswerExt2(r *wire.Reader) MultiPacketAnswerExt2 {
 
 func parseAnswers(r *wire.Reader, hash wire.Hash) []wire.Packet {
 	var out []wire.Packet
+	var isSeen [256]bool
 	for r.Len() > 0 && r.Err() == nil {
 		op := r.Uint8()
+		var p wire.Packet
 		switch op {
 		case opFileNameAnswer:
-			out = append(out, FileNameAnswer{Hash: hash, Name: r.String()})
+			p = FileNameAnswer{Hash: hash, Name: r.String()}
 		case opFileStatus:
-			out = append(out, FileStatus{Hash: hash, Parts: r.Bitfield()})
+			p = FileStatus{Hash: hash, Parts: r.Bitfield()}
 		case opAICHFileHashAnswer:
-			out = append(out, AICHFileHashAnswer{Hash: hash, Root: r.AICHHash()})
+			p = AICHFileHashAnswer{Hash: hash, Root: r.AICHHash()}
 		default:
 			return append(out, wire.Unknown{Proto: wire.ProtocolEMule, Op: op, Body: r.Bytes(r.Len())})
+		}
+		if !isSeen[op] {
+			isSeen[op] = true
+			out = append(out, p)
 		}
 	}
 	return out
