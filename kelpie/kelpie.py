@@ -5,6 +5,7 @@ import re
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,13 @@ class Run:
             self.setEnded(asyncio.CancelledError())
 
 
+@dataclass
+class EngineProcess:
+    process: asyncio.subprocess.Process
+    routes: dict[int, Run] = field(default_factory=dict)
+    network: Network | None = None
+
+
 class Kelpie:
     def __init__(
         self,
@@ -74,17 +82,15 @@ class Kelpie:
         self._dataFolder = dataFolder
         self._settings = settings
         self._rateLimits = (0, 0)
-        self._process: asyncio.subprocess.Process | None = None
+        self._engine: EngineProcess | None = None
         self._starting: asyncio.Task[None] | None = None
-        self._routes: dict[int, Run] = {}
         self._runs: dict[str, Run] = {}
         self._nextRunId = 1
-        self._network: Network | None = None
         self._tasks: set[asyncio.Task[None]] = set()
 
     @property
     def network(self) -> Network | None:
-        return self._network
+        return self._engine.network if self._engine is not None else None
 
     def runDownload(self, link: Link, file: Path) -> AbstractAsyncContextManager[Run]:
         return self.run("download", link, file)
@@ -94,19 +100,23 @@ class Kelpie:
 
     def setRateLimits(self, download: int, upload: int) -> None:
         self._rateLimits = (download, upload)
-        if self._process is not None:
-            send(self._process, {"type": "setRateLimits", "download": download, "upload": upload})
+        if self._engine is not None:
+            send(
+                self._engine.process,
+                {"type": "setRateLimits", "download": download, "upload": upload},
+            )
 
     def isActive(self, hash: str) -> bool:
         return hash in self._runs
 
     async def remove(self, hash: str) -> None:
         run = self._runs.get(hash)
-        if run is not None and self._routes.pop(run.id, None) is not None:
+        engine = self._engine
+        if run is not None and engine is not None and engine.routes.pop(run.id, None) is not None:
             run.cancel()
         await self.start()
-        if self._process is not None:
-            send(self._process, {"type": "remove", "hash": hash})
+        if self._engine is not None:
+            send(self._engine.process, {"type": "remove", "hash": hash})
 
     async def close(self) -> None:
         if self._starting is not None:
@@ -114,14 +124,13 @@ class Kelpie:
                 await asyncio.shield(self._starting)
             except Error:
                 pass
-        process = self._process
-        if process is None:
+        engine = self._engine
+        if engine is None:
             return
-        self._process = None
-        self._network = None
-        routes, self._routes = self._routes, {}
-        for run in routes.values():
+        self._engine = None
+        for run in engine.routes.values():
             run.cancel()
+        process = engine.process
         process.stdin.close()
         try:
             async with asyncio.timeout(CLOSE_TIMEOUT):
@@ -144,12 +153,12 @@ class Kelpie:
             except Error as error:
                 run.setEnded(error)
             else:
-                if self._process is None:
+                if self._engine is None:
                     run.setEnded(Error(ErrorCode.ENGINE_EXITED, "Engine Process exited"))
                 else:
-                    self._routes[run.id] = run
+                    self._engine.routes[run.id] = run
                     send(
-                        self._process,
+                        self._engine.process,
                         {
                             "type": "run",
                             "run": run.id,
@@ -161,11 +170,12 @@ class Kelpie:
             yield run
         finally:
             del self._runs[link.hash]
-            if self._routes.pop(run.id, None) is not None:
-                send(self._process, {"type": "stop", "run": run.id})
+            engine = self._engine
+            if engine is not None and engine.routes.pop(run.id, None) is not None:
+                send(engine.process, {"type": "stop", "run": run.id})
 
     async def start(self) -> None:
-        if self._process is not None:
+        if self._engine is not None:
             return
         if self._starting is None:
             self._starting = asyncio.create_task(self.createProcess())
@@ -201,7 +211,7 @@ class Kelpie:
     ) -> None:
         stderr: deque[str] = deque(maxlen=20)
         stderrTask = asyncio.create_task(refreshStderr(process, stderr))
-        routes: dict[int, Run] = {}
+        engine = EngineProcess(process)
         try:
             async with asyncio.timeout(HANDSHAKE_TIMEOUT):
                 line = await process.stdout.readline()
@@ -216,12 +226,10 @@ class Kelpie:
             failure = parseHandshake(line) if line else None
         isReady = bool(line) and failure is None
         if isReady:
-            self._process = process
-            self._routes = routes
-            self._network = None
+            self._engine = engine
             ready.set_result(None)
             while line := await process.stdout.readline():
-                self.onMessage(line, routes)
+                onMessage(engine, line)
         elif failure is not None:
             process.stdin.close()
         await stderrTask
@@ -235,30 +243,29 @@ class Kelpie:
                 )
             )
             return
-        if self._process is process:
-            self._process = None
-            self._routes = {}
-            self._network = None
+        if self._engine is engine:
+            self._engine = None
         exited = Error(ErrorCode.ENGINE_EXITED, lastLine)
-        for run in routes.values():
+        for run in engine.routes.values():
             run.setEnded(exited)
 
-    def onMessage(self, line: bytes, routes: dict[int, Run]) -> None:
-        try:
-            message = json.loads(line)
-            match message.get("type"):
-                case "progress":
-                    run = routes.get(message["run"])
-                    if run is not None:
-                        run.setProgress(parseProgress(message))
-                case "ended":
-                    run = routes.pop(message["run"], None)
-                    if run is not None:
-                        run.setEnded(parseError(message["error"]))
-                case "network":
-                    self._network = parseNetwork(message)
-        except (ValueError, KeyError, TypeError, AttributeError) as error:
-            logger.warning("ignored invalid Engine Process message %r: %s", line, error)
+
+def onMessage(engine: EngineProcess, line: bytes) -> None:
+    try:
+        message = json.loads(line)
+        match message.get("type"):
+            case "progress":
+                run = engine.routes.get(message["run"])
+                if run is not None:
+                    run.setProgress(parseProgress(message))
+            case "ended":
+                run = engine.routes.pop(message["run"], None)
+                if run is not None:
+                    run.setEnded(parseError(message["error"]))
+            case "network":
+                engine.network = parseNetwork(message)
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        logger.warning("ignored invalid Engine Process message %r: %s", line, error)
 
 
 def send(process: asyncio.subprocess.Process, message: dict[str, Any]) -> None:
