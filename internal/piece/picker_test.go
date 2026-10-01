@@ -250,7 +250,9 @@ func TestResumeDataOutsideFileIsRejected(t *testing.T) {
 	random := rand.New(rand.NewPCG(1, 0))
 	invalid := []piece.ResumeData{
 		{VerifiedParts: []int{1}},
-		{WrittenBlocks: []piece.Block{{Begin: 0, End: 10}}},
+		{WrittenBlocks: []piece.Block{{Begin: 10, End: 20}}},
+		{WrittenBlocks: []piece.Block{{Begin: 0, End: 0}}},
+		{WrittenBlocks: []piece.Block{{Begin: 0, End: piece.BlockSize + 1}}},
 		{WrittenBlocks: []piece.Block{{Begin: piece.PartSize, End: piece.PartSize + piece.BlockSize}}},
 	}
 	for _, resume := range invalid {
@@ -284,8 +286,8 @@ func TestPartlyReceivedBlockKeepsItsBytes(t *testing.T) {
 	if got := picker.WrittenSize(); got != 1000 {
 		t.Fatalf("written size = %d, want the 1000 bytes of the head", got)
 	}
-	if got := picker.ToResumeData().WrittenBlocks; len(got) != 0 {
-		t.Fatalf("a partly written block was saved for resume: %v", got)
+	if got := picker.ToResumeData().WrittenBlocks; !slices.Equal(got, []piece.Block{head}) {
+		t.Fatalf("resume data = %v, want the written head %v", got, head)
 	}
 
 	late := piece.Block{Begin: block.Begin, End: block.Begin + 5000}
@@ -325,5 +327,36 @@ func TestBlockFailedIsRequestedAlone(t *testing.T) {
 	}
 	if got := picker.Request("a", 3); !slices.Equal(got, blocks[2:]) {
 		t.Fatalf("requested %v after the failure, want only %v", got, blocks[2:])
+	}
+}
+
+// A block cut off when a slot ended keeps its written head across a
+// restart, and only its tail is asked for again.
+func TestResumeDataKeepsWrittenHeadOfBlock(t *testing.T) {
+	size := 3 * piece.BlockSize
+	picker := buildPicker(t, size, piece.ResumeData{}, 1)
+	picker.OnPeerParts("a", piece.Set{true})
+	blocks := picker.Request("a", 3)
+	head := piece.Block{Begin: blocks[0].Begin, End: blocks[0].Begin + 1000}
+	fresh, _ := picker.OnBlockReceived("a", head)
+	picker.OnBlockWritten(fresh)
+	pending := piece.Block{Begin: blocks[1].Begin, End: blocks[1].Begin + 500}
+	picker.OnBlockReceived("a", pending)
+
+	resume := picker.ToResumeData()
+	if !slices.Equal(resume.WrittenBlocks, []piece.Block{head}) {
+		t.Fatalf("WrittenBlocks = %v, want only the written head %v", resume.WrittenBlocks, head)
+	}
+	restored := buildPicker(t, size, resume, 2)
+	if got := restored.WrittenSize(); got != 1000 {
+		t.Fatalf("restored WrittenSize = %d, want 1000", got)
+	}
+	restored.OnPeerParts("b", piece.Set{true})
+	got := restored.Request("b", 3)
+	if !slices.Contains(got, piece.Block{Begin: head.End, End: blocks[0].End}) || !slices.Contains(got, blocks[1]) {
+		t.Fatalf("restored picker requested %v, want the tail of the first block and the whole second", got)
+	}
+	if again := restored.ToResumeData(); !slices.Equal(again.WrittenBlocks, resume.WrittenBlocks) {
+		t.Fatalf("resume data after restart = %v, want %v", again.WrittenBlocks, resume.WrittenBlocks)
 	}
 }

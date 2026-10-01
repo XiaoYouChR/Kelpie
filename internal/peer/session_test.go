@@ -568,6 +568,9 @@ func TestNoSlotAskedWithoutNeededParts(t *testing.T) {
 	if sentCount[client.StartUploadRequest](l) != 0 {
 		t.Fatal("asked a slot of a peer with nothing we need")
 	}
+	if lastOf[NoNeededParts](t, l.a).File != file {
+		t.Fatal("no NoNeededParts for a peer with nothing we need")
+	}
 
 	share.Parts = piece.Set{true, false, true}
 	l.b.shares[file] = share
@@ -590,6 +593,9 @@ func TestEmptySlotIsCancelled(t *testing.T) {
 	}
 	if lastOf[SlotRevoked](t, l.a).File != file {
 		t.Fatal("slot not released")
+	}
+	if lastOf[NoNeededParts](t, l.a).File != file {
+		t.Fatal("empty slot not reported as no needed parts")
 	}
 	lastOf[UploadCancelled](t, l.b)
 }

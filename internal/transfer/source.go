@@ -20,12 +20,11 @@ const (
 	// it last told us its rank, with no further connect guard
 	// (PartFile.cpp:1604-1621).
 	fileReaskTime = 1300 * time.Second
-	// udpReaskLead is the window before the TCP reask in which
-	// CPartFile::Process tries OP_REASKFILEPING instead.
-	udpReaskLead = 2 * time.Minute
-	// udpReaskLast is CPartFile::Process's lower bound: no UDP reask within
-	// one second of the TCP reask.
-	udpReaskLast = time.Second
+	// udpReaskLead is the window before the TCP reask in which a queued
+	// source is reasked with OP_REASKFILEPING instead: aMule tries it once
+	// FILEREASKTIME-20000 ms have passed (PartFile.cpp:1594-1601), eMule two
+	// minutes before.
+	udpReaskLead = 20 * time.Second
 	// callbackTimeout is CONNECTION_TIMEOUT, how long a callback may take.
 	callbackTimeout = 40 * time.Second
 	// deadSourceTime is DeadSourceList.cpp's BLOCKTIME for a file's own list.
@@ -44,6 +43,11 @@ const (
 
 	// maxSources is eMule's MaxSourcesPerFile default.
 	maxSources = 400
+	// noNeededPurgeTime and noNeededPurgeShare: near the source cap, one
+	// source with no part we need is dropped at most every 40 s once the
+	// file has 80% of maxSources (aMule PartFile.cpp:1559-1573).
+	noNeededPurgeTime  = 40 * time.Second
+	noNeededPurgeShare = 0.8
 	// maxSourcesSoft is GetMaxSourcePerFileSoft: 9/10 of maxSources, capped
 	// at MAX_SOURCES_FILE_SOFT (750). Above it no more sources are asked for.
 	maxSourcesSoft = maxSources * 9 / 10
@@ -135,8 +139,14 @@ type source struct {
 	// hasAnswered: the connected source answered our file request with its
 	// part status, so we asked it for a slot.
 	hasAnswered bool
-	peer        uint64
-	rank        int
+	// isNoNeeded: its last part status had no part we need (aMule
+	// DS_NONEEDEDPARTS).
+	isNoNeeded bool
+	// a4afUntil: until then another Transfer asks this client for a slot,
+	// and this one leaves it alone (aMule's A4AF list).
+	a4afUntil time.Time
+	peer      uint64
+	rank      int
 
 	lastAsked       time.Time
 	callbackTimeout time.Time
@@ -370,6 +380,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Ac
 	s.state = stateAsking
 	s.isConnected = true
 	s.hasAnswered = false
+	s.a4afUntil = time.Time{}
 	s.lastAsked = now
 	s.peer = peer
 	t.peers[peer] = s
@@ -553,12 +564,53 @@ func (t *Transfer) OnTick(tick Tick) []Action {
 	if tick.IsFirewalled {
 		t.sources = slices.DeleteFunc(t.sources, func(s *source) bool { return s.ClientID != 0 && !s.isConnected })
 	}
+	t.purgeNoNeeded(tick.Now)
 	budget := tick.ConnectBudget
 	for _, s := range slices.Clone(t.sources) {
 		actions = append(actions, t.runSource(s, tick, &budget)...)
 	}
 	actions = append(actions, t.requestSources(tick)...)
 	return append(actions, t.requestHashSet()...)
+}
+
+// SetA4AF leaves a source to another Transfer until the given time: that
+// Transfer is asking the client for a slot, and asking it for this file as
+// well would count as aggressive on the client (aMule's A4AF list,
+// DownloadQueue.cpp:623-717). Meanwhile the source is neither connected to
+// nor reasked. found names the source by user hash or endpoint, and gives it
+// the user hash it lacked.
+func (t *Transfer) SetA4AF(found Source, until time.Time) {
+	for _, s := range t.sources {
+		if !matchSource(s, found) {
+			continue
+		}
+		if s.UserHash == (wire.Hash{}) {
+			s.UserHash = found.UserHash
+		}
+		s.a4afUntil = until
+		if s.state == stateConnecting || s.state == stateWaiting {
+			s.state = stateNew
+		}
+	}
+}
+
+// OnNoNeededParts records that a connected source has no part we still
+// need, or gave a slot with nothing left to request.
+func (t *Transfer) OnNoNeededParts(peer uint64) {
+	if s := t.peers[peer]; t.isDownloading() && s != nil {
+		s.isNoNeeded = true
+	}
+}
+
+func (t *Transfer) purgeNoNeeded(now time.Time) {
+	if float64(len(t.sources)) < maxSources*noNeededPurgeShare || now.Sub(t.lastPurge) <= noNeededPurgeTime {
+		return
+	}
+	i := slices.IndexFunc(t.sources, func(s *source) bool { return s.isNoNeeded && !s.isConnected && !now.Before(s.a4afUntil) })
+	if i >= 0 {
+		t.sources = slices.Delete(t.sources, i, i+1)
+		t.lastPurge = now
+	}
 }
 
 func (t *Transfer) runSource(s *source, tick Tick, budget *int) []Action {
@@ -578,15 +630,21 @@ func (t *Transfer) runSource(s *source, tick Tick, budget *int) []Action {
 	case stateAsking, stateDownloading:
 		return nil
 	}
-	if s.isConnected {
+	if s.isConnected || now.Before(s.a4afUntil) {
 		return nil
 	}
 
+	// aMule doubles the reask of a source with nothing we need and never
+	// UDP-reasks it (PartFile.cpp:1574-1580).
+	reaskTime := fileReaskTime
+	if s.isNoNeeded {
+		reaskTime *= 2
+	}
 	untilReask := time.Duration(0)
 	if !s.lastAsked.IsZero() {
-		untilReask = max(0, fileReaskTime-now.Sub(s.lastAsked))
+		untilReask = max(0, reaskTime-now.Sub(s.lastAsked))
 	}
-	if s.state == stateQueued && untilReask < udpReaskLead && untilReask > udpReaskLast && t.canReaskUDP(s, tick) {
+	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s, tick) {
 		s.isUDPPending = true
 		s.udpReasks++
 		return []Action{ReaskUDP{Endpoint: netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort)}}

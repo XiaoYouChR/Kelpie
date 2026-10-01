@@ -1,0 +1,198 @@
+package engine
+
+import (
+	"net/netip"
+	"time"
+
+	"github.com/XiaoYouChR/Kelpie/internal/transfer"
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
+)
+
+// A client grants upload slots per client, not per file. It counts every
+// OP_STARTUPLOADREQ and OP_REASKFILEPING within MIN_REQUESTTIME as aggressive
+// whatever file it names (aMule UploadClient.cpp:647-677,
+// ClientTCPSocket.cpp:539, ClientUDPSocket.cpp:194), and OP_SETREQFILEID
+// changes which file it thinks we wait for (ClientTCPSocket.cpp:425-460). So,
+// like aMule with its request file and A4AF ("asking for another file") list
+// (DownloadClient.cpp:496-517, 1431-1540), the engine asks each client for
+// one download at a time; every other download that knows the client leaves
+// it alone until the client is swapped over to it.
+
+const (
+	// minRequestTime is MIN_REQUESTTIME (Constants.h:67).
+	minRequestTime = 590 * time.Second
+	// swapSuspendTime is PURGESOURCESWAPSTOP (Constants.h:69): a client is
+	// not swapped back to a download it left for having no needed parts.
+	swapSuspendTime = 15 * time.Minute
+	// a4afTime is how long a download holds a client after asking it: twice
+	// FILEREASKTIME, the reask of a source with no needed parts. A holder
+	// that stops asking frees the client.
+	a4afTime = 2 * fileReaskTime
+)
+
+// a4afClient is what the engine remembers of one client across
+// connections: the download it last asked a slot for (aMule's m_reqfile),
+// and the downloads it was swapped away from.
+type a4afClient struct {
+	file      wire.Hash
+	lastAsked time.Time
+	endpoint  netip.AddrPort
+	suspended map[wire.Hash]time.Time
+}
+
+func (e *Engine) a4afClientByUser(user wire.Hash) *a4afClient {
+	client := e.a4afClients[user]
+	if client == nil {
+		client = &a4afClient{suspended: map[wire.Hash]time.Time{}}
+		e.a4afClients[user] = client
+	}
+	return client
+}
+
+// onSlotAsked records that c sent OP_STARTUPLOADREQ for file.
+func (e *Engine) onSlotAsked(c *conn, file wire.Hash) {
+	client := e.a4afClientByUser(c.session.UserHash())
+	client.file = file
+	client.lastAsked = e.now()
+	client.endpoint = c.endpoint()
+}
+
+// isA4AF tells whether another running download holds the client.
+func (e *Engine) isA4AF(user, file wire.Hash) bool {
+	client := e.a4afClients[user]
+	return client != nil && client.file != file && e.downloadByHash(client.file) != nil &&
+		e.now().Before(client.lastAsked.Add(a4afTime))
+}
+
+// deferConnect keeps r from connecting to a client another download holds,
+// recognised by user hash or, while the source has none, by endpoint
+// (aMule CheckAndAddSource, DownloadQueue.cpp:623-717).
+func (e *Engine) deferConnect(r *run, a transfer.Connect) bool {
+	user := a.UserHash
+	if user == (wire.Hash{}) {
+		for known, client := range e.a4afClients {
+			if client.endpoint == a.Endpoint {
+				user = known
+			}
+		}
+	}
+	if !e.isA4AF(user, r.file.Hash) {
+		return false
+	}
+	client := e.a4afClients[user]
+	e.addKnownSource(r.file.Hash, transfer.Source{UserHash: user})
+	r.transfer.SetA4AF(transfer.Source{Endpoint: a.Endpoint, UserHash: user}, client.lastAsked.Add(a4afTime))
+	return true
+}
+
+// deferUDPReask keeps r from UDP-reasking a client another download holds;
+// a reask by the holder counts as asking it.
+func (e *Engine) deferUDPReask(r *run, to netip.AddrPort) bool {
+	for user, client := range e.a4afClients {
+		if client.endpoint.Addr() != to.Addr() {
+			continue
+		}
+		if client.file == r.file.Hash {
+			client.lastAsked = e.now()
+		}
+		return e.isA4AF(user, r.file.Hash)
+	}
+	return false
+}
+
+// canAskSlot tells whether c may ask its peer for a slot for file now: never
+// before the handshake names the peer, and for another download than the
+// one it was last asked for only after MIN_REQUESTTIME.
+func (e *Engine) canAskSlot(c *conn, file wire.Hash) bool {
+	if !c.isHandshaken {
+		return false
+	}
+	client := e.a4afClients[c.session.UserHash()]
+	return client == nil || client.file == file || e.now().Sub(client.lastAsked) >= minRequestTime
+}
+
+// onNoNeededParts takes a download whose peer has no part we need off the
+// connection and swaps the peer to another download, one on the connection
+// or one that knows the peer, that it was not swapped away from within
+// PURGESOURCESWAPSTOP (aMule PartFile.cpp:1559-1573,
+// SwapToAnotherFile(false, false, false)).
+func (e *Engine) onNoNeededParts(c *conn, file wire.Hash) {
+	r := e.downloadByHash(file)
+	if r == nil || len(c.files) == 0 || c.files[0] != file {
+		return
+	}
+	r.transfer.OnNoNeededParts(c.id)
+	user := c.session.UserHash()
+	target := e.swapTarget(c, user, file, false)
+	if target != nil {
+		e.a4afClientByUser(user).suspended[file] = e.now().Add(swapSuspendTime)
+	}
+	e.removeFile(c, file, "no needed parts")
+	if target != nil && !c.isClosed {
+		e.addFile(c, target)
+	}
+}
+
+// onFileRejected swaps a peer that does not have a download to any other
+// download that knows it (aMule ClientTCPSocket.cpp:480-500,
+// SwapToAnotherFile(true, true, true)).
+func (e *Engine) onFileRejected(c *conn, file wire.Hash) {
+	e.removeFile(c, file, "no file")
+	if len(c.files) > 0 || c.isClosed {
+		return
+	}
+	if target := e.swapTarget(c, c.session.UserHash(), file, true); target != nil {
+		e.addFile(c, target)
+	}
+}
+
+// releaseA4AF hands every client the download held to the next download
+// that knows it, to be asked when the client's reask is due (aMule
+// CPartFile::RemoveAllSources(true), PartFile.cpp:2350-2377).
+func (e *Engine) releaseA4AF(file wire.Hash) {
+	for user, client := range e.a4afClients {
+		delete(client.suspended, file)
+		if client.file != file {
+			continue
+		}
+		target := e.swapTarget(nil, user, file, true)
+		if target == nil {
+			delete(e.a4afClients, user)
+			continue
+		}
+		client.file = target.file.Hash
+		target.transfer.SetA4AF(transfer.Source{Endpoint: client.endpoint, UserHash: user}, client.lastAsked.Add(fileReaskTime))
+	}
+}
+
+// swapTarget picks the download a client goes to from file: one already on
+// c, else the first running download that knows the client, in run order as
+// aMule takes the highest priority. Downloads the client was swapped away
+// from recently are skipped, or only put last when isAnyFile.
+func (e *Engine) swapTarget(c *conn, user, file wire.Hash, isAnyFile bool) *run {
+	var candidates []wire.Hash
+	if c != nil {
+		candidates = append(candidates, c.files...)
+	}
+	for _, r := range e.runList {
+		if e.sourceUsers[user][r.file.Hash] {
+			candidates = append(candidates, r.file.Hash)
+		}
+	}
+	now := e.now()
+	var fallback *run
+	for _, h := range candidates {
+		r := e.downloadByHash(h)
+		if h == file || r == nil {
+			continue
+		}
+		client := e.a4afClients[user]
+		if client == nil || !now.Before(client.suspended[h]) {
+			return r
+		}
+		if isAnyFile && fallback == nil {
+			fallback = r
+		}
+	}
+	return fallback
+}

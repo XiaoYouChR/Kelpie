@@ -447,6 +447,9 @@ func (e *Engine) runSession(c *conn, out peer.Output) {
 		return
 	}
 	for _, p := range out.Send {
+		if ask, ok := p.(client.StartUploadRequest); ok {
+			e.onSlotAsked(c, ask.Hash)
+		}
 		e.sendPacket(c, p, wire.Hash{}, 0)
 	}
 	for _, event := range out.Events {
@@ -480,7 +483,7 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 			e.refreshShare(r)
 		}
 	case peer.FileRejected:
-		e.removeFile(c, ev.File, "no file")
+		e.onFileRejected(c, ev.File)
 	case peer.Queued:
 		if r := e.downloadByHash(ev.File); r != nil {
 			e.runTransferActions(r, r.transfer.OnQueued(c.id, int(ev.Rank), now))
@@ -491,6 +494,8 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		if r := e.downloadByHash(ev.File); r != nil {
 			e.runTransferActions(r, r.transfer.OnQueued(c.id, 0, now))
 		}
+	case peer.NoNeededParts:
+		e.onNoNeededParts(c, ev.File)
 	case peer.BlocksWanted:
 		if r := e.downloadByHash(ev.File); r != nil {
 			e.runSession(c, c.session.Request(ev.File, r.transfer.Request(c.id, ev.Count)))
@@ -562,7 +567,7 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	}
 	if !c.isOutgoing {
 		for _, h := range e.matchKnownSource(ev.UserHash, caps) {
-			if r := e.runByHash[h]; !c.isClosed && e.isReaskDue(r, ev.UserHash) {
+			if r := e.runByHash[h]; !c.isClosed && e.isReaskDue(r, ev.UserHash) && !e.isA4AF(ev.UserHash, h) {
 				e.addFile(c, r)
 			}
 		}
@@ -640,9 +645,9 @@ func (e *Engine) removeFile(c *conn, h wire.Hash, reason string) {
 }
 
 // startFirstFile asks for a slot for the oldest download on c; eD2k grants
-// slots per client, so one file is asked for at a time.
+// slots per client, so one file is asked for at a time (see a4af.go).
 func (e *Engine) startFirstFile(c *conn) {
-	if len(c.files) > 0 && c.session != nil && !c.isClosed {
+	if len(c.files) > 0 && c.session != nil && !c.isClosed && e.canAskSlot(c, c.files[0]) {
 		e.runSession(c, c.session.Start(c.files[0]))
 	}
 }
@@ -652,7 +657,9 @@ func (e *Engine) startFirstFile(c *conn) {
 func (e *Engine) onSlotGranted(c *conn, file wire.Hash) {
 	if file == (wire.Hash{}) {
 		for _, h := range e.matchKnownSource(c.session.UserHash(), c.session.Capabilities()) {
-			e.addFile(c, e.runByHash[h])
+			if !e.isA4AF(c.session.UserHash(), h) {
+				e.addFile(c, e.runByHash[h])
+			}
 		}
 		if len(c.files) == 0 || c.isClosed {
 			return

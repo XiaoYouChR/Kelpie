@@ -334,10 +334,10 @@ func TestReaskTiming(t *testing.T) {
 			at := func(d time.Duration) []transfer.Action {
 				return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 1})
 			}
-			if got := at(fileReaskTime - 3*time.Minute); len(got) != 0 {
-				t.Fatalf("actions 3 min before reask: %+v", got)
+			if got := at(fileReaskTime - 20*time.Second); len(got) != 0 {
+				t.Fatalf("actions 20 s before reask: %+v", got)
 			}
-			udp := at(fileReaskTime - 2*time.Minute + time.Second)
+			udp := at(fileReaskTime - 20*time.Second + time.Second)
 			wantUDP := 0
 			if test.canReaskUDP {
 				wantUDP = 1
@@ -346,7 +346,7 @@ func TestReaskTiming(t *testing.T) {
 				t.Fatalf("near reask: %+v", udp)
 			}
 			if test.canReaskUDP {
-				h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, start.Add(fileReaskTime-2*time.Minute+2*time.Second)))
+				h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, start.Add(fileReaskTime-20*time.Second+2*time.Second)))
 				if got := at(fileReaskTime); countActions[transfer.Connect](got) != 0 {
 					t.Fatalf("TCP reask after a UDP answer: %+v", got)
 				}
@@ -718,5 +718,122 @@ func TestSlotEndKeepsPartOfBlock(t *testing.T) {
 	}
 	if got := h.transfer.Outcome().Status; got != transfer.StatusComplete || string(h.disk) != string(data) {
 		t.Fatalf("status %v, disk matches %v", got, string(h.disk) == string(data))
+	}
+}
+
+// The written head of a block cut off by a slot end survives a restart, as
+// aMule's .part.met gap list keeps it.
+func TestResumeKeepsPartOfBlock(t *testing.T) {
+	data := buildData(piece.BlockSize + 1000)
+	file := buildFile(data)
+	h := buildHarness(t, data, transfer.Options{File: file})
+	h.connect(1, 1, piece.Set{true})
+	block := h.transfer.Request(1, 1)[0]
+	head := piece.Block{Begin: block.Begin, End: block.Begin + 400}
+	h.run(h.transfer.OnBlockReceived(1, head, data[head.Begin:head.End], h.now))
+
+	state := h.transfer.ToState()
+	if len(state.WrittenBlocks) != 0 || !slices.Equal(state.PartialBlocks, []store.PartialBlock{{Part: 0, Index: 0, Size: 400}}) {
+		t.Fatalf("state = written %v, partial %v", state.WrittenBlocks, state.PartialBlocks)
+	}
+	resumed := buildHarness(t, data, transfer.Options{File: file, State: &state})
+	if got := resumed.transfer.Progress(start).Received; got != 400 {
+		t.Fatalf("resumed received = %d, want 400", got)
+	}
+	resumed.connect(1, 1, piece.Set{true})
+	if got := resumed.transfer.Request(1, 3); len(got) == 0 || got[0] != (piece.Block{Begin: head.End, End: block.End}) {
+		t.Fatalf("resumed transfer asked for %v, want the tail after the head first", got)
+	}
+}
+
+// A source with no part we need is reasked only after twice the reask
+// interval and never over UDP (aMule PartFile.cpp:1574-1580).
+func TestNoNeededPartsSourceWaitsTwiceTheReask(t *testing.T) {
+	data := buildData(2 * piece.PartSize)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
+	h.tick(transfer.Tick{ConnectBudget: 1})
+	h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, start))
+	h.transfer.OnPeerParts(1, piece.Set{false, false, false})
+	h.transfer.OnNoNeededParts(1)
+	h.run(h.transfer.OnPeerGone(1, "idle", start.Add(40*time.Second)))
+
+	at := func(d time.Duration) []transfer.Action {
+		return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 1})
+	}
+	if got := at(fileReaskTime); len(got) != 0 {
+		t.Fatalf("source with nothing we need asked at the reask interval: %+v", got)
+	}
+	if got := at(2*fileReaskTime - 10*time.Second); len(got) != 0 {
+		t.Fatalf("source with nothing we need UDP-reasked: %+v", got)
+	}
+	if got := at(2 * fileReaskTime); countActions[transfer.Connect](got) != 1 {
+		t.Fatalf("source with nothing we need not reasked at twice the interval: %+v", got)
+	}
+	h.run(h.transfer.OnPeerConnected(2, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1)}, start.Add(2*fileReaskTime)))
+	h.transfer.OnPeerParts(2, piece.Set{true, false, false})
+	h.run(h.transfer.OnPeerGone(2, "idle", start.Add(2*fileReaskTime)))
+	if got := at(3 * fileReaskTime); countActions[transfer.Connect](got) != 1 {
+		t.Fatalf("source that has parts again not reasked at the normal interval: %+v", got)
+	}
+}
+
+// Near the source cap, sources with nothing we need are dropped one per
+// 40 s (aMule PartFile.cpp:1559-1573).
+func TestNoNeededPartsSourcesArePurgedNearTheCap(t *testing.T) {
+	data := buildData(2 * piece.PartSize)
+	for _, test := range []struct {
+		sources  int
+		wantGone int
+	}{{319, 0}, {321, 2}} {
+		h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+		var found []transfer.Source
+		for i := range test.sources {
+			found = append(found, transfer.Source{Endpoint: endpoint(i + 1)})
+		}
+		h.transfer.OnSourcesFound(found, transfer.ChannelServer, start)
+		for peer := range uint64(3) {
+			h.run(h.transfer.OnPeerConnected(peer+1, transfer.Hello{Endpoint: endpoint(int(peer) + 1)}, start))
+			h.transfer.OnPeerParts(peer+1, piece.Set{false, false, false})
+			h.transfer.OnNoNeededParts(peer + 1)
+			h.run(h.transfer.OnPeerGone(peer+1, "idle", start))
+		}
+		for _, d := range []time.Duration{41 * time.Second, 60 * time.Second, 82 * time.Second} {
+			h.tick(transfer.Tick{Now: start.Add(d)})
+		}
+		if got := test.sources - h.transfer.Progress(start).Peers; got != test.wantGone {
+			t.Errorf("%d sources: %d dropped, want %d", test.sources, got, test.wantGone)
+		}
+	}
+}
+
+// A source another Transfer asks for a slot is left alone until the time the
+// engine gives, then asked as usual; connecting to it for this file ends the
+// hold.
+func TestA4AFSourceWaits(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
+	if got := h.tick(transfer.Tick{ConnectBudget: 1}); countActions[transfer.Connect](got) != 1 {
+		t.Fatalf("no Connect for the link source: %+v", got)
+	}
+	until := start.Add(10 * time.Minute)
+	h.transfer.SetA4AF(transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1)}, until)
+
+	at := func(d time.Duration) []transfer.Action {
+		return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 1})
+	}
+	if got := at(10*time.Minute - time.Second); len(got) != 0 {
+		t.Fatalf("source asked while another Transfer holds it: %+v", got)
+	}
+	got := at(10 * time.Minute)
+	if countActions[transfer.Connect](got) != 1 || got[0] != (transfer.Connect{Endpoint: endpoint(1), UserHash: userHash(1)}) {
+		t.Fatalf("source not asked once the hold ended, with its user hash: %+v", got)
+	}
+
+	h.transfer.SetA4AF(transfer.Source{UserHash: userHash(1)}, start.Add(time.Hour))
+	h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1)}, start.Add(11*time.Minute)))
+	h.transfer.OnPeerParts(1, piece.Set{true})
+	h.run(h.transfer.OnPeerGone(1, "idle", start.Add(11*time.Minute)))
+	if got := at(11*time.Minute + fileReaskTime); countActions[transfer.Connect](got) != 1 {
+		t.Fatalf("source connected for this Transfer still held: %+v", got)
 	}
 }

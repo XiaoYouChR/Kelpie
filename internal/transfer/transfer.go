@@ -107,6 +107,7 @@ type Transfer struct {
 	nextKadAsk      time.Time
 	kadSearches     int
 	lastExchangeAsk time.Time
+	lastPurge       time.Time
 }
 
 // Build creates the Transfer for options.File. Persisted state that does not
@@ -173,6 +174,10 @@ func toResumeData(state *store.Transfer) piece.ResumeData {
 		end := min(begin+piece.BlockSize, partBegin+piece.PartSize, state.Size)
 		resume.WrittenBlocks = append(resume.WrittenBlocks, piece.Block{Begin: begin, End: end})
 	}
+	for _, block := range state.PartialBlocks {
+		begin := int64(block.Part)*piece.PartSize + int64(block.Index)*piece.BlockSize
+		resume.WrittenBlocks = append(resume.WrittenBlocks, piece.Block{Begin: begin, End: begin + block.Size})
+	}
 	return resume
 }
 
@@ -201,14 +206,17 @@ func (t *Transfer) ToState() store.Transfer {
 		PartHashes:    t.partHashes,
 		VerifiedParts: t.picker.VerifiedParts(),
 		WrittenBlocks: []store.Block{},
+		PartialBlocks: []store.PartialBlock{},
 		Uploaded:      uint64(t.uploaded),
 		Created:       t.created,
 	}
 	for _, block := range resume.WrittenBlocks {
-		state.WrittenBlocks = append(state.WrittenBlocks, store.Block{
-			Part:  block.Part(),
-			Index: int(block.Begin % piece.PartSize / piece.BlockSize),
-		})
+		part, index := block.Part(), int(block.Begin%piece.PartSize/piece.BlockSize)
+		if block == t.picker.BlockAt(block.Begin) {
+			state.WrittenBlocks = append(state.WrittenBlocks, store.Block{Part: part, Index: index})
+		} else {
+			state.PartialBlocks = append(state.PartialBlocks, store.PartialBlock{Part: part, Index: index, Size: block.End - block.Begin})
+		}
 	}
 	return state
 }
@@ -251,6 +259,7 @@ func (t *Transfer) OnPeerParts(peer uint64, parts piece.Set) {
 	s := t.peers[peer]
 	if t.isDownloading() && s != nil {
 		s.hasAnswered = true
+		s.isNoNeeded = false
 		t.picker.OnPeerParts(peer, parts)
 	}
 }
