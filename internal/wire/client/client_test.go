@@ -129,6 +129,18 @@ func TestTCPRoundTrip(t *testing.T) {
 			FileStatus{Hash: fileHash, Parts: parts(false, true)},
 			AICHFileHashAnswer{Hash: fileHash, Root: aichRoot},
 		}},
+		MultiPacketExt2{File: FileIdentifier{Hash: fileHash, Size: 1 << 33}, Requests: []wire.Packet{
+			FileRequest{Hash: fileHash, HasParts: true, Parts: parts(true), HasCompleteSources: true, CompleteSources: 3},
+			SetRequestFileID{Hash: fileHash},
+			RequestSources2{Version: SourceExchange2Version, Hash: fileHash},
+		}},
+		MultiPacketExt2{File: FileIdentifier{Hash: fileHash, HasRoot: true, Root: aichRoot}},
+		MultiPacketAnswerExt2{File: FileIdentifier{Hash: fileHash, Size: 9, HasRoot: true, Root: aichRoot}, Answers: []wire.Packet{
+			FileNameAnswer{Hash: fileHash, Name: "kelpie.iso"},
+			FileStatus{Hash: fileHash, Parts: parts(false, true)},
+		}},
+		HashSetRequest2{File: FileIdentifier{Hash: fileHash, Size: 9}, IsMD4Wanted: true},
+		HashSetRequest2{File: FileIdentifier{Hash: fileHash, HasRoot: true, Root: aichRoot}, IsMD4Wanted: true, IsAICHWanted: true},
 		AICHFileHashRequest{Hash: fileHash},
 		AICHFileHashAnswer{Hash: fileHash, Root: aichRoot},
 		AICHRequest{Hash: fileHash, Part: 3, Root: aichRoot},
@@ -338,5 +350,49 @@ func TestCallbackGolden(t *testing.T) {
 	want = append(append(want, want...), 4, 3, 2, 1, 0x36, 0x12)
 	if !bytes.Equal(got, want) {
 		t.Fatalf("OP_CALLBACK body %x, want %x", got, want)
+	}
+}
+
+// Layouts from eMule FileIdentifier.cpp:94-118 and :267-308.
+func TestFileIdentifierGolden(t *testing.T) {
+	hash := "31d6cfe0d16ae931b73c59d7e0c089c0"
+	root := hex.EncodeToString(aichRoot[:])
+	cases := []struct {
+		p    wire.Packet
+		want string
+	}{
+		{MultiPacketExt2{File: FileIdentifier{Hash: fileHash, Size: 0x0102}, Requests: []wire.Packet{SetRequestFileID{Hash: fileHash}}},
+			"a9" + "03" + hash + "0201000000000000" + "4f"},
+		{MultiPacketAnswerExt2{File: FileIdentifier{Hash: fileHash, Size: 0x0102, HasRoot: true, Root: aichRoot}, Answers: []wire.Packet{FileNameAnswer{Hash: fileHash, Name: "a"}}},
+			"b0" + "07" + hash + "0201000000000000" + root + "59" + "0100" + "61"},
+		{HashSetRequest2{File: FileIdentifier{Hash: fileHash, Size: 0x0102}, IsMD4Wanted: true, IsAICHWanted: true},
+			"b1" + "03" + hash + "0201000000000000" + "03"},
+		{HashSetAnswer2{File: FileIdentifier{Hash: fileHash, Size: 0x0102}, Parts: []wire.Hash{userHash}},
+			"b2" + "03" + hash + "0201000000000000" + "01" + hash + "0100" + "23a8ceff57a7a32d562d649ed7893796"},
+		{HashSetAnswer2{File: FileIdentifier{Hash: fileHash, Size: 0x0102}},
+			"b2" + "03" + hash + "0201000000000000" + "00"},
+	}
+	for _, c := range cases {
+		raw := wire.BuildPacket(nil, c.p)
+		if body := raw[5:]; !bytes.Equal(body, unhex(t, c.want)) || raw[0] != wire.ProtocolEMule {
+			t.Fatalf("%T\n got  %x\n want %s", c.p, raw, c.want)
+		}
+	}
+}
+
+func TestFileIdentifierRejectsWhatEmuleRejects(t *testing.T) {
+	hash := "31d6cfe0d16ae931b73c59d7e0c089c0"
+	for _, body := range []string{
+		"02" + "0201000000000000",
+		"09" + hash,
+		"11" + hash,
+	} {
+		if _, err := Parse(wire.ProtocolEMule, opMultiPacketExt2, unhex(t, body)); err == nil {
+			t.Fatalf("accepted %s", body)
+		}
+	}
+	p, err := Parse(wire.ProtocolEMule, opMultiPacketExt2, unhex(t, "e1"+hash+"4f"))
+	if err != nil || p.(MultiPacketExt2).File != (FileIdentifier{Hash: fileHash}) {
+		t.Fatalf("unknown optional bits: %+v %v", p, err)
 	}
 }

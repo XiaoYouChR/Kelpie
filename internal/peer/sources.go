@@ -75,14 +75,7 @@ func (s *Session) RequestSources(file wire.Hash, now time.Time) Output {
 	// aMule 2.3 closes the connection on a standalone OP_REQUESTSOURCES2
 	// (it checks the body for the 16 bytes of the old OP_REQUESTSOURCES);
 	// inside a multipacket, where eMule puts it too, it is read right.
-	switch {
-	case s.caps.HasExtMultiPacket:
-		out.send(client.MultiPacketExt{Hash: file, Size: uint64(s.down.files[file].size), Requests: []wire.Packet{request}})
-	case s.caps.HasMultiPacket:
-		out.send(client.MultiPacket{Hash: file, Requests: []wire.Packet{request}})
-	default:
-		out.send(request)
-	}
+	s.sendMultiPacket(file, s.down.files[file].size, []wire.Packet{request}, &out)
 	return out
 }
 

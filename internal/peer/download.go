@@ -199,12 +199,22 @@ func (s *Session) sendFileRequest(file wire.Hash, d *download, out *Output) {
 	if piece.PartCount(d.size) > 1 {
 		requests = append(requests, client.SetRequestFileID{Hash: file})
 	}
-	if s.caps.HasAICH {
+	// With file identifiers the root comes in the answer's identifier
+	// (DownloadClient.cpp:385-391).
+	if s.caps.HasAICH && !s.caps.HasFileIdentifiers {
 		requests = append(requests, client.AICHFileHashRequest{Hash: file})
 	}
+	s.sendMultiPacket(file, d.size, requests, out)
+}
+
+// sendMultiPacket bundles requests for file in the newest multipacket the
+// peer supports, as eMule picks it (DownloadClient.cpp:316-400).
+func (s *Session) sendMultiPacket(file wire.Hash, size int64, requests []wire.Packet, out *Output) {
 	switch {
+	case s.caps.HasFileIdentifiers:
+		out.send(client.MultiPacketExt2{File: client.FileIdentifier{Hash: file, Size: uint64(size)}, Requests: requests})
 	case s.caps.HasExtMultiPacket:
-		out.send(client.MultiPacketExt{Hash: file, Size: uint64(d.size), Requests: requests})
+		out.send(client.MultiPacketExt{Hash: file, Size: uint64(size), Requests: requests})
 	case s.caps.HasMultiPacket:
 		out.send(client.MultiPacket{Hash: file, Requests: requests})
 	default:
@@ -212,8 +222,26 @@ func (s *Session) sendFileRequest(file wire.Hash, d *download, out *Output) {
 	}
 }
 
-func (s *Session) onMultiPacketAnswer(p client.MultiPacketAnswer, out *Output) {
-	for _, answer := range p.Answers {
+// onMultiPacketAnswerExt2 closes on an identifier whose size is not the
+// file's and takes its AICH root as the peer's report, as eMule does
+// (ListenSocket.cpp:1312-1324).
+func (s *Session) onMultiPacketAnswerExt2(p client.MultiPacketAnswerExt2, out *Output) {
+	d := s.down.files[p.File.Hash]
+	if d == nil {
+		return
+	}
+	if p.File.Size != 0 && p.File.Size != uint64(d.size) {
+		out.Close = CloseProtocol
+		return
+	}
+	if p.File.HasRoot {
+		s.onRoot(p.File.Hash, p.File.Root, out)
+	}
+	s.onMultiPacketAnswer(p.Answers, out)
+}
+
+func (s *Session) onMultiPacketAnswer(answers []wire.Packet, out *Output) {
+	for _, answer := range answers {
 		switch a := answer.(type) {
 		case client.FileNameAnswer:
 			s.onFileName(a.Hash, out)

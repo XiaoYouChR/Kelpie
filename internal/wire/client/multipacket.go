@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/binary"
+	"errors"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
@@ -23,6 +24,14 @@ type MultiPacketExt struct {
 	Requests []wire.Packet
 }
 
+// MultiPacketExt2 is OP_MULTIPACKET_EXT2, which names the file by its
+// FileIdentifier. eMule sends it to peers that set MiscOptions2
+// HasFileIdentifiers (DownloadClient.cpp:316-400).
+type MultiPacketExt2 struct {
+	File     FileIdentifier
+	Requests []wire.Packet
+}
+
 // MultiPacketAnswer is OP_MULTIPACKETANSWER. Answers holds FileNameAnswer,
 // FileStatus and AICHFileHashAnswer values, plus a trailing wire.Unknown as in MultiPacket.
 type MultiPacketAnswer struct {
@@ -30,12 +39,45 @@ type MultiPacketAnswer struct {
 	Answers []wire.Packet
 }
 
-func (MultiPacket) Protocol() byte       { return wire.ProtocolEMule }
-func (MultiPacket) Opcode() byte         { return opMultiPacket }
-func (MultiPacketExt) Protocol() byte    { return wire.ProtocolEMule }
-func (MultiPacketExt) Opcode() byte      { return opMultiPacketExt }
-func (MultiPacketAnswer) Protocol() byte { return wire.ProtocolEMule }
-func (MultiPacketAnswer) Opcode() byte   { return opMultiPacketAnswer }
+// MultiPacketAnswerExt2 is OP_MULTIPACKETANSWER_EXT2, eMule's answer to a
+// MultiPacketExt2; File is the sender's own identifier
+// (ListenSocket.cpp:1168-1172, 1292).
+type MultiPacketAnswerExt2 struct {
+	File    FileIdentifier
+	Answers []wire.Packet
+}
+
+// FileIdentifier is eMule's CFileIdentifier on the wire
+// (FileIdentifier.cpp:94-118): a descriptor byte, then the hash, the size and
+// the AICH root, each present when its descriptor bit is set. Size 0 means
+// it was left out, as eMule reads it.
+type FileIdentifier struct {
+	Hash    wire.Hash
+	Size    uint64
+	HasRoot bool
+	Root    wire.AICHHash
+}
+
+const (
+	identifierHasHash byte = 1 << 0
+	identifierHasSize byte = 1 << 1
+	identifierHasRoot byte = 1 << 2
+	// identifierMandatory are option bits a reader must understand.
+	identifierMandatory byte = 0x03 << 3
+)
+
+var errFileIdentifier = errors.New("client: file identifier without hash or with unknown mandatory options")
+
+func (MultiPacket) Protocol() byte           { return wire.ProtocolEMule }
+func (MultiPacket) Opcode() byte             { return opMultiPacket }
+func (MultiPacketExt) Protocol() byte        { return wire.ProtocolEMule }
+func (MultiPacketExt) Opcode() byte          { return opMultiPacketExt }
+func (MultiPacketAnswer) Protocol() byte     { return wire.ProtocolEMule }
+func (MultiPacketAnswer) Opcode() byte       { return opMultiPacketAnswer }
+func (MultiPacketExt2) Protocol() byte       { return wire.ProtocolEMule }
+func (MultiPacketExt2) Opcode() byte         { return opMultiPacketExt2 }
+func (MultiPacketAnswerExt2) Protocol() byte { return wire.ProtocolEMule }
+func (MultiPacketAnswerExt2) Opcode() byte   { return opMultiPacketAnswerExt2 }
 
 func (m MultiPacket) Build(b []byte) []byte {
 	return buildRequests(append(b, m.Hash[:]...), m.Requests)
@@ -46,9 +88,57 @@ func (m MultiPacketExt) Build(b []byte) []byte {
 	return buildRequests(b, m.Requests)
 }
 
+func (m MultiPacketExt2) Build(b []byte) []byte {
+	return buildRequests(buildFileIdentifier(b, m.File), m.Requests)
+}
+
 func (m MultiPacketAnswer) Build(b []byte) []byte {
-	b = append(b, m.Hash[:]...)
-	for _, p := range m.Answers {
+	return buildAnswers(append(b, m.Hash[:]...), m.Answers)
+}
+
+func (m MultiPacketAnswerExt2) Build(b []byte) []byte {
+	return buildAnswers(buildFileIdentifier(b, m.File), m.Answers)
+}
+
+func buildFileIdentifier(b []byte, f FileIdentifier) []byte {
+	desc := identifierHasHash
+	if f.Size != 0 {
+		desc |= identifierHasSize
+	}
+	if f.HasRoot {
+		desc |= identifierHasRoot
+	}
+	b = append(append(b, desc), f.Hash[:]...)
+	if f.Size != 0 {
+		b = binary.LittleEndian.AppendUint64(b, f.Size)
+	}
+	if f.HasRoot {
+		b = append(b, f.Root[:]...)
+	}
+	return b
+}
+
+// parseFileIdentifier rejects what eMule rejects: no hash, or a mandatory
+// option it does not know; other option bits are ignored
+// (FileIdentifier.cpp:498-532).
+func parseFileIdentifier(r *wire.Reader) FileIdentifier {
+	desc := r.Uint8()
+	if desc&identifierHasHash == 0 || desc&identifierMandatory != 0 {
+		r.SetErr(errFileIdentifier)
+		return FileIdentifier{}
+	}
+	f := FileIdentifier{Hash: r.Hash()}
+	if desc&identifierHasSize != 0 {
+		f.Size = r.Uint64()
+	}
+	if desc&identifierHasRoot != 0 {
+		f.HasRoot, f.Root = true, r.AICHHash()
+	}
+	return f
+}
+
+func buildAnswers(b []byte, answers []wire.Packet) []byte {
+	for _, p := range answers {
 		b = append(b, p.Opcode())
 		switch p := p.(type) {
 		case FileNameAnswer:
@@ -91,6 +181,12 @@ func parseMultiPacketExt(r *wire.Reader) MultiPacketExt {
 	return m
 }
 
+func parseMultiPacketExt2(r *wire.Reader) MultiPacketExt2 {
+	m := MultiPacketExt2{File: parseFileIdentifier(r)}
+	m.Requests = parseRequests(r, m.File.Hash)
+	return m
+}
+
 func parseRequests(r *wire.Reader, hash wire.Hash) []wire.Packet {
 	var out []wire.Packet
 	for r.Len() > 0 && r.Err() == nil {
@@ -122,19 +218,30 @@ func parseRequests(r *wire.Reader, hash wire.Hash) []wire.Packet {
 
 func parseMultiPacketAnswer(r *wire.Reader) MultiPacketAnswer {
 	m := MultiPacketAnswer{Hash: r.Hash()}
+	m.Answers = parseAnswers(r, m.Hash)
+	return m
+}
+
+func parseMultiPacketAnswerExt2(r *wire.Reader) MultiPacketAnswerExt2 {
+	m := MultiPacketAnswerExt2{File: parseFileIdentifier(r)}
+	m.Answers = parseAnswers(r, m.File.Hash)
+	return m
+}
+
+func parseAnswers(r *wire.Reader, hash wire.Hash) []wire.Packet {
+	var out []wire.Packet
 	for r.Len() > 0 && r.Err() == nil {
 		op := r.Uint8()
 		switch op {
 		case opFileNameAnswer:
-			m.Answers = append(m.Answers, FileNameAnswer{Hash: m.Hash, Name: r.String()})
+			out = append(out, FileNameAnswer{Hash: hash, Name: r.String()})
 		case opFileStatus:
-			m.Answers = append(m.Answers, FileStatus{Hash: m.Hash, Parts: r.Bitfield()})
+			out = append(out, FileStatus{Hash: hash, Parts: r.Bitfield()})
 		case opAICHFileHashAnswer:
-			m.Answers = append(m.Answers, AICHFileHashAnswer{Hash: m.Hash, Root: r.AICHHash()})
+			out = append(out, AICHFileHashAnswer{Hash: hash, Root: r.AICHHash()})
 		default:
-			m.Answers = append(m.Answers, wire.Unknown{Proto: wire.ProtocolEMule, Op: op, Body: r.Bytes(r.Len())})
-			return m
+			return append(out, wire.Unknown{Proto: wire.ProtocolEMule, Op: op, Body: r.Bytes(r.Len())})
 		}
 	}
-	return m
+	return out
 }

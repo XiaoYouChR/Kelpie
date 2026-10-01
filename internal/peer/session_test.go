@@ -465,7 +465,7 @@ func TestSlotRequestDoesNotWaitForHashSet(t *testing.T) {
 	file, _ := addShare(l.b, 1, size, false)
 	l.run(l.a, l.a.s.Add(file, size, piece.Set{false, false, false}))
 	l.run(l.a, l.a.s.Start(file))
-	if sentCount[client.MultiPacketExt](l) != 1 || sentCount[client.StartUploadRequest](l) != 1 {
+	if sentCount[client.MultiPacketExt2](l) != 1 || sentCount[client.StartUploadRequest](l) != 1 {
 		t.Fatal("file request or slot request missing")
 	}
 	if sentCount[client.HashSetRequest](l) != 0 {
@@ -673,7 +673,7 @@ func TestSourceExchange(t *testing.T) {
 	l.run(l.a, l.a.s.RequestSources(file, l.now))
 	// aMule 2.3 closes on a standalone OP_REQUESTSOURCES2 (seen on the real
 	// network), so it travels in a multipacket.
-	multi := l.sent[0].(client.MultiPacketExt)
+	multi := l.sent[0].(client.MultiPacketExt2)
 	if r := multi.Requests[0].(client.RequestSources2); len(multi.Requests) != 1 || r.Version != client.ExtendedSourcesVersion {
 		t.Fatalf("asked a Kelpie peer with %+v", multi)
 	}

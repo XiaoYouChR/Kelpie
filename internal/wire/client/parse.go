@@ -46,6 +46,11 @@ const (
 	opSendingPart64     byte = 0xA2
 	opRequestParts64    byte = 0xA3
 	opMultiPacketExt    byte = 0xA4
+	// eMule opcodes.h:284-287; aMule has none of them.
+	opMultiPacketExt2       byte = 0xA9
+	opMultiPacketAnswerExt2 byte = 0xB0
+	opHashSetRequest2       byte = 0xB1
+	opHashSetAnswer2        byte = 0xB2
 
 	opAICHRequest         byte = 0x9B
 	opAICHAnswer          byte = 0x9C
@@ -188,6 +193,12 @@ func parseEMule(r *wire.Reader, opcode byte) wire.Packet {
 		return parseMultiPacketExt(r)
 	case opMultiPacketAnswer:
 		return parseMultiPacketAnswer(r)
+	case opMultiPacketExt2:
+		return parseMultiPacketExt2(r)
+	case opMultiPacketAnswerExt2:
+		return parseMultiPacketAnswerExt2(r)
+	case opHashSetRequest2:
+		return parseHashSetRequest2(r)
 	case opAICHFileHashRequest:
 		return AICHFileHashRequest{Hash: r.Hash()}
 	case opAICHFileHashAnswer:

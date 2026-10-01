@@ -135,6 +135,61 @@ func parseHashSetAnswer(r *wire.Reader) HashSetAnswer {
 	return h
 }
 
+// HashSetRequest2 is OP_HASHSETREQUEST2, which eMule sends instead of
+// HashSetRequest to peers with HasFileIdentifiers
+// (DownloadClient.cpp:2485-2515).
+type HashSetRequest2 struct {
+	File         FileIdentifier
+	IsMD4Wanted  bool
+	IsAICHWanted bool
+}
+
+// HashSetAnswer2 is OP_HASHSETANSWER2 carrying the MD4 part hashes, or
+// nothing when Parts is empty. Kelpie never sends the AICH part hashes; eMule
+// then asks another peer (DownloadClient.cpp:836-840).
+type HashSetAnswer2 struct {
+	File  FileIdentifier
+	Parts []wire.Hash
+}
+
+const (
+	hashSetMD4  byte = 0x01
+	hashSetAICH byte = 0x02
+)
+
+func (HashSetRequest2) Protocol() byte { return wire.ProtocolEMule }
+func (HashSetRequest2) Opcode() byte   { return opHashSetRequest2 }
+func (HashSetAnswer2) Protocol() byte  { return wire.ProtocolEMule }
+func (HashSetAnswer2) Opcode() byte    { return opHashSetAnswer2 }
+
+func (h HashSetRequest2) Build(b []byte) []byte {
+	var options byte
+	if h.IsMD4Wanted {
+		options |= hashSetMD4
+	}
+	if h.IsAICHWanted {
+		options |= hashSetAICH
+	}
+	return append(buildFileIdentifier(b, h.File), options)
+}
+
+func parseHashSetRequest2(r *wire.Reader) HashSetRequest2 {
+	h := HashSetRequest2{File: parseFileIdentifier(r)}
+	options := r.Uint8()
+	h.IsMD4Wanted, h.IsAICHWanted = options&hashSetMD4 != 0, options&hashSetAICH != 0
+	return h
+}
+
+// Build lays out eMule's WriteHashSetsToPacket (FileIdentifier.cpp:267-308):
+// the options byte says which sets follow.
+func (h HashSetAnswer2) Build(b []byte) []byte {
+	b = buildFileIdentifier(b, h.File)
+	if len(h.Parts) == 0 {
+		return append(b, 0)
+	}
+	return HashSetAnswer{Hash: h.File.Hash, Parts: h.Parts}.Build(append(b, hashSetMD4))
+}
+
 // StartUploadRequest is OP_STARTUPLOADREQ. Old clients send it without a
 // hash, which decodes as the zero hash.
 type StartUploadRequest struct{ Hash wire.Hash }
