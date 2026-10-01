@@ -2,8 +2,10 @@ package wire
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/netip"
 	"reflect"
 	"testing"
@@ -237,5 +239,53 @@ func TestBitfieldSetClear(t *testing.T) {
 	f.Clear(0)
 	if !f.Has(11) || f.Has(0) || f.Has(12) || f.Has(-1) || f.Count() != 1 {
 		t.Fatalf("bitfield = %v", f.Bools())
+	}
+}
+
+// failingReader fails the test if the frame body is read.
+type failingReader struct {
+	t    *testing.T
+	head []byte
+}
+
+func (r *failingReader) Read(b []byte) (int, error) {
+	if len(r.head) == 0 {
+		r.t.Fatal("body read after an oversized header")
+	}
+	n := copy(b, r.head)
+	r.head = r.head[n:]
+	return n, nil
+}
+
+func TestOversizedFrameIsRejectedUnread(t *testing.T) {
+	head := []byte{ProtocolEMule, 0, 0, 0, 0, 0x60}
+	binary.LittleEndian.PutUint32(head[1:5], MaxFrameSize+1)
+	if _, err := ParseFrameFrom(&failingReader{t: t, head: head}); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+	binary.LittleEndian.PutUint32(head[1:5], MaxFrameSize)
+	raw := append(head, make([]byte, MaxFrameSize-1)...)
+	if f, err := ParseFrameFrom(bytes.NewReader(raw)); err != nil || len(f.Body) != MaxFrameSize-1 {
+		t.Fatalf("largest frame: %d bytes, err %v", len(f.Body), err)
+	}
+}
+
+func TestTruncatedFrameFails(t *testing.T) {
+	raw := BuildFrame(nil, ProtocolEMule, 0x60, make([]byte, 100))
+	if _, err := ParseFrameFrom(bytes.NewReader(raw[:50])); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("err = %v, want ErrUnexpectedEOF", err)
+	}
+}
+
+func TestInflationBomb(t *testing.T) {
+	bomb := make([]byte, MaxInflatedSize+1)
+	if _, err := ParseFrameFrom(bytes.NewReader(BuildPackedFrame(nil, 0x60, bomb))); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("frame err = %v, want ErrTooLarge", err)
+	}
+	if _, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb)); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("datagram err = %v, want ErrTooLarge", err)
+	}
+	if f, err := ParseDatagram(BuildPackedDatagram(nil, ProtocolKad, 0x3B, bomb[:MaxInflatedSize])); err != nil || len(f.Body) != MaxInflatedSize {
+		t.Fatalf("largest datagram: %d bytes, err %v", len(f.Body), err)
 	}
 }

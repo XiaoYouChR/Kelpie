@@ -20,12 +20,16 @@ const (
 	// HeaderSize is protocol byte, uint32 length, opcode.
 	HeaderSize = 6
 
-	// MaxBodySize bounds a single body, before and after inflating, so a
-	// hostile length field cannot make us allocate without limit.
-	MaxBodySize = 16 << 20
+	// MaxFrameSize bounds a TCP frame's declared length, checked before
+	// anything is allocated (aMule EMSocket.cpp:42 MAX_PACKET_SIZE).
+	MaxFrameSize = 2_000_000
+	// MaxInflatedSize bounds a packed body once inflated: eMule's limit for
+	// servers and UDP (ServerSocket.cpp:742, ClientUDPSocket.cpp:118), the
+	// largest it uses; its 50000 for clients is not worth a second limit.
+	MaxInflatedSize = 250_000
 )
 
-var ErrTooLarge = errors.New("wire: body exceeds MaxBodySize")
+var ErrTooLarge = errors.New("wire: frame too large")
 
 // Frame is one decoded packet envelope. Packed frames are inflated on parse
 // and reported under their plain protocol: 0xD4 becomes 0xC5, 0xE5 becomes
@@ -75,7 +79,9 @@ func ParseFrame(b []byte) (f Frame, n int, err error) {
 	return f, n, err
 }
 
-// ParseFrameFrom reads exactly one TCP frame from r.
+// ParseFrameFrom reads exactly one TCP frame from r. The body grows as its
+// bytes arrive, so a peer that declares a large frame and trickles it holds
+// only what it sent.
 func ParseFrameFrom(r io.Reader) (Frame, error) {
 	var head [HeaderSize]byte
 	if _, err := io.ReadFull(r, head[:]); err != nil {
@@ -85,9 +91,12 @@ func ParseFrameFrom(r io.Reader) (Frame, error) {
 	if err != nil {
 		return Frame{}, err
 	}
-	body := make([]byte, size)
-	if _, err := io.ReadFull(r, body); err != nil {
+	body, err := io.ReadAll(io.LimitReader(r, int64(size)))
+	if err != nil {
 		return Frame{}, err
+	}
+	if len(body) < size {
+		return Frame{}, io.ErrUnexpectedEOF
 	}
 	return toFrame(head[0], head[5], body)
 }
@@ -147,7 +156,7 @@ func parseHeader(head []byte) (int, error) {
 	if length == 0 {
 		return 0, errors.New("wire: frame length 0 has no opcode")
 	}
-	if length-1 > MaxBodySize {
+	if length > MaxFrameSize {
 		return 0, ErrTooLarge
 	}
 	return int(length - 1), nil
@@ -183,11 +192,11 @@ func toInflated(body []byte) ([]byte, error) {
 		return nil, fmt.Errorf("wire: inflate: %w", err)
 	}
 	defer zr.Close()
-	plain, err := io.ReadAll(io.LimitReader(zr, MaxBodySize+1))
+	plain, err := io.ReadAll(io.LimitReader(zr, MaxInflatedSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("wire: inflate: %w", err)
 	}
-	if len(plain) > MaxBodySize {
+	if len(plain) > MaxInflatedSize {
 		return nil, ErrTooLarge
 	}
 	return plain, nil
