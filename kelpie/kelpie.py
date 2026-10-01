@@ -28,8 +28,7 @@ class Run:
         self.hash = hash
         self._progress: Progress | None = None
         self._isEnded = False
-        self._isCancelled = False
-        self._error: Error | None = None
+        self._error: BaseException | None = None
         self._changed = asyncio.Event()
 
     async def __aiter__(self) -> AsyncIterator[Progress]:
@@ -37,10 +36,8 @@ class Run:
             await self._changed.wait()
             self._changed.clear()
             progress, self._progress = self._progress, None
-            if progress is not None and not self._isCancelled:
+            if progress is not None:
                 yield progress
-            if self._isCancelled:
-                raise asyncio.CancelledError()
             if self._isEnded:
                 if self._error is not None:
                     raise self._error
@@ -52,7 +49,7 @@ class Run:
         self._progress = progress
         self._changed.set()
 
-    def setEnded(self, error: Error | None) -> None:
+    def setEnded(self, error: BaseException | None) -> None:
         if self._isEnded:
             return
         self._isEnded = True
@@ -62,11 +59,9 @@ class Run:
     def cancel(self) -> None:
         # Ended by someone other than its caller: a normal end would read as a
         # finished download, so the caller sees a cancellation instead.
-        if self._isEnded:
-            return
-        self._isEnded = True
-        self._isCancelled = True
-        self._changed.set()
+        if not self._isEnded:
+            self._progress = None
+            self.setEnded(asyncio.CancelledError())
 
 
 class Kelpie:
@@ -128,7 +123,6 @@ class Kelpie:
         routes, self._routes = self._routes, {}
         for run in routes.values():
             run.cancel()
-        routes.clear()
         process.stdin.close()
         try:
             async with asyncio.timeout(CLOSE_TIMEOUT):
@@ -235,7 +229,6 @@ class Kelpie:
         exited = Error(ErrorCode.ENGINE_EXITED, lastLine)
         for run in routes.values():
             run.setEnded(exited)
-        routes.clear()
 
     def onMessage(self, line: bytes, routes: dict[int, Run]) -> None:
         try:
