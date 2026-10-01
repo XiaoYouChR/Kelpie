@@ -3,6 +3,7 @@ package transfer_test
 import (
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -668,5 +669,34 @@ func TestBadSourceAddressesAreDropped(t *testing.T) {
 	found := []transfer.Source{{Endpoint: netip.MustParseAddrPort("203.0.113.7:5000")}}
 	if got := traces(firewalled.transfer.OnSourcesFound(found, transfer.ChannelServer, start), transfer.EventFound); len(got) != 0 {
 		t.Fatalf("our public IP while firewalled: found %+v", got)
+	}
+}
+
+func TestSlotEndKeepsPartOfBlock(t *testing.T) {
+	data := buildData(piece.BlockSize + 1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	h.connect(1, 1, piece.Set{true})
+	block := h.transfer.Request(1, 1)[0]
+	head := piece.Block{Begin: block.Begin, End: block.Begin + 400}
+	h.run(h.transfer.OnBlockReceived(1, head, data[head.Begin:head.End], h.now))
+	h.run(h.transfer.OnQueued(1, 0, h.now))
+
+	h.connect(2, 2, piece.Set{true})
+	var rest []piece.Block
+	for {
+		blocks := h.transfer.Request(2, 3)
+		if len(blocks) == 0 {
+			break
+		}
+		rest = append(rest, blocks...)
+		for _, b := range blocks {
+			h.run(h.transfer.OnBlockReceived(2, b, data[b.Begin:b.End], h.now))
+		}
+	}
+	if !slices.Contains(rest, piece.Block{Begin: head.End, End: block.End}) {
+		t.Fatalf("second peer was asked for %v, want the missing tail of the cut block", rest)
+	}
+	if got := h.transfer.Outcome().Status; got != transfer.StatusComplete || string(h.disk) != string(data) {
+		t.Fatalf("status %v, disk matches %v", got, string(h.disk) == string(data))
 	}
 }

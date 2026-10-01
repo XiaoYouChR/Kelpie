@@ -117,10 +117,10 @@ func TestReceivedBlockIsWrittenOnce(t *testing.T) {
 	picker.Request("a", 53)
 	b := picker.Request("b", 1)[0]
 
-	if !picker.OnBlockReceived("b", b) {
+	if written, ok := picker.OnBlockReceived("b", b); !ok || written != b {
 		t.Fatal("first delivery should be written")
 	}
-	if picker.OnBlockReceived("a", b) {
+	if _, ok := picker.OnBlockReceived("a", b); ok {
 		t.Fatal("second delivery should be dropped")
 	}
 	if got := picker.Request("b", 1); slices.Contains(got, b) {
@@ -257,5 +257,50 @@ func TestResumeDataOutsideFileIsRejected(t *testing.T) {
 		if _, err := piece.BuildPicker[string](piece.BlockSize*2, resume, random); err == nil {
 			t.Errorf("BuildPicker accepted %v", resume)
 		}
+	}
+}
+
+// A slot that ends inside a block leaves its received bytes; only the missing
+// tail is asked for again, from the same peer or another one.
+func TestPartlyReceivedBlockKeepsItsBytes(t *testing.T) {
+	picker := buildPicker(t, piece.BlockSize, piece.ResumeData{}, 1)
+	picker.OnPeerParts("a", piece.Set{true})
+	picker.OnPeerParts("b", piece.Set{true})
+	block := picker.Request("a", 1)[0]
+
+	head := piece.Block{Begin: block.Begin, End: block.Begin + 1000}
+	if written, ok := picker.OnBlockReceived("a", head); !ok || written != head {
+		t.Fatalf("partial delivery: written %v %v, want %v", written, ok, head)
+	}
+	picker.Cancel("a")
+	tail := piece.Block{Begin: head.End, End: block.End}
+	if got := picker.Request("b", 1); !slices.Equal(got, []piece.Block{tail}) {
+		t.Fatalf("after a's slot ended b got %v, want only the missing tail %v", got, tail)
+	}
+
+	if picker.OnBlockWritten(head) {
+		t.Fatal("part reported written with only its head on disk")
+	}
+	if got := picker.WrittenSize(); got != 1000 {
+		t.Fatalf("written size = %d, want the 1000 bytes of the head", got)
+	}
+	if got := picker.ToResumeData().WrittenBlocks; len(got) != 0 {
+		t.Fatalf("a partly written block was saved for resume: %v", got)
+	}
+
+	late := piece.Block{Begin: block.Begin, End: block.Begin + 5000}
+	if written, ok := picker.OnBlockReceived("a", late); !ok || written != (piece.Block{Begin: head.End, End: late.End}) {
+		t.Fatalf("overlapping late delivery: written %v %v, want only its new bytes", written, ok)
+	}
+	rest := piece.Block{Begin: late.End, End: block.End}
+	if written, ok := picker.OnBlockReceived("b", tail); !ok || written != rest {
+		t.Fatalf("tail delivery: written %v %v, want %v", written, ok, rest)
+	}
+	picker.OnBlockWritten(piece.Block{Begin: head.End, End: late.End})
+	if !picker.OnBlockWritten(rest) {
+		t.Fatal("part not reported written once every byte is on disk")
+	}
+	if senders := picker.OnPartFailed(0); !slices.Equal(senders, []string{"a", "b"}) {
+		t.Fatalf("senders of a failed part = %v, want both peers", senders)
 	}
 }

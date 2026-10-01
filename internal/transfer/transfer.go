@@ -253,6 +253,8 @@ func (t *Transfer) OnPeerParts(peer uint64, parts piece.Set) {
 	}
 }
 
+// OnBlockReceived takes the data of a requested block, or of the part of it
+// that arrived before the peer's slot ended; the rest is asked for later.
 func (t *Transfer) OnBlockReceived(peer uint64, block piece.Block, data []byte, now time.Time) []Action {
 	s := t.peers[peer]
 	if !t.isDownloading() || s == nil {
@@ -260,10 +262,11 @@ func (t *Transfer) OnBlockReceived(peer uint64, block piece.Block, data []byte, 
 	}
 	t.download.add(now, int64(len(data)))
 	s.receivedBytes += int64(len(data))
-	if !t.picker.OnBlockReceived(peer, block) {
+	fresh, ok := t.picker.OnBlockReceived(peer, block)
+	if !ok {
 		return nil
 	}
-	return []Action{Write{Block: block, Data: data}}
+	return []Action{Write{Block: fresh, Data: data[fresh.Begin-block.Begin:]}}
 }
 
 func (t *Transfer) OnBlockWritten(block piece.Block) []Action {
