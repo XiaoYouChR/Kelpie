@@ -1,0 +1,232 @@
+[
+ {
+  "link": "ed2k://|file|ubuntu.iso|1048576|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": true,
+  "name": "ubuntu.iso",
+  "size": 1048576,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|lower.bin|10|31d6cfe0d16ae931b73c59d7e0c089c0|/",
+  "valid": true,
+  "name": "lower.bin",
+  "size": 10,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|%E6%B5%8B%E8%AF%95%20%E6%96%87%E4%BB%B6.mkv|734003200|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": true,
+  "name": "测试 文件.mkv",
+  "size": 734003200,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|%E6%97%A5%E6%9C%AC%E8%AA%9E%E3%81%AE%E3%83%95%E3%82%A1%E3%82%A4%E3%83%AB%20%282024%29.mp4|123|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": true,
+  "name": "日本語のファイル (2024).mp4",
+  "size": 123,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ED2K://|FILE|Upper.Case.avi|2048|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": true,
+  "name": "Upper.Case.avi",
+  "size": 2048,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "Ed2k://|file|mixed.txt|1|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": true,
+  "name": "mixed.txt",
+  "size": 1,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|aich.zip|4096|31D6CFE0D16AE931B73C59D7E0C089C0|h=ABCDEFGHIJKLMNOPQRSTUVWXYZ234567|/",
+  "valid": true,
+  "name": "aich.zip",
+  "size": 4096,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|parts.bin|9728001|06329E9DBA1373512C06386FE29E3C65|p=D7DEF262A127CD79096A108E7A9FC138:47C61A0FA8738BA77308A8A600F88E4B|/",
+  "valid": true,
+  "name": "parts.bin",
+  "size": 9728001,
+  "hash": "06329E9DBA1373512C06386FE29E3C65"
+ },
+ {
+  "link": "ed2k://|file|wrong-parts.bin|9728001|31D6CFE0D16AE931B73C59D7E0C089C0|p=D7DEF262A127CD79096A108E7A9FC138:47C61A0FA8738BA77308A8A600F88E4B|/",
+  "valid": true,
+  "name": "wrong-parts.bin",
+  "size": 9728001,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|aich-and-parts.bin|9728001|06329E9DBA1373512C06386FE29E3C65|h=ABCDEFGHIJKLMNOPQRSTUVWXYZ234567|p=D7DEF262A127CD79096A108E7A9FC138:47C61A0FA8738BA77308A8A600F88E4B|/",
+  "valid": true,
+  "name": "aich-and-parts.bin",
+  "size": 9728001,
+  "hash": "06329E9DBA1373512C06386FE29E3C65"
+ },
+ {
+  "link": "ed2k://|file|sources.rar|5000|31D6CFE0D16AE931B73C59D7E0C089C0|/|sources,1.2.3.4:4662,5.6.7.8:4672|/",
+  "valid": true,
+  "name": "sources.rar",
+  "size": 5000,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|host-source.rar|5000|31D6CFE0D16AE931B73C59D7E0C089C0|/|sources,example.com:4662,[2001:db8::1]:4662|/",
+  "valid": true,
+  "name": "host-source.rar",
+  "size": 5000,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|http.7z|777|31D6CFE0D16AE931B73C59D7E0C089C0|s=http://example.com/http.7z|/",
+  "valid": true,
+  "name": "http.7z",
+  "size": 777,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|noslash.iso|100|31D6CFE0D16AE931B73C59D7E0C089C0|",
+  "valid": true,
+  "name": "noslash.iso",
+  "size": 100,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|nopipe.iso|100|31D6CFE0D16AE931B73C59D7E0C089C0",
+  "valid": true,
+  "name": "nopipe.iso",
+  "size": 100,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|big.mkv|5000000000|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": true,
+  "name": "big.mkv",
+  "size": 5000000000,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|max.bin|274877906944|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": true,
+  "name": "max.bin",
+  "size": 274877906944,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "  ed2k://|file|padded.txt|42|31D6CFE0D16AE931B73C59D7E0C089C0|/\n",
+  "valid": true,
+  "name": "padded.txt",
+  "size": 42,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|a+b.txt|5|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": true,
+  "name": "a+b.txt",
+  "size": 5,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|100%.txt|5|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": true,
+  "name": "100%.txt",
+  "size": 5,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|50%25%20off.txt|5|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": true,
+  "name": "50% off.txt",
+  "size": 5,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|pipe%7Cname.txt|5|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": true,
+  "name": "pipe|name.txt",
+  "size": 5,
+  "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"
+ },
+ {
+  "link": "ed2k://|file|empty.txt|0|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|file|too-big.bin|274877906945|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|file|negative.bin|-1|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|file|plus.bin|+100|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|file|underscore.bin|1_000|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|file|words.bin|ten|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|file|short-hash.bin|100|31D6CFE0D16AE931B73C59D7E0C089C|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|file|long-hash.bin|100|31D6CFE0D16AE931B73C59D7E0C089C00|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|file|non-hex.bin|100|G1D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|file|space-hash.bin|100| 1D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|file||100|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|file|missing-hash.bin|100|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|server|1.2.3.4|4661|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|serverlist|http://example.com/server.met|/",
+  "valid": false
+ },
+ {
+  "link": "ed2k://|nodeslist|http://example.com/nodes.dat|/",
+  "valid": false
+ },
+ {
+  "link": "http://|file|http.bin|100|31D6CFE0D16AE931B73C59D7E0C089C0|/",
+  "valid": false
+ },
+ {
+  "link": "magnet:?xt=urn:ed2k:31D6CFE0D16AE931B73C59D7E0C089C0",
+  "valid": false
+ },
+ {
+  "link": "hello world",
+  "valid": false
+ },
+ {
+  "link": "",
+  "valid": false
+ }
+]

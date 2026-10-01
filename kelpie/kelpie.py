@@ -1,0 +1,309 @@
+import asyncio
+import json
+import logging
+import re
+from collections import deque
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from .errors import Error, ErrorCode
+from .models import Link, Network, Progress, Settings
+
+
+PROTOCOL = 1
+MIN_ENGINE_VERSION = (0, 1, 0)
+CLOSE_TIMEOUT = 15
+STREAM_LIMIT = 4 * 1024 * 1024
+VERSION_PATTERN = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
+
+logger = logging.getLogger(__name__)
+
+
+class Run:
+    def __init__(self, id: int, hash: str) -> None:
+        self.id = id
+        self.hash = hash
+        self._progress: Progress | None = None
+        self._isEnded = False
+        self._error: Error | None = None
+        self._changed = asyncio.Event()
+
+    async def __aiter__(self) -> AsyncIterator[Progress]:
+        while True:
+            await self._changed.wait()
+            self._changed.clear()
+            progress, self._progress = self._progress, None
+            if progress is not None:
+                yield progress
+            if self._isEnded:
+                if self._error is not None:
+                    raise self._error
+                return
+
+    def setProgress(self, progress: Progress) -> None:
+        if self._isEnded:
+            return
+        self._progress = progress
+        self._changed.set()
+
+    def setEnded(self, error: Error | None) -> None:
+        if self._isEnded:
+            return
+        self._isEnded = True
+        self._error = error
+        self._changed.set()
+
+
+class Kelpie:
+    def __init__(
+        self,
+        executable: Callable[[], Path],
+        dataFolder: Path,
+        settings: Callable[[], Settings],
+    ) -> None:
+        self._executable = executable
+        self._dataFolder = dataFolder
+        self._settings = settings
+        self._rateLimits = (0, 0)
+        self._process: asyncio.subprocess.Process | None = None
+        self._starting: asyncio.Task[None] | None = None
+        self._routes: dict[int, Run] = {}
+        self._runs: dict[str, Run] = {}
+        self._nextRunId = 1
+        self._network: Network | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    @property
+    def network(self) -> Network | None:
+        return self._network
+
+    def runDownload(self, link: Link, file: Path) -> AbstractAsyncContextManager[Run]:
+        return self.run("download", link, file)
+
+    def runSeed(self, link: Link, file: Path) -> AbstractAsyncContextManager[Run]:
+        return self.run("seed", link, file)
+
+    def setRateLimits(self, download: int, upload: int) -> None:
+        self._rateLimits = (download, upload)
+        if self._process is not None:
+            send(self._process, {"type": "setRateLimits", "download": download, "upload": upload})
+
+    def isActive(self, hash: str) -> bool:
+        return hash in self._runs
+
+    async def remove(self, hash: str) -> None:
+        await self.start()
+        if self._process is not None:
+            send(self._process, {"type": "remove", "hash": hash})
+
+    async def close(self) -> None:
+        if self._starting is not None:
+            try:
+                await asyncio.shield(self._starting)
+            except Error:
+                pass
+        process = self._process
+        if process is None:
+            return
+        self._process = None
+        self._network = None
+        routes, self._routes = self._routes, {}
+        for run in routes.values():
+            run.setEnded(None)
+        routes.clear()
+        process.stdin.close()
+        try:
+            async with asyncio.timeout(CLOSE_TIMEOUT):
+                await process.wait()
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+        await asyncio.gather(*self._tasks)
+
+    @asynccontextmanager
+    async def run(self, mode: str, link: Link, file: Path) -> AsyncIterator[Run]:
+        if link.hash in self._runs:
+            raise Error(ErrorCode.TRANSFER_BUSY, f"a Run is already open for {link.hash}")
+        run = Run(self._nextRunId, link.hash)
+        self._nextRunId += 1
+        self._runs[link.hash] = run
+        try:
+            try:
+                await self.start()
+            except Error as error:
+                run.setEnded(error)
+            else:
+                if self._process is None:
+                    run.setEnded(Error(ErrorCode.ENGINE_EXITED, "Engine Process exited"))
+                else:
+                    self._routes[run.id] = run
+                    send(
+                        self._process,
+                        {"type": "run", "run": run.id, "mode": mode, "link": str(link), "file": str(file)},
+                    )
+            yield run
+        finally:
+            del self._runs[link.hash]
+            if self._routes.pop(run.id, None) is not None:
+                send(self._process, {"type": "stop", "run": run.id})
+
+    async def start(self) -> None:
+        if self._process is not None:
+            return
+        if self._starting is None:
+            self._starting = asyncio.create_task(self.createProcess())
+        await asyncio.shield(self._starting)
+
+    async def createProcess(self) -> None:
+        try:
+            executable = self._executable()
+            settings = self._settings()
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    executable,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    limit=STREAM_LIMIT,
+                )
+            except OSError as error:
+                raise Error(ErrorCode.START_FAILED, f"cannot start {executable}: {error}") from error
+            send(process, buildHello(self._dataFolder, settings, self._rateLimits))
+            ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            task = asyncio.create_task(self.supervise(process, ready))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            await ready
+        finally:
+            self._starting = None
+
+    async def supervise(self, process: asyncio.subprocess.Process, ready: asyncio.Future[None]) -> None:
+        stderr: deque[str] = deque(maxlen=20)
+        stderrTask = asyncio.create_task(refreshStderr(process, stderr))
+        routes: dict[int, Run] = {}
+        line = await process.stdout.readline()
+        failure = parseHandshake(line) if line else None
+        isReady = bool(line) and failure is None
+        if isReady:
+            self._process = process
+            self._routes = routes
+            self._network = None
+            ready.set_result(None)
+            while line := await process.stdout.readline():
+                self.onMessage(line, routes)
+        elif failure is not None:
+            process.stdin.close()
+        await stderrTask
+        exitCode = await process.wait()
+        lastLine = stderr[-1] if stderr else f"exit code {exitCode}"
+        if not isReady:
+            ready.set_exception(
+                failure or Error(ErrorCode.START_FAILED, f"Engine Process exited during startup: {lastLine}")
+            )
+            return
+        if self._process is process:
+            self._process = None
+            self._routes = {}
+            self._network = None
+        exited = Error(ErrorCode.ENGINE_EXITED, lastLine)
+        for run in routes.values():
+            run.setEnded(exited)
+        routes.clear()
+
+    def onMessage(self, line: bytes, routes: dict[int, Run]) -> None:
+        try:
+            message = json.loads(line)
+            match message.get("type"):
+                case "progress":
+                    run = routes.get(message["run"])
+                    if run is not None:
+                        run.setProgress(parseProgress(message))
+                case "ended":
+                    run = routes.pop(message["run"], None)
+                    if run is not None:
+                        run.setEnded(parseError(message["error"]))
+                case "network":
+                    self._network = parseNetwork(message)
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            logger.warning("ignored invalid Engine Process message %r: %s", line, error)
+
+
+def send(process: asyncio.subprocess.Process, message: dict[str, Any]) -> None:
+    process.stdin.write(json.dumps(message, separators=(",", ":")).encode() + b"\n")
+
+
+def buildHello(dataFolder: Path, settings: Settings, rateLimits: tuple[int, int]) -> dict[str, Any]:
+    return {
+        "type": "hello",
+        "protocol": PROTOCOL,
+        "dataFolder": str(dataFolder),
+        "settings": {
+            "port": settings.port,
+            "enableKad": settings.enableKad,
+            "enableUpnp": settings.enableUpnp,
+            "serverLists": [str(path) for path in settings.serverLists],
+            "nodeLists": [str(path) for path in settings.nodeLists],
+            "traceFile": str(settings.traceFile) if settings.traceFile is not None else "",
+        },
+        "rateLimits": {"download": rateLimits[0], "upload": rateLimits[1]},
+    }
+
+
+def parseHandshake(line: bytes) -> Error | None:
+    try:
+        message = json.loads(line)
+        if message["type"] == "failed":
+            return Error(ErrorCode.START_FAILED, message["error"]["message"])
+        if message["type"] != "ready":
+            return Error(ErrorCode.START_FAILED, f"unexpected handshake: {line!r}")
+        version = message["version"]
+    except (ValueError, KeyError, TypeError) as error:
+        return Error(ErrorCode.START_FAILED, f"invalid handshake {line!r}: {error}")
+    if matchOutdated(version):
+        required = ".".join(map(str, MIN_ENGINE_VERSION))
+        return Error(ErrorCode.OUTDATED, f"Engine Process {version} is older than v{required}")
+    return None
+
+
+def matchOutdated(version: str) -> bool:
+    parsed = VERSION_PATTERN.match(version)
+    return parsed is not None and tuple(map(int, parsed.groups())) < MIN_ENGINE_VERSION
+
+
+def parseProgress(message: dict[str, Any]) -> Progress:
+    return Progress(
+        hash=message["hash"],
+        size=message["size"],
+        received=message["received"],
+        downloadRate=message["downloadRate"],
+        uploadRate=message["uploadRate"],
+        uploaded=message["uploaded"],
+        peers=message["peers"],
+        activePeers=message["activePeers"],
+    )
+
+
+def parseNetwork(message: dict[str, Any]) -> Network:
+    return Network(
+        isServerConnected=message["isServerConnected"],
+        isHighId=message["isHighId"],
+        isKadFirewalled=message["isKadFirewalled"],
+        kadNodes=message["kadNodes"],
+    )
+
+
+def parseError(error: dict[str, Any] | None) -> Error | None:
+    if error is None:
+        return None
+    try:
+        code = ErrorCode(error["code"])
+    except ValueError:
+        code = ErrorCode.INTERNAL
+    return Error(code, error["message"])
+
+
+async def refreshStderr(process: asyncio.subprocess.Process, lines: deque[str]) -> None:
+    while line := await process.stderr.readline():
+        lines.append(line.decode(errors="replace").rstrip())
