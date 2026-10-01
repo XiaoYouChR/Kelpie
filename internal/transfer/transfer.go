@@ -85,8 +85,8 @@ type Transfer struct {
 	pending []Action
 	// unhashedParts are written parts waiting for the hash set.
 	unhashedParts     []int
+	// hashSetPeer is the peer asked for the hash set; 0 when none is.
 	hashSetPeer       uint64
-	isHashSetAsked    bool
 	hashSetAskedPeers map[uint64]bool
 	aich              aichState
 
@@ -344,7 +344,7 @@ func (t *Transfer) OnPartHashed(part int, hash wire.Hash, now time.Time) []Actio
 // hash, and starts hashing the parts that waited for them.
 func (t *Transfer) OnHashSet(peer uint64, hashes []wire.Hash) []Action {
 	if peer == t.hashSetPeer {
-		t.isHashSetAsked = false
+		t.hashSetPeer = 0
 	}
 	if !t.isDownloading() || len(t.partHashes) > 0 || !t.matchHashSet(hashes) {
 		return nil
@@ -364,13 +364,12 @@ func (t *Transfer) needsHashSet() bool {
 }
 
 func (t *Transfer) requestHashSet() []Action {
-	if !t.needsHashSet() || t.isHashSetAsked {
+	if !t.needsHashSet() || t.hashSetPeer != 0 {
 		return nil
 	}
 	for _, s := range t.sources {
-		if s.isConnected && !t.hashSetAskedPeers[s.peer] {
+		if t.isConnected(s) && !t.hashSetAskedPeers[s.peer] {
 			t.hashSetPeer = s.peer
-			t.isHashSetAsked = true
 			t.hashSetAskedPeers[s.peer] = true
 			return []Action{RequestHashSet{Peer: s.peer}}
 		}
