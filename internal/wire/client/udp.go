@@ -1,0 +1,86 @@
+package client
+
+import (
+	"encoding/binary"
+
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
+)
+
+// ReaskFilePing is the UDP OP_REASKFILEPING a queued downloader sends to keep
+// its place. UDP version 4 appends the sender's part status, version 3 and
+// up its complete-source count.
+type ReaskFilePing struct {
+	Hash               wire.Hash
+	HasParts           bool
+	Parts              wire.Bitfield
+	HasCompleteSources bool
+	CompleteSources    uint16
+}
+
+func (ReaskFilePing) Protocol() byte { return wire.ProtocolEMule }
+func (ReaskFilePing) Opcode() byte   { return opReaskFilePing }
+
+func (p ReaskFilePing) Build(b []byte) []byte {
+	b = append(b, p.Hash[:]...)
+	if p.HasParts {
+		b = wire.BuildBitfield(b, p.Parts)
+	}
+	if p.HasCompleteSources {
+		b = binary.LittleEndian.AppendUint16(b, p.CompleteSources)
+	}
+	return b
+}
+
+// parseReaskFilePing tells the versions apart by length: version 4 always
+// carries both fields (at least four bytes), version 3 exactly two.
+func parseReaskFilePing(r *wire.Reader) ReaskFilePing {
+	p := ReaskFilePing{Hash: r.Hash()}
+	if r.Len() > 2 {
+		p.HasParts, p.Parts = true, r.Bitfield()
+	}
+	if r.Len() > 0 {
+		p.HasCompleteSources, p.CompleteSources = true, r.Uint16()
+	}
+	return p
+}
+
+// ReaskAck is OP_REASKACK: our queue rank, preceded by the uploader's part
+// status from UDP version 4 on.
+type ReaskAck struct {
+	HasParts bool
+	Parts    wire.Bitfield
+	Rank     uint16
+}
+
+func (ReaskAck) Protocol() byte { return wire.ProtocolEMule }
+func (ReaskAck) Opcode() byte   { return opReaskAck }
+
+func (a ReaskAck) Build(b []byte) []byte {
+	if a.HasParts {
+		b = wire.BuildBitfield(b, a.Parts)
+	}
+	return binary.LittleEndian.AppendUint16(b, a.Rank)
+}
+
+func parseReaskAck(r *wire.Reader) ReaskAck {
+	var a ReaskAck
+	if r.Len() > 2 {
+		a.HasParts, a.Parts = true, r.Bitfield()
+	}
+	a.Rank = r.Uint16()
+	return a
+}
+
+// FileNotFound is OP_FILENOTFOUND: the uploader no longer shares the file.
+type FileNotFound struct{}
+
+func (FileNotFound) Protocol() byte        { return wire.ProtocolEMule }
+func (FileNotFound) Opcode() byte          { return opFileNotFound }
+func (FileNotFound) Build(b []byte) []byte { return b }
+
+// QueueFull is OP_QUEUEFULL: the uploader's queue has no room for us.
+type QueueFull struct{}
+
+func (QueueFull) Protocol() byte        { return wire.ProtocolEMule }
+func (QueueFull) Opcode() byte          { return opQueueFull }
+func (QueueFull) Build(b []byte) []byte { return b }
