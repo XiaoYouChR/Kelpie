@@ -2,6 +2,7 @@ package obfuscation
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"io"
 	"net"
@@ -151,5 +152,44 @@ func TestOutgoingRejectsBadAnswer(t *testing.T) {
 	}()
 	if _, err := OpenOutgoing(a, user, [4]byte{1, 2, 3, 4}); err != ErrHandshake {
 		t.Fatalf("err %v", err)
+	}
+}
+
+// aMule pads its answer with up to 128 random bytes, and a peer may send
+// payload right behind it (aMule accepts that on a connection it opened).
+func TestOutgoingReadsPaddedAnswerAndPayload(t *testing.T) {
+	a, b := buildPair(t)
+	keyPart := [4]byte{1, 2, 3, 4}
+	go func() {
+		io.ReadFull(b, make([]byte, 12))
+		answer := binary.LittleEndian.AppendUint32(nil, magicSync)
+		answer = append(answer, methodObfuscation, 3, 7, 7, 7)
+		answer = append(answer, "data"...)
+		buildCipher(user, magicServer, keyPart).XORKeyStream(answer, answer)
+		b.Write(answer)
+	}()
+	out, err := OpenOutgoing(a, user, keyPart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 4)
+	if _, err := io.ReadFull(out, got); err != nil || string(got) != "data" {
+		t.Fatalf("read %q %v", got, err)
+	}
+}
+
+// The side that accepted sends its answer and then nothing until the
+// peer's first packet, as eMule does.
+func TestIncomingSendsOnlyTheAnswer(t *testing.T) {
+	a, b := buildPair(t)
+	request, _ := hex.DecodeString("11010203041716dcbe604f14")
+	a.Write(request)
+	if _, err := OpenIncoming(b, user); err != nil {
+		t.Fatal(err)
+	}
+	a.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	got, _ := io.ReadAll(a)
+	if len(got) != 6 {
+		t.Fatalf("sent %d bytes, want the 6-byte answer", len(got))
 	}
 }

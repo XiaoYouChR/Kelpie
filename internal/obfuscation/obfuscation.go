@@ -123,6 +123,11 @@ func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (*Conn, error)
 // whose user hash is self. A plain eD2k frame is returned as it came; an
 // obfuscation request is answered and the encrypted Conn returned. It blocks
 // until the peer has sent its handshake: the caller sets a deadline.
+//
+// eMule and aMule drop a peer whose first read holds more than the
+// handshake. Kelpie keeps such bytes for the reader instead: a requester
+// that waits for our answer, as eMule and Kelpie do, never sends them, and
+// whether early bytes share one read is up to TCP.
 func OpenIncoming(conn net.Conn, self wire.Hash) (net.Conn, error) {
 	r := bufio.NewReader(conn)
 	first, err := r.Peek(1)
