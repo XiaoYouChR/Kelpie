@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/netip"
 	"sort"
+	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
@@ -18,7 +19,12 @@ type Credit struct {
 	Uploaded   uint64
 	Downloaded uint64
 	PublicKey  []byte
+	LastSeen   time.Time
 }
+
+// creditExpiry is how long a user may stay away before its credits are
+// forgotten: aMule drops them at load after 150 days (ClientCreditsList.cpp:120).
+const creditExpiry = 150 * 24 * time.Hour
 
 type identState byte
 
@@ -45,9 +51,17 @@ type Ledger struct {
 	accounts map[wire.Hash]*account
 }
 
-func BuildLedger(credits []Credit) *Ledger {
+// BuildLedger drops credits last seen more than 150 days before now. A
+// credit imported without a last-seen time starts its 150 days now.
+func BuildLedger(credits []Credit, now time.Time) *Ledger {
 	ledger := &Ledger{accounts: make(map[wire.Hash]*account, len(credits))}
 	for _, credit := range credits {
+		if credit.LastSeen.IsZero() {
+			credit.LastSeen = now
+		}
+		if now.Sub(credit.LastSeen) > creditExpiry {
+			continue
+		}
 		state := identUnavailable
 		if len(credit.PublicKey) > 0 {
 			state = identNeeded
@@ -75,6 +89,12 @@ func (a *account) isTrusted(ip netip.Addr) bool {
 		return a.verifiedIP == ip
 	}
 	return false
+}
+
+// OnHello records that user greeted us, as aMule's GetCredit does on every
+// Hello (BaseClient.cpp:680, ClientCreditsList.cpp:236).
+func (l *Ledger) OnHello(user wire.Hash, now time.Time) {
+	l.accountByUser(user).credit.LastSeen = now
 }
 
 // PublicKeyByUser is the key a signature from user must be checked against:

@@ -425,6 +425,7 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 	now := e.now()
 	switch ev := event.(type) {
 	case peer.HandshakeCompleted:
+		e.ledger.OnHello(ev.UserHash, now)
 		e.onHandshake(c, ev)
 	case peer.Identified:
 		e.onIdentified(c, ev)
