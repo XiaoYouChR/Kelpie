@@ -219,8 +219,8 @@ func TestUploadReadAheadIsBounded(t *testing.T) {
 	for i := int64(0); i < 33; i += 3 {
 		request := client.RequestParts{Hash: f.hash}
 		for j := range int64(3) {
-			request.Starts[j] = uint32((i + j) * piece.BlockSize)
-			request.Ends[j] = uint32((i + j + 1) * piece.BlockSize)
+			request.Starts[j] = uint64((i + j) * piece.BlockSize)
+			request.Ends[j] = uint64((i + j + 1) * piece.BlockSize)
 		}
 		p.send(request)
 	}

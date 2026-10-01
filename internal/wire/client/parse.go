@@ -34,7 +34,6 @@ const (
 	opCompressedPart    byte = 0x40
 	opQueueRanking      byte = 0x60
 	opRequestSources    byte = 0x81
-	opAnswerSources     byte = 0x82
 	opRequestSources2   byte = 0x83
 	opAnswerSources2    byte = 0x84
 	opPublicKey         byte = 0x85
@@ -148,9 +147,9 @@ func parseEDonkey(r *wire.Reader, opcode byte) wire.Packet {
 	case opQueueRank:
 		return QueueRank{Rank: r.Uint32()}
 	case opRequestParts:
-		return parseRequestParts(r)
+		return parseRequestParts(r, false)
 	case opSendingPart:
-		return parseSendingPart(r)
+		return parseSendingPart(r, false)
 	case opIPv6Changed:
 		return IPv6Changed{Addr: r.IPv6()}
 	}
@@ -166,17 +165,15 @@ func parseEMule(r *wire.Reader, opcode byte) wire.Packet {
 	case opQueueRanking:
 		return QueueRanking{Rank: r.Uint16()}
 	case opRequestParts64:
-		return parseRequestParts64(r)
+		return parseRequestParts(r, true)
 	case opSendingPart64:
-		return parseSendingPart64(r)
+		return parseSendingPart(r, true)
 	case opCompressedPart:
-		return CompressedPart{Hash: r.Hash(), Start: r.Uint32(), PackedSize: r.Uint32(), Data: r.Bytes(r.Len())}
+		return parseCompressedPart(r, false)
 	case opCompressedPart64:
-		return CompressedPart64{Hash: r.Hash(), Start: r.Uint64(), PackedSize: r.Uint32(), Data: r.Bytes(r.Len())}
+		return parseCompressedPart(r, true)
 	case opRequestSources:
 		return RequestSources{Hash: r.Hash()}
-	case opAnswerSources:
-		return parseAnswerSources(r)
 	case opRequestSources2:
 		return RequestSources2{Version: r.Uint8(), Options: r.Uint16(), Hash: r.Hash()}
 	case opAnswerSources2:

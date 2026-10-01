@@ -110,11 +110,7 @@ func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Outp
 	if s.features.canCompress {
 		if packed := toDeflated(data); len(packed) < len(data) {
 			for chunk := range slices.Chunk(packed, partPacketSize) {
-				if isLarge {
-					out.send(client.CompressedPart64{Hash: file, Start: uint64(block.Begin), PackedSize: uint32(len(packed)), Data: chunk})
-				} else {
-					out.send(client.CompressedPart{Hash: file, Start: uint32(block.Begin), PackedSize: uint32(len(packed)), Data: chunk})
-				}
+				out.send(client.CompressedPart{Hash: file, Start: uint64(block.Begin), PackedSize: uint32(len(packed)), Data: chunk, IsLarge: isLarge})
 			}
 			return out
 		}
@@ -122,11 +118,7 @@ func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Outp
 	start := block.Begin
 	for chunk := range slices.Chunk(data, partPacketSize) {
 		end := start + int64(len(chunk))
-		if isLarge {
-			out.send(client.SendingPart64{Hash: file, Start: uint64(start), End: uint64(end), Data: chunk})
-		} else {
-			out.send(client.SendingPart{Hash: file, Start: uint32(start), End: uint32(end), Data: chunk})
-		}
+		out.send(client.SendingPart{Hash: file, Start: uint64(start), End: uint64(end), Data: chunk, IsLarge: isLarge})
 		start = end
 	}
 	return out
@@ -307,17 +299,7 @@ func (s *Session) onUploadCancelled(out *Output) {
 	out.add(UploadCancelled{})
 }
 
-func toBlocks32(p client.RequestParts) []piece.Block {
-	var blocks []piece.Block
-	for i := range p.Starts {
-		if p.Ends[i] > p.Starts[i] {
-			blocks = append(blocks, piece.Block{Begin: int64(p.Starts[i]), End: int64(p.Ends[i])})
-		}
-	}
-	return blocks
-}
-
-func toBlocks64(p client.RequestParts64) []piece.Block {
+func toBlocks(p client.RequestParts) []piece.Block {
 	var blocks []piece.Block
 	for i := range p.Starts {
 		if p.Ends[i] > p.Starts[i] {

@@ -235,109 +235,76 @@ func (q QueueRanking) Build(b []byte) []byte {
 }
 
 // RequestParts is OP_REQUESTPARTS: up to three [Start, End) ranges; unused
-// slots are zero.
+// slots are zero. IsLarge sends OP_REQUESTPARTS_I64, which a file over 4 GiB
+// needs, with 64-bit offsets.
 type RequestParts struct {
-	Hash   wire.Hash
-	Starts [3]uint32
-	Ends   [3]uint32
+	Hash    wire.Hash
+	Starts  [3]uint64
+	Ends    [3]uint64
+	IsLarge bool
 }
 
 func (p RequestParts) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEDonkey, opRequestParts)
-	b = append(b, p.Hash[:]...)
-	for _, v := range p.Starts {
-		b = binary.LittleEndian.AppendUint32(b, v)
+	if p.IsLarge {
+		b = append(b, wire.ProtocolEMule, opRequestParts64)
+	} else {
+		b = append(b, wire.ProtocolEDonkey, opRequestParts)
 	}
-	for _, v := range p.Ends {
-		b = binary.LittleEndian.AppendUint32(b, v)
+	b = append(b, p.Hash[:]...)
+	for _, v := range append(p.Starts[:], p.Ends[:]...) {
+		b = buildOffset(b, v, p.IsLarge)
 	}
 	return b
 }
 
-func parseRequestParts(r *wire.Reader) RequestParts {
-	p := RequestParts{Hash: r.Hash()}
+func parseRequestParts(r *wire.Reader, isLarge bool) RequestParts {
+	p := RequestParts{Hash: r.Hash(), IsLarge: isLarge}
 	for i := range p.Starts {
-		p.Starts[i] = r.Uint32()
+		p.Starts[i] = parseOffset(r, isLarge)
 	}
 	for i := range p.Ends {
-		p.Ends[i] = r.Uint32()
+		p.Ends[i] = parseOffset(r, isLarge)
 	}
 	return p
 }
 
-// RequestParts64 is OP_REQUESTPARTS_I64, for files over 4 GiB.
-type RequestParts64 struct {
-	Hash   wire.Hash
-	Starts [3]uint64
-	Ends   [3]uint64
+func parseOffset(r *wire.Reader, isLarge bool) uint64 {
+	if isLarge {
+		return r.Uint64()
+	}
+	return uint64(r.Uint32())
 }
 
-func (p RequestParts64) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEMule, opRequestParts64)
-	b = append(b, p.Hash[:]...)
-	for _, v := range p.Starts {
-		b = binary.LittleEndian.AppendUint64(b, v)
+func buildOffset(b []byte, v uint64, isLarge bool) []byte {
+	if isLarge {
+		return binary.LittleEndian.AppendUint64(b, v)
 	}
-	for _, v := range p.Ends {
-		b = binary.LittleEndian.AppendUint64(b, v)
-	}
-	return b
-}
-
-func parseRequestParts64(r *wire.Reader) RequestParts64 {
-	p := RequestParts64{Hash: r.Hash()}
-	for i := range p.Starts {
-		p.Starts[i] = r.Uint64()
-	}
-	for i := range p.Ends {
-		p.Ends[i] = r.Uint64()
-	}
-	return p
+	return binary.LittleEndian.AppendUint32(b, uint32(v))
 }
 
 // SendingPart is OP_SENDINGPART: Data is the file bytes [Start, End).
+// IsLarge sends OP_SENDINGPART_I64 with 64-bit offsets.
 type SendingPart struct {
-	Hash  wire.Hash
-	Start uint32
-	End   uint32
-	Data  []byte
+	Hash    wire.Hash
+	Start   uint64
+	End     uint64
+	Data    []byte
+	IsLarge bool
 }
 
 func (s SendingPart) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEDonkey, opSendingPart)
-	b = append(b, s.Hash[:]...)
-	b = binary.LittleEndian.AppendUint32(b, s.Start)
-	b = binary.LittleEndian.AppendUint32(b, s.End)
-	return append(b, s.Data...)
-}
-
-func parseSendingPart(r *wire.Reader) SendingPart {
-	s := SendingPart{Hash: r.Hash(), Start: r.Uint32(), End: r.Uint32()}
-	s.Data = r.Bytes(r.Len())
-	if r.Err() == nil && (s.End < s.Start || s.End-s.Start != uint32(len(s.Data))) {
-		r.SetErr(fmt.Errorf("client: part [%d, %d) carries %d bytes", s.Start, s.End, len(s.Data)))
+	if s.IsLarge {
+		b = append(b, wire.ProtocolEMule, opSendingPart64)
+	} else {
+		b = append(b, wire.ProtocolEDonkey, opSendingPart)
 	}
-	return s
-}
-
-// SendingPart64 is OP_SENDINGPART_I64.
-type SendingPart64 struct {
-	Hash  wire.Hash
-	Start uint64
-	End   uint64
-	Data  []byte
-}
-
-func (s SendingPart64) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEMule, opSendingPart64)
 	b = append(b, s.Hash[:]...)
-	b = binary.LittleEndian.AppendUint64(b, s.Start)
-	b = binary.LittleEndian.AppendUint64(b, s.End)
+	b = buildOffset(buildOffset(b, s.Start, s.IsLarge), s.End, s.IsLarge)
 	return append(b, s.Data...)
 }
 
-func parseSendingPart64(r *wire.Reader) SendingPart64 {
-	s := SendingPart64{Hash: r.Hash(), Start: r.Uint64(), End: r.Uint64()}
+func parseSendingPart(r *wire.Reader, isLarge bool) SendingPart {
+	s := SendingPart{Hash: r.Hash(), Start: parseOffset(r, isLarge), End: parseOffset(r, isLarge), IsLarge: isLarge}
 	s.Data = r.Bytes(r.Len())
 	if r.Err() == nil && (s.End < s.Start || s.End-s.Start != uint64(len(s.Data))) {
 		r.SetErr(fmt.Errorf("client: part [%d, %d) carries %d bytes", s.Start, s.End, len(s.Data)))
@@ -347,36 +314,28 @@ func parseSendingPart64(r *wire.Reader) SendingPart64 {
 
 // CompressedPart is OP_COMPRESSEDPART: one zlib chunk of a block that starts
 // at Start. PackedSize is the compressed size of the whole block, which
-// arrives across several of these.
+// arrives across several of these. IsLarge sends OP_COMPRESSEDPART_I64 with
+// a 64-bit Start.
 type CompressedPart struct {
-	Hash       wire.Hash
-	Start      uint32
-	PackedSize uint32
-	Data       []byte
-}
-
-func (c CompressedPart) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEMule, opCompressedPart)
-	b = append(b, c.Hash[:]...)
-	b = binary.LittleEndian.AppendUint32(b, c.Start)
-	b = binary.LittleEndian.AppendUint32(b, c.PackedSize)
-	return append(b, c.Data...)
-}
-
-// CompressedPart64 is OP_COMPRESSEDPART_I64.
-type CompressedPart64 struct {
 	Hash       wire.Hash
 	Start      uint64
 	PackedSize uint32
 	Data       []byte
+	IsLarge    bool
 }
 
-func (c CompressedPart64) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEMule, opCompressedPart64)
-	b = append(b, c.Hash[:]...)
-	b = binary.LittleEndian.AppendUint64(b, c.Start)
-	b = binary.LittleEndian.AppendUint32(b, c.PackedSize)
+func (c CompressedPart) Build(b []byte) []byte {
+	op := opCompressedPart
+	if c.IsLarge {
+		op = opCompressedPart64
+	}
+	b = append(append(b, wire.ProtocolEMule, op), c.Hash[:]...)
+	b = binary.LittleEndian.AppendUint32(buildOffset(b, c.Start, c.IsLarge), c.PackedSize)
 	return append(b, c.Data...)
+}
+
+func parseCompressedPart(r *wire.Reader, isLarge bool) CompressedPart {
+	return CompressedPart{Hash: r.Hash(), Start: parseOffset(r, isLarge), PackedSize: r.Uint32(), Data: r.Bytes(r.Len()), IsLarge: isLarge}
 }
 
 // SecureIdentState is OP_SECIDENTSTATE: which Secure User Identification

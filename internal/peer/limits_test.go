@@ -48,7 +48,7 @@ func TestRequestedBlocksAreCapped(t *testing.T) {
 	request := func(first int) {
 		p := client.RequestParts{Hash: file}
 		for i := range 3 {
-			p.Starts[i] = uint32((first + i) * 100)
+			p.Starts[i] = uint64((first + i) * 100)
 			p.Ends[i] = p.Starts[i] + 100
 		}
 		l.run(l.a, Output{Send: []wire.Packet{p}})

@@ -772,11 +772,7 @@ func toPayload(p wire.Packet) int64 {
 	switch p := p.(type) {
 	case client.SendingPart:
 		return int64(len(p.Data))
-	case client.SendingPart64:
-		return int64(len(p.Data))
 	case client.CompressedPart:
-		return int64(len(p.Data))
-	case client.CompressedPart64:
 		return int64(len(p.Data))
 	}
 	return 0

@@ -95,15 +95,13 @@ func samplePackets() []wire.Packet {
 		OutOfParts{},
 		QueueRank{Rank: 70000},
 		QueueRanking{Rank: 42},
-		RequestParts{Hash: fileHash, Starts: [3]uint32{0, 10, 0}, Ends: [3]uint32{10, 20, 0}},
-		RequestParts64{Hash: fileHash, Starts: [3]uint64{1 << 33, 0, 0}, Ends: [3]uint64{1<<33 + 10, 0, 0}},
+		RequestParts{Hash: fileHash, Starts: [3]uint64{0, 10, 0}, Ends: [3]uint64{10, 20, 0}},
+		RequestParts{Hash: fileHash, Starts: [3]uint64{1 << 33, 0, 0}, Ends: [3]uint64{1<<33 + 10, 0, 0}, IsLarge: true},
 		SendingPart{Hash: fileHash, Start: 100, End: 103, Data: []byte{1, 2, 3}},
-		SendingPart64{Hash: fileHash, Start: 1 << 33, End: 1<<33 + 2, Data: []byte{1, 2}},
+		SendingPart{Hash: fileHash, Start: 1 << 33, End: 1<<33 + 2, Data: []byte{1, 2}, IsLarge: true},
 		CompressedPart{Hash: fileHash, Start: 100, PackedSize: 50, Data: []byte{9, 9}},
-		CompressedPart64{Hash: fileHash, Start: 1 << 33, PackedSize: 50, Data: []byte{9, 9}},
+		CompressedPart{Hash: fileHash, Start: 1 << 33, PackedSize: 50, Data: []byte{9, 9}, IsLarge: true},
 		RequestSources{Hash: fileHash},
-		AnswerSources{Hash: fileHash, Sources: []Source{{ClientID: 1, Port: 2, Server: netip.MustParseAddrPort("1.2.3.4:5")}}},
-		AnswerSources{Hash: fileHash, HasUserHash: true, Sources: []Source{{ClientID: 1, Port: 2, UserHash: userHash}}},
 		RequestSources2{Version: SourceExchange2Version, Hash: fileHash},
 		AnswerSources2{Version: 4, Hash: fileHash, Sources: []Source{{ClientID: 0x0100000A, Port: 4662, Server: netip.MustParseAddrPort("1.2.3.4:4661"), UserHash: userHash, CryptOptions: 0x81}}},
 		AnswerSources2{Version: 2, Hash: fileHash, Sources: []Source{{ClientID: 3, Port: 4, UserHash: userHash}}},
@@ -232,14 +230,14 @@ func TestHelloIgnoresTrailingBytes(t *testing.T) {
 
 func TestMiscOptionsBits(t *testing.T) {
 	m1 := MiscOptions1{AICHVersion: 1, IsUnicode: true, UDPVersion: 4, DataCompressionVersion: 1, SecureIdentVersion: 3, SourceExchange1Version: 3, ExtendedRequestsVersion: 2, AcceptCommentVersion: 1, IsSharedFilesHidden: true, HasMultiPacket: true, HasPreview: true}
-	if v := m1.ToUint32(); v != 0x34133217 {
+	if v := m1.toUint32(); v != 0x34133217 {
 		t.Fatalf("misc1 = %#x", v)
 	}
 	if parseMiscOptions1(0x34133217) != m1 {
 		t.Fatal("misc1 parse")
 	}
 	m2 := MiscOptions2{KadVersion: 9, HasLargeFiles: true, HasExtMultiPacket: true, HasSourceExchange2: true, HasCaptcha: true}
-	if v := m2.ToUint32(); v != 0x0C39 {
+	if v := m2.toUint32(); v != 0x0C39 {
 		t.Fatalf("misc2 = %#x", v)
 	}
 	if parseMiscOptions2(0x0C39) != m2 {
@@ -276,15 +274,6 @@ func TestExtendedSourceSkipsUnknownTags(t *testing.T) {
 	}
 	if s := got.(AnswerSources2).Sources; len(s) != 1 || s[0].ClientID != 1 || s[0].Port != 2 {
 		t.Fatalf("sources = %+v", s)
-	}
-}
-
-// Ported from goed2k protocol/client/source_exchange_test.go.
-func TestAnswerSourcesRejectsWrongEntrySize(t *testing.T) {
-	body := append(append([]byte(nil), fileHash[:]...), 1, 0)
-	body = append(body, make([]byte, 27)...)
-	if _, err := Parse(wire.ProtocolEMule, opAnswerSources, body); err == nil {
-		t.Fatal("want error")
 	}
 }
 

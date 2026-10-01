@@ -368,7 +368,7 @@ func TestPipelineStaysFull(t *testing.T) {
 
 	// eMule re-lists blocks still in flight; each is served once.
 	l.b.events = nil
-	l.run(l.a, Output{Send: []wire.Packet{client.RequestParts{Hash: file, Starts: [3]uint32{0, uint32(piece.BlockSize)}, Ends: [3]uint32{uint32(piece.BlockSize), uint32(2 * piece.BlockSize)}}}})
+	l.run(l.a, Output{Send: []wire.Packet{client.RequestParts{Hash: file, Starts: [3]uint64{0, uint64(piece.BlockSize)}, Ends: [3]uint64{uint64(piece.BlockSize), uint64(2 * piece.BlockSize)}}}})
 	if len(eventsOf[BlocksRequested](l.b)) != 0 {
 		t.Fatal("duplicate request served again")
 	}

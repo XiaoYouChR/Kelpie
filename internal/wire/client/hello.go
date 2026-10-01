@@ -154,8 +154,8 @@ func buildHello(b []byte, h Hello) []byte {
 	addUint(tagUDPPorts, uint32(h.KadPort)<<16|uint32(h.UDPPort))
 	addAddr(tagBuddyIP, h.Buddy.Addr())
 	addUint(tagBuddyUDP, uint32(h.Buddy.Port()))
-	addUint(tagMiscOptions1, h.Misc1.ToUint32())
-	addUint(tagMiscOptions2, h.Misc2.ToUint32())
+	addUint(tagMiscOptions1, h.Misc1.toUint32())
+	addUint(tagMiscOptions2, h.Misc2.toUint32())
 	addUint(tagEmuleVersion, h.EmuleVersion)
 	addString(tagModVersion, h.ModName)
 	addUint(tagModMiscOptions, h.ModMisc)
@@ -202,7 +202,7 @@ func parseMiscOptions1(v uint32) MiscOptions1 {
 	}
 }
 
-func (m MiscOptions1) ToUint32() uint32 {
+func (m MiscOptions1) toUint32() uint32 {
 	return uint32(m.AICHVersion&0x07)<<29 |
 		toBit(m.IsUnicode)<<28 |
 		uint32(m.UDPVersion&0x0F)<<24 |
@@ -245,7 +245,7 @@ func parseMiscOptions2(v uint32) MiscOptions2 {
 	}
 }
 
-func (m MiscOptions2) ToUint32() uint32 {
+func (m MiscOptions2) toUint32() uint32 {
 	return uint32(m.KadVersion&0x0F) |
 		toBit(m.HasLargeFiles)<<4 |
 		toBit(m.HasExtMultiPacket)<<5 |

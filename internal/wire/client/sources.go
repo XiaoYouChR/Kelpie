@@ -29,48 +29,6 @@ func (s RequestSources) Build(b []byte) []byte {
 	return append(b, s.Hash[:]...)
 }
 
-// AnswerSources is OP_ANSWERSOURCES. Records carry the user hash from SX1
-// version 2 on; the body length tells which, so no version is needed.
-type AnswerSources struct {
-	Hash        wire.Hash
-	HasUserHash bool
-	Sources     []Source
-}
-
-func (a AnswerSources) Build(b []byte) []byte {
-	b = append(b, wire.ProtocolEMule, opAnswerSources)
-	b = append(b, a.Hash[:]...)
-	b = binary.LittleEndian.AppendUint16(b, uint16(len(a.Sources)))
-	for _, s := range a.Sources {
-		b = buildClassicSource(b, s)
-		if a.HasUserHash {
-			b = append(b, s.UserHash[:]...)
-		}
-	}
-	return b
-}
-
-func parseAnswerSources(r *wire.Reader) AnswerSources {
-	a := AnswerSources{Hash: r.Hash()}
-	count := int(r.Uint16())
-	switch r.Len() {
-	case count * 12:
-	case count * 28:
-		a.HasUserHash = true
-	default:
-		r.SetErr(fmt.Errorf("client: %d sources cannot fill %d bytes", count, r.Len()))
-		return a
-	}
-	a.Sources = make([]Source, count)
-	for i := range a.Sources {
-		a.Sources[i] = parseClassicSource(r)
-		if a.HasUserHash {
-			a.Sources[i].UserHash = r.Hash()
-		}
-	}
-	return a
-}
-
 // RequestSources2 is OP_REQUESTSOURCES2.
 type RequestSources2 struct {
 	Version byte
