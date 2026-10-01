@@ -406,39 +406,6 @@ func TestSourceCap(t *testing.T) {
 	if len(incoming) != 1 || incoming[0] != (transfer.Close{Peer: 1, Reason: "too many sources"}) {
 		t.Fatalf("incoming beyond the cap: %+v", incoming)
 	}
-	if got := h.tick(transfer.Tick{Server: endpoint(9999), IsKadRunning: true}); countActions[transfer.RequestSources](got) != 0 {
-		t.Fatalf("source requests above the soft limit: %+v", got)
-	}
-}
-
-func TestSourceRequestIntervals(t *testing.T) {
-	data := buildData(1000)
-	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
-	server := endpoint(9999)
-	channels := func(d time.Duration) map[transfer.Channel]bool {
-		got := map[transfer.Channel]bool{}
-		for _, action := range h.tick(transfer.Tick{Now: start.Add(d), Server: server, IsKadRunning: true}) {
-			if r, ok := action.(transfer.RequestSources); ok {
-				got[r.Channel] = true
-			}
-		}
-		return got
-	}
-	if got := channels(0); !got[transfer.ChannelServer] || !got[transfer.ChannelGlobalServer] || !got[transfer.ChannelKad] {
-		t.Fatalf("first tick requests %v", got)
-	}
-	if got := channels(15 * time.Minute); len(got) != 0 {
-		t.Fatalf("requests at 15 min: %v", got)
-	}
-	if got := channels(15*time.Minute + time.Second); !got[transfer.ChannelServer] || len(got) != 1 {
-		t.Fatalf("requests after SERVERREASKTIME: %v", got)
-	}
-	if got := channels(time.Hour); !got[transfer.ChannelKad] {
-		t.Fatalf("no Kad request after KADEMLIAREASKTIME: %v", got)
-	}
-	if got := channels(2*time.Hour + time.Minute); got[transfer.ChannelKad] {
-		t.Fatalf("second Kad search did not back off: %v", got)
-	}
 }
 
 func TestLowIDSourceNeedsServerCallback(t *testing.T) {
@@ -534,8 +501,7 @@ func TestFirewalledDropsLowIDSources(t *testing.T) {
 	}
 }
 
-// Sources we cannot reach must not switch off the channels that could bring
-// reachable ones, nor fill the cap.
+// Sources we cannot reach must not fill the cap.
 func TestUnreachableSourcesAreNotCounted(t *testing.T) {
 	data := buildData(1000)
 	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
@@ -547,35 +513,9 @@ func TestUnreachableSourcesAreNotCounted(t *testing.T) {
 	}
 	h.run(h.transfer.OnSourcesFound(found, transfer.ChannelKad, start))
 
-	channels := map[transfer.Channel]bool{}
-	for _, action := range h.tick(transfer.Tick{Now: start.Add(2 * time.Hour), Server: server, IsFirewalled: true, IsKadRunning: true}) {
-		if r, ok := action.(transfer.RequestSources); ok {
-			channels[r.Channel] = true
-		}
-	}
-	if !channels[transfer.ChannelServer] || !channels[transfer.ChannelGlobalServer] || !channels[transfer.ChannelKad] {
-		t.Fatalf("source requests with 400 unreachable sources: %v", channels)
-	}
 	actions := h.transfer.OnSourcesFound([]transfer.Source{{Endpoint: endpoint(1)}}, transfer.ChannelKad, start)
 	if got := len(traces(actions, transfer.EventFound)); got != 1 {
 		t.Fatalf("HighID source refused at the cap of unreachable sources: %+v", actions)
-	}
-
-	other := buildHarness(t, data, transfer.Options{File: buildFile(data)})
-	other.tick(transfer.Tick{Server: server})
-	found = nil
-	for i := range 60 {
-		found = append(found, lowIDSource(i, endpoint(8888)))
-	}
-	other.run(other.transfer.OnSourcesFound(found, transfer.ChannelExchange, start))
-	channels = map[transfer.Channel]bool{}
-	for _, action := range other.tick(transfer.Tick{Now: start.Add(time.Hour), Server: server, IsKadRunning: true}) {
-		if r, ok := action.(transfer.RequestSources); ok {
-			channels[r.Channel] = true
-		}
-	}
-	if !channels[transfer.ChannelGlobalServer] || !channels[transfer.ChannelKad] {
-		t.Fatalf("source requests with 60 LowID sources on another server: %v", channels)
 	}
 }
 

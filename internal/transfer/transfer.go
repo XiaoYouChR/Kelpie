@@ -109,11 +109,6 @@ type Transfer struct {
 	// tick is the engine's state as of the last OnTick.
 	tick Tick
 
-	lastServerAsk   time.Time
-	lastServer      netip.AddrPort
-	lastGlobalAsk   time.Time
-	nextKadAsk      time.Time
-	kadSearches     int
 	lastExchangeAsk time.Time
 	lastPurge       time.Time
 }

@@ -42,8 +42,8 @@ type RequestKadCallback struct {
 	CanObfuscate bool
 }
 
-// RequestSources asks one channel for more sources. Peer is set only for
-// ChannelExchange.
+// RequestSources asks a connected peer for its sources; Channel is always
+// ChannelExchange, as the server and Kad pace their own source searches.
 type RequestSources struct {
 	Channel Channel
 	Peer    uint64

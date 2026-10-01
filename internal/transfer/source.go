@@ -34,12 +34,6 @@ const (
 	// corrupt data stays refused.
 	banTime = 2 * time.Hour
 
-	serverReaskTime       = 15 * time.Minute // SERVERREASKTIME
-	globalServerReaskTime = 30 * time.Minute // UDPSERVERREASKTIME
-	kadReaskTime          = time.Hour        // KADEMLIAREASKTIME
-	// maxKadSearches caps the multiplier of kadReaskTime (m_TotalSearchesKad < 7).
-	maxKadSearches = 7
-
 	exchangeReaskSlow = 40 * time.Minute // SOURCECLIENTREASKS
 	exchangeReaskFast = 5 * time.Minute  // SOURCECLIENTREASKF
 	commonPenalty     = 4                // MINCOMMONPENALTY
@@ -55,9 +49,6 @@ const (
 	// maxSourcesSoft is GetMaxSourcePerFileSoft: 9/10 of maxSources, capped
 	// at MAX_SOURCES_FILE_SOFT (750). Above it no more sources are asked for.
 	maxSourcesSoft = maxSources * 9 / 10
-	// maxSourcesUDP is GetMaxSourcePerFileUDP: 3/4 of maxSources, capped at
-	// MAX_SOURCES_FILE_UDP (50). Global server and Kad searches stop above it.
-	maxSourcesUDP = min(maxSources*3/4, 50)
 
 	// UDP reasks to a source stop once more than 3 were sent and over 30%
 	// went unanswered (CUpDownClient::UDPReaskForDownload).
@@ -544,7 +535,7 @@ func (t *Transfer) removeCorrupt(peer uint64, now time.Time) []Action {
 }
 
 // OnTick runs the timers: source reasks and connections within the budget,
-// callback timeouts, source requests, the hash set request and publishing.
+// callback timeouts, the hash set request and publishing.
 func (t *Transfer) OnTick(tick Tick) []Action {
 	actions := t.pending
 	t.pending = nil
@@ -565,7 +556,6 @@ func (t *Transfer) OnTick(tick Tick) []Action {
 	for _, s := range slices.Clone(t.sources) {
 		actions = append(actions, t.runSource(s, tick, &budget)...)
 	}
-	actions = append(actions, t.requestSources(tick)...)
 	return append(actions, t.requestHashSet()...)
 }
 
@@ -685,29 +675,6 @@ func (t *Transfer) requestConnect(s *source, tick Tick, budget *int) []Action {
 		s.callbackTimeout = tick.Now.Add(callbackTimeout)
 	}
 	return []Action{action}
-}
-
-func (t *Transfer) requestSources(tick Tick) []Action {
-	now := tick.Now
-	count := t.validSourceCount()
-	var actions []Action
-	if tick.Server.IsValid() && count < maxSourcesSoft &&
-		(tick.Server != t.lastServer || t.lastServerAsk.IsZero() || now.Sub(t.lastServerAsk) > serverReaskTime) {
-		t.lastServer = tick.Server
-		t.lastServerAsk = now
-		actions = append(actions, RequestSources{Channel: ChannelServer})
-	}
-	if tick.Server.IsValid() && count < maxSourcesUDP &&
-		(t.lastGlobalAsk.IsZero() || now.Sub(t.lastGlobalAsk) > globalServerReaskTime) {
-		t.lastGlobalAsk = now
-		actions = append(actions, RequestSources{Channel: ChannelGlobalServer})
-	}
-	if tick.IsKadRunning && count < maxSourcesUDP && !now.Before(t.nextKadAsk) {
-		t.kadSearches = min(t.kadSearches+1, maxKadSearches)
-		t.nextKadAsk = now.Add(kadReaskTime * time.Duration(t.kadSearches))
-		actions = append(actions, RequestSources{Channel: ChannelKad})
-	}
-	return actions
 }
 
 // Sources lists the sources the transfer keeps.
