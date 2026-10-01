@@ -17,6 +17,9 @@ var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 const path = "/downloads/file.bin"
 
+// fileReaskTime is the reask interval of a queued source.
+const fileReaskTime = 29 * time.Minute
+
 func buildData(size int64) []byte {
 	data := make([]byte, size)
 	random := rand.New(rand.NewPCG(1, 2))
@@ -571,5 +574,34 @@ func TestUnreachableSourcesAreNotCounted(t *testing.T) {
 	}
 	if !channels[transfer.ChannelGlobalServer] || !channels[transfer.ChannelKad] {
 		t.Fatalf("source requests with 60 LowID sources on another server: %v", channels)
+	}
+}
+
+func TestSlotAskedSourceStaysQueuedWhenClosedBeforeRank(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1), endpoint(2))})
+	h.tick(transfer.Tick{ConnectBudget: 2})
+	h.run(h.transfer.OnPeerConnected(1, transfer.Hello{Endpoint: endpoint(1), UserHash: userHash(1)}, start))
+	h.run(h.transfer.OnPeerConnected(2, transfer.Hello{Endpoint: endpoint(2), UserHash: userHash(2)}, start))
+	h.transfer.OnPeerParts(1, piece.Set{true})
+
+	asked := h.transfer.OnPeerGone(1, "idle", start.Add(40*time.Second))
+	if got := traces(asked, transfer.EventFailed); len(got) != 0 {
+		t.Fatalf("source asked for a slot marked failed: %+v", asked)
+	}
+	silent := h.transfer.OnPeerGone(2, "idle", start.Add(40*time.Second))
+	if got := traces(silent, transfer.EventFailed); len(got) != 1 {
+		t.Fatalf("source that never answered the file request not failed: %+v", silent)
+	}
+
+	at := func(d time.Duration) []transfer.Action {
+		return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 2})
+	}
+	if got := at(fileReaskTime - time.Second); countActions[transfer.Connect](got) != 0 {
+		t.Fatalf("Connect before the reask interval: %+v", got)
+	}
+	got := at(fileReaskTime)
+	if countActions[transfer.Connect](got) != 1 || got[0] != (transfer.Connect{Endpoint: endpoint(1), UserHash: userHash(1)}) {
+		t.Fatalf("queued source not reasked at the reask interval: %+v", got)
 	}
 }

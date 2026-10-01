@@ -246,7 +246,9 @@ func (t *Transfer) Request(peer uint64, n int) []piece.Block {
 }
 
 func (t *Transfer) OnPeerParts(peer uint64, parts piece.Set) {
-	if t.isDownloading() && t.peers[peer] != nil {
+	s := t.peers[peer]
+	if t.isDownloading() && s != nil {
+		s.hasAnswered = true
 		t.picker.OnPeerParts(peer, parts)
 	}
 }

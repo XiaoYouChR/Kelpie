@@ -126,6 +126,9 @@ type source struct {
 
 	state       sourceState
 	isConnected bool
+	// hasAnswered: the connected source answered our file request with its
+	// part status, so we asked it for a slot.
+	hasAnswered bool
 	peer        uint64
 	rank        int
 
@@ -336,6 +339,8 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Hello, now time.Time) []Ac
 	s.canExchange = hello.CanExchange
 	s.state = stateAsking
 	s.isConnected = true
+	s.hasAnswered = false
+	s.lastAsked = now
 	s.peer = peer
 	t.peers[peer] = s
 	t.senders[peer] = s
@@ -431,8 +436,13 @@ func (t *Transfer) OnSlotGranted(peer uint64, now time.Time) []Action {
 	return []Action{t.buildTrace(now, s, EventSlot)}
 }
 
-// OnPeerGone detaches a closed connection. A queued source keeps its place
-// and is reasked later; one that never answered counts as failed.
+// OnPeerGone detaches a closed connection. A source that answered our file
+// request keeps its place and is reasked a reask interval after we connected,
+// even when it closed before telling its queue rank, as a full upload queue
+// does; only one that never answered counts as failed (aMule
+// CUpDownClient::Disconnected, BaseClient.cpp:1280-1290: DS_ONQUEUE is set as
+// soon as OP_STARTUPLOADREQ is sent and is kept, DS_CONNECTED goes to the dead
+// list).
 func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Action {
 	s := t.peers[peer]
 	if s == nil {
@@ -445,10 +455,13 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 	}
 	s.isConnected = false
 	actions := t.sendReceived(s, now)
-	switch s.state {
-	case stateAsking:
+	switch {
+	case s.state == stateAsking && !s.hasAnswered:
 		return append(actions, t.setFailed(s, reason, now))
-	case stateDownloading:
+	case s.state == stateAsking:
+		s.state = stateQueued
+		s.rank = 0
+	case s.state == stateDownloading:
 		s.state = stateNew
 		s.lastAsked = now
 	}
