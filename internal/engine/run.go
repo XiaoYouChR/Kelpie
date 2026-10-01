@@ -335,7 +335,7 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			e.sendPeerDatagram(a.Endpoint, client.ReaskFilePing{
 				Hash:               r.file.Hash,
 				HasParts:           true,
-				Parts:              toStatus(r.share),
+				Parts:              peer.ToStatus(r.share),
 				HasCompleteSources: true,
 			}, a.UserHash, a.CanObfuscate)
 		case transfer.RequestServerCallback:
@@ -456,15 +456,4 @@ func (e *Engine) matchKnownSource(user wire.Hash, caps peer.Capabilities) []wire
 		}
 	}
 	return files
-}
-
-// toStatus is our part status for a reask: no parts for a complete file,
-// as eMule sends.
-func toStatus(share peer.Share) wire.Bitfield {
-	if share.Parts.IsFull() {
-		return wire.Bitfield{}
-	}
-	have := make([]bool, share.Size/piece.PartSize+1)
-	copy(have, share.Parts)
-	return wire.ToBitfield(have)
 }

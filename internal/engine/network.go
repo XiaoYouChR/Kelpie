@@ -9,6 +9,7 @@ import (
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
 	"github.com/XiaoYouChR/Kelpie/internal/obfuscation"
+	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/server"
 	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
@@ -311,7 +312,7 @@ func (e *Engine) onReask(from netip.AddrPort, ping client.ReaskFilePing) {
 	case upload.ReaskAck:
 		ack := client.ReaskAck{Rank: uint16(min(a.Rank, 0xFFFF))}
 		if r := e.runByHash[ping.Hash]; ping.HasParts && r != nil {
-			ack.HasParts, ack.Parts = true, toStatus(r.share)
+			ack.HasParts, ack.Parts = true, peer.ToStatus(r.share)
 		}
 		reply, user = ack, a.User
 	case upload.FileNotFound:
