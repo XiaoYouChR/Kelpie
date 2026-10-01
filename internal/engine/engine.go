@@ -195,7 +195,7 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		uploadLimiter:   transport.BuildLimiter(ports.Clock, config.RateLimits.Upload),
 		state:           state,
 		self:            self,
-		ledger:          identity.BuildLedger(toCredits(state.Credits)),
+		ledger:          identity.BuildLedger(toCredits(state.Credits), ports.Clock.Now()),
 		saves:           make(chan store.State, 1),
 		saverDone:       make(chan struct{}),
 		disk:            buildLeafQueue[diskJob](caps.disk),
@@ -210,7 +210,7 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)
 		e.ports.Transport = udpLogTransport{Transport: ports.Transport, log: e.packetLog, clock: ports.Clock}
 	}
-	e.queue = upload.BuildQueue(e.ledger.Ratio, func(wire.Hash, netip.Addr) bool { return false })
+	e.queue = upload.BuildQueue(e.ledger.Ratio, e.ledger.TrustByUser, func(wire.Hash, netip.Addr) bool { return false })
 	e.queue.SetRate(config.RateLimits.Upload)
 	if err := e.openSockets(); err != nil {
 		cancel()
@@ -280,7 +280,7 @@ func loadSelf(folder string, state *store.State) (identity.Self, error) {
 func toCredits(credits map[wire.Hash]store.Credit) []identity.Credit {
 	var list []identity.Credit
 	for user, c := range credits {
-		list = append(list, identity.Credit{User: user, Uploaded: c.Uploaded, Downloaded: c.Downloaded, PublicKey: c.PublicKey})
+		list = append(list, identity.Credit{User: user, Uploaded: c.Uploaded, Downloaded: c.Downloaded, PublicKey: c.PublicKey, LastSeen: c.LastSeen})
 	}
 	return list
 }
@@ -684,13 +684,8 @@ func (e *Engine) buildState() store.State {
 	if e.kad != nil {
 		state.Kad = e.kad.State()
 	}
-	now := e.now()
 	for _, c := range e.ledger.ToCredits() {
-		lastSeen := now
-		if old, ok := e.state.Credits[c.User]; ok && !old.LastSeen.IsZero() {
-			lastSeen = old.LastSeen
-		}
-		state.Credits[c.User] = store.Credit{Uploaded: c.Uploaded, Downloaded: c.Downloaded, PublicKey: c.PublicKey, LastSeen: lastSeen}
+		state.Credits[c.User] = store.Credit{Uploaded: c.Uploaded, Downloaded: c.Downloaded, PublicKey: c.PublicKey, LastSeen: c.LastSeen}
 	}
 	for _, r := range e.runList {
 		if r.transfer != nil {

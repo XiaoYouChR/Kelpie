@@ -434,6 +434,7 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 	now := e.now()
 	switch ev := event.(type) {
 	case peer.HandshakeCompleted:
+		e.ledger.OnHello(ev.UserHash, now)
 		e.onHandshake(c, ev)
 	case peer.Identified:
 		e.onIdentified(c, ev)
@@ -657,10 +658,11 @@ func toPayload(p wire.Packet) int64 {
 func toUploadPeer(c *conn) upload.Peer {
 	caps := c.session.Capabilities()
 	return upload.Peer{
-		User:    c.session.UserHash(),
-		IP:      c.remote.Addr(),
-		UDPPort: caps.UDPPort,
-		IsLowID: wire.IsLowID(caps.ClientID),
+		User:        c.session.UserHash(),
+		IP:          c.remote.Addr(),
+		UDPPort:     caps.UDPPort,
+		IsLowID:     wire.IsLowID(caps.ClientID),
+		MuleVersion: caps.MuleVersion,
 	}
 }
 

@@ -188,7 +188,7 @@ func TestHandshakeBothDirections(t *testing.T) {
 		caps.CryptOptions != CryptSupported|CryptRequested {
 		t.Fatalf("capabilities %+v", caps)
 	}
-	if caps.EmuleVersion != 0x4B<<24|1<<17|2<<10|3<<7 {
+	if caps.EmuleVersion != 0x4B<<24|1<<17|2<<10|3<<7 || caps.MuleVersion != 0x99 {
 		t.Fatalf("emule version %#x", caps.EmuleVersion)
 	}
 	if l.b.s.Capabilities().ClientID != l.a.s.cfg.ClientID {
@@ -823,7 +823,7 @@ func TestEmuleInfoBeforeHelloAnswer(t *testing.T) {
 	if _, ok := out.Events[0].(HandshakeCompleted); !ok {
 		t.Fatalf("events %+v", out.Events)
 	}
-	if caps := s.Capabilities(); !caps.IsEmule || !caps.CanCompress || caps.UDPPort != 4672 || caps.Port != 6346 {
+	if caps := s.Capabilities(); !caps.IsEmule || caps.MuleVersion != 0x30 || !caps.CanCompress || caps.UDPPort != 4672 || caps.Port != 6346 {
 		t.Fatalf("capabilities %+v", caps)
 	}
 }

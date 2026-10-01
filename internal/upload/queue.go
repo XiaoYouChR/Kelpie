@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/identity"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
@@ -28,6 +29,7 @@ const (
 	datarateWindow   = 30 * time.Second         // CUploadQueue::Process keeps 30 s of rate samples
 	autoHighQueued   = 1                        // CKnownFile::UpdateAutoUpPriority: <=1 queued is PR_HIGH
 	autoNormalQueued = 20                       // <=20 queued is PR_NORMAL, more is PR_LOW
+	oldMuleVersion   = 0x19                     // CalculateScoreInternal halves eMule 0.19 and older
 )
 
 // Peer is a downloader as the queue knows it. User and IP together are its
@@ -38,6 +40,17 @@ type Peer struct {
 	IP      netip.Addr
 	UDPPort uint16
 	IsLowID bool
+	// MuleVersion is peer.Capabilities.MuleVersion.
+	MuleVersion byte
+}
+
+// isOld is aMule's test for clients from before eMule 0.20
+// (UploadClient.cpp:144): an old eMule protocol version, or no version at all
+// from a client whose user hash marks it as eMule (GetHashType,
+// BaseClient.cpp:1743).
+func (p Peer) isOld() bool {
+	isEmuleHash := p.User[5] == 14 && p.User[14] == 111
+	return p.MuleVersion <= oldMuleVersion && (p.MuleVersion > 0 || isEmuleHash)
 }
 
 type key struct {
@@ -125,6 +138,7 @@ type sample struct {
 // Queue is the waiting queue and the upload slots of one Engine Process.
 type Queue struct {
 	ratio         func(user wire.Hash, ip netip.Addr) float64
+	trust         func(user wire.Hash, ip netip.Addr) identity.Trust
 	isBanned      func(user wire.Hash, ip netip.Addr) bool
 	files         map[wire.Hash]bool
 	waiters       map[key]*waiter
@@ -136,11 +150,16 @@ type Queue struct {
 	datarate      int64
 }
 
-// BuildQueue takes the credit ratio (identity.Ledger.Ratio) and the engine's
-// ban list.
-func BuildQueue(ratio func(user wire.Hash, ip netip.Addr) float64, isBanned func(user wire.Hash, ip netip.Addr) bool) *Queue {
+// BuildQueue takes the credit ratio and trust (identity.Ledger.Ratio and
+// TrustByUser) and the engine's ban list.
+func BuildQueue(
+	ratio func(user wire.Hash, ip netip.Addr) float64,
+	trust func(user wire.Hash, ip netip.Addr) identity.Trust,
+	isBanned func(user wire.Hash, ip netip.Addr) bool,
+) *Queue {
 	return &Queue{
 		ratio:    ratio,
+		trust:    trust,
 		isBanned: isBanned,
 		files:    map[wire.Hash]bool{},
 		waiters:  map[key]*waiter{},
@@ -214,7 +233,7 @@ func (q *Queue) OnRequest(conn uint64, peer Peer, file wire.Hash, now time.Time)
 		}
 		return []Action{SendRank{conn, q.rank(w, now)}}
 	}
-	if !q.canQueue(peer, file) {
+	if !q.removeDuplicates(peer) || !q.canQueue(peer, file) {
 		return nil
 	}
 	w := &waiter{peer: peer, file: file, conn: conn, isConnected: true, waitStart: now, lastAsk: now}
@@ -312,6 +331,28 @@ func (q *Queue) startSlot(w *waiter, now time.Time) Action {
 	return Grant{s.conn, s.file}
 }
 
+// removeDuplicates applies AddClientToQueue's rule for one user hash waiting
+// from two addresses (aMule UploadQueue.cpp:446-468, eMule alike): a waiter
+// identified by Secure User Identification keeps its place and the newcomer is
+// ignored; otherwise the waiters are removed and the newcomer queues only if it
+// is identified. It reports whether the newcomer may queue.
+func (q *Queue) removeDuplicates(peer Peer) bool {
+	var duplicates []key
+	for k, w := range q.waiters {
+		if w.peer.User != peer.User {
+			continue
+		}
+		if q.trust(w.peer.User, w.peer.IP) == identity.TrustIdentified {
+			return false
+		}
+		duplicates = append(duplicates, k)
+	}
+	for _, k := range duplicates {
+		delete(q.waiters, k)
+	}
+	return len(duplicates) == 0 || q.trust(peer.User, peer.IP) == identity.TrustIdentified
+}
+
 // canQueue applies eMule's admission rules for a newcomer: three peers per IP,
 // and past the soft limit only peers above the average priority × credit.
 func (q *Queue) canQueue(peer Peer, file wire.Hash) bool {
@@ -364,12 +405,17 @@ func (q *Queue) bestWaiter(now time.Time) *waiter {
 }
 
 // score is eMule's CUpDownClient::GetScore: seconds waited × credit ratio ×
-// file priority / 10. Banned peers score 0 and are never chosen.
+// file priority / 10, halved for old clients. Banned peers and impostors of an
+// identified user score 0 and are never chosen (aMule UploadClient.cpp:91).
 func (q *Queue) score(w *waiter, counts map[wire.Hash]int, now time.Time) float64 {
-	if q.isBanned(w.peer.User, w.peer.IP) {
+	if q.isBanned(w.peer.User, w.peer.IP) || q.trust(w.peer.User, w.peer.IP) == identity.TrustImpostor {
 		return 0
 	}
-	return now.Sub(w.waitStart).Seconds() * q.ratio(w.peer.User, w.peer.IP) * filePriority(counts[w.file]) / 10
+	score := now.Sub(w.waitStart).Seconds() * q.ratio(w.peer.User, w.peer.IP) * filePriority(counts[w.file]) / 10
+	if w.peer.isOld() {
+		score /= 2
+	}
+	return score
 }
 
 // rank is eMule's GetWaitingPosition: one plus the waiters scoring higher.
