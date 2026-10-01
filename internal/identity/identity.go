@@ -49,27 +49,27 @@ const (
 	ipKindZero IPKind = 30
 )
 
-// Challenge is everything besides the verifier's public key that the signature
-// covers. Value is the 4-byte random challenge from OP_SECIDENTSTATE.
+// Challenge is everything besides the verifier's public key that the
+// signature covers: Value is the 4-byte random challenge from
+// OP_SECIDENTSTATE, and IPKind names which address, if any, is appended.
+// Both sides fill in the same roles: SignerIP is the signer's
+// server-assigned address, VerifierIP the verifier's address as the signer
+// sees it.
 type Challenge struct {
-	Value  uint32
-	IPKind IPKind
-	IP     netip.Addr
+	Value      uint32
+	IPKind     IPKind
+	SignerIP   netip.Addr
+	VerifierIP netip.Addr
 }
 
-// BuildChallenge picks the address that goes with kind. Both sides call it
-// with the same roles: the signer passes its own server-assigned address and
-// the peer's address; the verifier passes the peer's address and its own
-// public address.
-func BuildChallenge(value uint32, kind IPKind, signerIP, verifierIP netip.Addr) Challenge {
-	challenge := Challenge{Value: value, IPKind: kind}
-	switch kind {
+func (c Challenge) ip() netip.Addr {
+	switch c.IPKind {
 	case ipKindSigner:
-		challenge.IP = signerIP
+		return c.SignerIP
 	case ipKindVerifier:
-		challenge.IP = verifierIP
+		return c.VerifierIP
 	}
-	return challenge
+	return netip.Addr{}
 }
 
 // buildMessage lays out what is signed: verifier's public key || challenge
@@ -81,8 +81,8 @@ func buildMessage(verifierKey []byte, challenge Challenge) []byte {
 		return message
 	}
 	var ip [4]byte
-	if challenge.IP.Is4() {
-		ip = challenge.IP.As4()
+	if addr := challenge.ip(); addr.Is4() {
+		ip = addr.As4()
 	}
 	return append(append(message, ip[:]...), byte(challenge.IPKind))
 }
@@ -151,27 +151,22 @@ func MatchSignature(peerKey, signature, ourKey []byte, challenge Challenge) bool
 	return matchPKCS1v15Signature(key, buildMessage(ourKey, challenge), signature)
 }
 
-// Reply is what to send after receiving OP_SECIDENTSTATE.
+// Reply is what to send after receiving OP_SECIDENTSTATE. A signature
+// needs the peer's key; without it, it is sent once OP_PUBLICKEY arrives.
 type Reply struct {
-	ShouldSendKey       bool
-	ShouldSendSignature bool
-	// IsSignaturePending: send the signature once the peer's OP_PUBLICKEY arrives.
-	IsSignaturePending bool
-	IPKind             IPKind
+	ShouldSendKey bool
+	ShouldSign    bool
+	IPKind        IPKind
 }
 
 // BuildReply follows eMule: signatures are v1 unless the peer supports only
 // v2; a v2 signer that is LowID does not know its own address and signs the
 // peer's instead.
-func BuildReply(state State, peerSupport byte, isLowID, hasPeerKey bool) Reply {
+func BuildReply(state State, peerSupport byte, isLowID bool) Reply {
 	if state != stateSignatureNeeded && state != stateKeyAndSignatureNeeded {
 		return Reply{}
 	}
-	reply := Reply{
-		ShouldSendKey:       state == stateKeyAndSignatureNeeded,
-		ShouldSendSignature: hasPeerKey,
-		IsSignaturePending:  !hasPeerKey,
-	}
+	reply := Reply{ShouldSendKey: state == stateKeyAndSignatureNeeded, ShouldSign: true}
 	if peerSupport&1 == 0 {
 		reply.IPKind = ipKindSigner
 		if isLowID {
