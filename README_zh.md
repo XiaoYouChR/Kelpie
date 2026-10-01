@@ -31,20 +31,29 @@ Kelpie 由两部分组成：
 - **Python 包**：把仓库里的 `kelpie/` 文件夹复制到你的项目中即可，只依赖标准库，需要 Python 3.11 及以上。
 
 ```python
+import asyncio
+from pathlib import Path
+
 from kelpie import Error, Kelpie, Link, Settings
 
-kelpie = Kelpie(lambda: enginePath, dataFolder, lambda: Settings())
-link = Link.parse("ed2k://|file|example.bin|2048|31D6CFE0D16AE931B73C59D7E0C089C0|/")
 
-try:
-    async with kelpie.runDownload(link, downloads / link.name) as run:
-        async for progress in run:
-            print(f"{progress.received}/{progress.size}，速度 {progress.downloadRate} B/s")
-except Error as error:
-    print(error.code, error.message)
+async def main() -> None:
+    kelpie = Kelpie(lambda: Path("build/kelpie"), Path("data"), lambda: Settings())
+    link = Link.parse("ed2k://|file|example.bin|2048|31D6CFE0D16AE931B73C59D7E0C089C0|/")
+    try:
+        async with kelpie.runDownload(link, Path.home() / "Downloads" / link.name) as run:
+            async for progress in run:
+                print(f"{progress.received}/{progress.size}，速度 {progress.downloadRate} B/s")
+    except Error as error:
+        print(error.code, error.message)
+    finally:
+        await kelpie.close()
+
+
+asyncio.run(main())
 ```
 
-每个 `async with` 代码块就是一次下载或做种。代码块打开时文件开始传输，离开代码块传输就停止。引擎程序由 Kelpie 按需启动，你不用管理它。出错时，代码块抛出 `kelpie.Error`。
+每个 `async with` 代码块就是一次下载或做种。代码块打开时文件开始传输，离开代码块传输就停止。`runSeed` 用同样的方式做种。引擎程序由 Kelpie 按需启动，`close()` 关闭它。出错时，代码块抛出 `kelpie.Error`。限速、删除恢复数据、网络状态分别用 `setRateLimits`、`remove` 和 `network`。
 
 各个概念的定义见 [CONTEXT.md](CONTEXT.md)（英文），设计理由见 [ADR-0004](docs/adr/0004-transfers-run-only-while-observed.md)。
 
@@ -64,6 +73,7 @@ Kelpie 由 Python 包与引擎进程两部分组成，二者通过标准输入�
 Kelpie/
 ├── kelpie/            Python 接口
 ├── cmd/kelpie/        引擎进程入口
+├── bench/             与 aMule、goed2kd 的速度对比
 └── internal/
     ├── gateway/       标准输入输出与下载核心之间的消息转换
     ├── engine/        下载核心
@@ -73,12 +83,17 @@ Kelpie/
     ├── upload/        上传队列状态机
     ├── server/        服务器会话状态机
     ├── wire/          协议编解码
+    ├── obfuscation/   TCP 与 UDP 协议混淆
     ├── piece/         分块与校验
+    ├── aich/          AICH 哈希树
     ├── link/          链接解析
-    ├── identity/      安全身份认证
+    ├── identity/      安全身份认证与积分
+    ├── nat/           端口映射：PCP、NAT-PMP、UPnP
     ├── transport/     网络接口，含测试用模拟实现
     ├── disk/          磁盘接口，含测试用模拟实现
     ├── clock/         时钟接口，含测试用模拟实现
+    ├── fakeserver/    测试用电驴服务器
+    ├── archtest/      按 ADR-0005 检查包依赖
     └── store/         持久化状态，兼容读取 goed2k 数据
 ```
 
@@ -90,7 +105,7 @@ go test -race ./...
 python -m pytest tests
 ```
 
-需要连接真实电驴网络的测试，只有设置了 `KELPIE_NETWORK=1` 才会运行。代码约定见 [CLAUDE.md](CLAUDE.md)。
+代码约定见 [CLAUDE.md](CLAUDE.md)。
 
 ## 名字的由来
 
