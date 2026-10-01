@@ -430,11 +430,17 @@ func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint3
 	}
 	s.down.lastData = now
 	f := d.inFlight[i]
+	size := f.block.End - f.block.Begin
+	// eMule packs into a buffer 300 bytes larger than the block and sends
+	// the block plain unless packing shrinks it (UploadDiskIOThread.cpp:581-583).
+	if int64(packedSize) > size+300 {
+		out.Close = CloseProtocol
+		return
+	}
 	f.packed = append(f.packed, data...)
 	if len(f.packed) < int(packedSize) {
 		return
 	}
-	size := f.block.End - f.block.Begin
 	plain, err := toInflated(f.packed, size)
 	if err != nil || int64(len(plain)) != size {
 		out.Close = CloseProtocol
