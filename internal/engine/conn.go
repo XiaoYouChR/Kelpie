@@ -84,6 +84,9 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 		e.recentConnects = append(e.recentConnects, e.now())
 	}
 	keyPart := [4]byte(binary.LittleEndian.AppendUint32(nil, e.ports.Rand.Uint32()))
+	if e.packetLog != nil {
+		e.packetLog.Printf("open %s obfuscated=%t", c.remote, c.isObfuscated)
+	}
 	e.startLeaf(func() {
 		ctx, cancel := context.WithTimeout(c.ctx, connectTimeout)
 		netConn, err := e.ports.Transport.OpenTCP(ctx, c.remote)
@@ -107,6 +110,13 @@ func openObfuscated(netConn net.Conn, user wire.Hash, keyPart [4]byte) (net.Conn
 	}
 	netConn.SetDeadline(time.Time{})
 	return obfuscated, nil
+}
+
+// uploadTarget is how to reach a peer waiting in our upload queue once its
+// slot comes.
+type uploadTarget struct {
+	endpoint     netip.AddrPort
+	canObfuscate bool
 }
 
 func (e *Engine) runAcceptor() {
@@ -473,7 +483,7 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 		e.publicIP = ev.YourIP
 	}
 	if caps.Port != 0 {
-		e.uploadEndpoints[uploadKey{ev.UserHash, c.remote.Addr()}] = c.endpoint()
+		e.uploadEndpoints[uploadKey{ev.UserHash, c.remote.Addr()}] = uploadTarget{c.endpoint(), caps.CryptOptions&peer.CryptSupported != 0}
 	}
 	for _, h := range slices.Clone(c.files) {
 		if r := e.downloadByHash(h); r != nil && !c.isClosed {
@@ -647,9 +657,13 @@ func (e *Engine) runQueueActions(actions []upload.Action) {
 				e.runSession(c, c.session.SendQueueRank(uint32(a.Rank)))
 			}
 		case upload.Connect:
-			endpoint, ok := e.uploadEndpoints[uploadKey{a.Peer.User, a.Peer.IP}]
-			if ok && e.connByEndpoint(endpoint) == nil && len(e.conns) < maxConnections {
-				e.openConn(endpoint, false, wire.Hash{})
+			target, ok := e.uploadEndpoints[uploadKey{a.Peer.User, a.Peer.IP}]
+			if ok && e.connByEndpoint(target.endpoint) == nil && len(e.conns) < maxConnections {
+				var obfuscateFor wire.Hash
+				if target.canObfuscate {
+					obfuscateFor = a.Peer.User
+				}
+				e.openConn(target.endpoint, false, obfuscateFor)
 			}
 		}
 	}
@@ -664,7 +678,7 @@ func (e *Engine) buildPeerSources(file wire.Hash, asking *conn) []peer.Source {
 			continue
 		}
 		caps := c.session.Capabilities()
-		src := peer.Source{Port: caps.Port, UserHash: c.session.UserHash(), IPv6: caps.IPv6}
+		src := peer.Source{Port: caps.Port, UserHash: c.session.UserHash(), IPv6: caps.IPv6, CryptOptions: caps.CryptOptions}
 		switch {
 		case !wire.IsLowID(caps.ClientID) && c.remote.Addr().Is4():
 			src.IPv4 = c.remote.Addr()
@@ -681,7 +695,7 @@ func (e *Engine) buildPeerSources(file wire.Hash, asking *conn) []peer.Source {
 func toExchangeSources(found []peer.Source) []transfer.Source {
 	var sources []transfer.Source
 	for _, f := range found {
-		src := transfer.Source{UserHash: f.UserHash, CanObfuscate: f.CanObfuscate}
+		src := transfer.Source{UserHash: f.UserHash, CanObfuscate: f.CanObfuscate()}
 		switch {
 		case f.LowID != 0:
 			src.ClientID, src.Server = f.LowID, f.Server

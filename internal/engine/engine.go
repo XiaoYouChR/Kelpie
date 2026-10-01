@@ -131,7 +131,7 @@ type Engine struct {
 	runList         []*run
 	sourceUsers     map[wire.Hash]map[wire.Hash]bool
 	sourceLowIDs    map[lowIDKey]map[wire.Hash]bool
-	uploadEndpoints map[uploadKey]netip.AddrPort
+	uploadEndpoints map[uploadKey]uploadTarget
 	recentConnects  []time.Time
 	budgetCursor    int
 	lastSecond      time.Time
@@ -205,7 +205,7 @@ func build(config Config, ports Ports, events Events, caps capacities, mapPorts 
 		runByHash:       map[wire.Hash]*run{},
 		sourceUsers:     map[wire.Hash]map[wire.Hash]bool{},
 		sourceLowIDs:    map[lowIDKey]map[wire.Hash]bool{},
-		uploadEndpoints: map[uploadKey]netip.AddrPort{},
+		uploadEndpoints: map[uploadKey]uploadTarget{},
 	}
 	if config.PacketLog != nil {
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)
