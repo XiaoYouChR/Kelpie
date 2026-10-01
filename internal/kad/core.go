@@ -403,47 +403,13 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 	case kadwire.BootstrapReq:
 		c.send(from, kadwire.BootstrapRes{ID: c.id, TCPPort: c.tcpPort, Version: c.version, Contacts: c.buildContacts(c.id, bootstrapAnswer)})
 	case kadwire.BootstrapRes:
-		if c.rpcs.match(from, rpcBootstrap, wire.Hash{}) == nil {
-			return
-		}
-		c.table.add(Node{ID: p.ID, Addr: from, TCPPort: p.TCPPort, Version: p.Version}, true, now)
-		for _, ct := range p.Contacts {
-			c.table.add(Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}, false, now)
-		}
+		c.onBootstrapRes(from, p, now)
 	case kadwire.HelloReq:
-		// A hello that carries our verify key proves its sender's IP
-		// (KademliaUDPListener.cpp:525); a version 8 node that we added
-		// without it is asked to prove it with a HelloResAck (:536).
-		ct := c.addHello(from, kadwire.Hello(p), c.reply.hasVerifyKey, now)
-		isAckWanted := ct != nil && ct.Addr == from && !c.reply.hasVerifyKey && p.Version >= versionMiscOptions
-		if isAckWanted && !c.rpcs.hasPending(from, rpcHelloAck) {
-			c.rpcs.add(&rpc{kind: rpcHelloAck, node: ct.Node, sent: now})
-		}
-		d := datagram{to: from, packet: kadwire.HelloRes(c.buildHello(p.Version, isAckWanted)), receiverKey: c.reply.key}
-		if p.Version >= versionObfuscation {
-			d.nodeID = p.ID
-		}
-		c.sendKeyed(d)
+		c.onHelloReq(from, p, now)
 	case kadwire.HelloRes:
-		if c.rpcs.match(from, rpcHello, wire.Hash{}) == nil {
-			return
-		}
-		c.addHello(from, kadwire.Hello(p), true, now)
-		// Only a version 8 node may ask (KademliaUDPListener.cpp:406);
-		// without its sender key our ACK could not carry its verify key
-		// back (:608).
-		if p.Version >= versionMiscOptions && parseMiscOptions(kadwire.Hello(p))&kadwire.MiscRequestsAck != 0 && c.reply.key != 0 {
-			c.send(from, kadwire.HelloResAck{ID: c.id})
-		}
+		c.onHelloRes(from, p, now)
 	case kadwire.HelloResAck:
-		// RoutingZone::VerifyContact (RoutingZone.cpp:871): the ACK must
-		// carry our verify key and come from the IP its ID is at.
-		if c.rpcs.match(from, rpcHelloAck, wire.Hash{}) == nil || !c.reply.hasVerifyKey {
-			return
-		}
-		if ct := c.table.byID[p.ID]; ct != nil && ct.Addr.Addr() == from.Addr() {
-			c.table.add(ct.Node, true, now)
-		}
+		c.onHelloResAck(from, p, now)
 	case kadwire.Req:
 		// The receiver ID guards against answering for an ID we no longer
 		// have; eMule ignores such requests.
@@ -490,6 +456,56 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 		if p.Op == opFirewalledAck && len(p.Body) == 0 {
 			c.onFirewallAck(from.Addr())
 		}
+	}
+}
+
+func (c *core) onBootstrapRes(from netip.AddrPort, p kadwire.BootstrapRes, now time.Time) {
+	if c.rpcs.match(from, rpcBootstrap, wire.Hash{}) == nil {
+		return
+	}
+	c.table.add(Node{ID: p.ID, Addr: from, TCPPort: p.TCPPort, Version: p.Version}, true, now)
+	for _, ct := range p.Contacts {
+		c.table.add(Node{ID: ct.ID, Addr: netip.AddrPortFrom(ct.Addr, ct.UDPPort), TCPPort: ct.TCPPort, Version: ct.Version}, false, now)
+	}
+}
+
+// onHelloReq: a hello that carries our verify key proves its sender's IP
+// (KademliaUDPListener.cpp:525); a version 8 node that we added without it
+// is asked to prove it with a HelloResAck (:536).
+func (c *core) onHelloReq(from netip.AddrPort, p kadwire.HelloReq, now time.Time) {
+	ct := c.addHello(from, kadwire.Hello(p), c.reply.hasVerifyKey, now)
+	isAckWanted := ct != nil && ct.Addr == from && !c.reply.hasVerifyKey && p.Version >= versionMiscOptions
+	if isAckWanted && !c.rpcs.hasPending(from, rpcHelloAck) {
+		c.rpcs.add(&rpc{kind: rpcHelloAck, node: ct.Node, sent: now})
+	}
+	d := datagram{to: from, packet: kadwire.HelloRes(c.buildHello(p.Version, isAckWanted)), receiverKey: c.reply.key}
+	if p.Version >= versionObfuscation {
+		d.nodeID = p.ID
+	}
+	c.sendKeyed(d)
+}
+
+func (c *core) onHelloRes(from netip.AddrPort, p kadwire.HelloRes, now time.Time) {
+	if c.rpcs.match(from, rpcHello, wire.Hash{}) == nil {
+		return
+	}
+	c.addHello(from, kadwire.Hello(p), true, now)
+	// Only a version 8 node may ask (KademliaUDPListener.cpp:406);
+	// without its sender key our ACK could not carry its verify key
+	// back (:608).
+	if p.Version >= versionMiscOptions && parseMiscOptions(kadwire.Hello(p))&kadwire.MiscRequestsAck != 0 && c.reply.key != 0 {
+		c.send(from, kadwire.HelloResAck{ID: c.id})
+	}
+}
+
+// onHelloResAck is RoutingZone::VerifyContact (RoutingZone.cpp:871): the
+// ACK must carry our verify key and come from the IP its ID is at.
+func (c *core) onHelloResAck(from netip.AddrPort, p kadwire.HelloResAck, now time.Time) {
+	if c.rpcs.match(from, rpcHelloAck, wire.Hash{}) == nil || !c.reply.hasVerifyKey {
+		return
+	}
+	if ct := c.table.byID[p.ID]; ct != nil && ct.Addr.Addr() == from.Addr() {
+		c.table.add(ct.Node, true, now)
 	}
 }
 
