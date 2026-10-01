@@ -24,8 +24,8 @@ const (
 	jobHashTree
 )
 
-// diskJob is work for a disk worker. run routes the result back; a result
-// for a run that has ended is dropped.
+// diskJob is work for a disk worker on the bytes of block. run routes the
+// result back; a result for a run that has ended is dropped.
 type diskJob struct {
 	kind  jobKind
 	run   RunID
@@ -33,7 +33,6 @@ type diskJob struct {
 	block piece.Block
 	data  []byte
 	part  int
-	size  int64
 	conn  uint64
 	hash  wire.Hash
 }
@@ -45,10 +44,6 @@ type diskDone struct {
 	partHashes []wire.Hash
 	leaves     []wire.AICHHash
 	err        error
-}
-
-func (e *Engine) sendDiskJob(job diskJob) {
-	e.disk.send(job)
 }
 
 func (e *Engine) runDiskWorker(jobs <-chan diskJob) {
@@ -79,15 +74,11 @@ func runDiskJob(job diskJob) diskDone {
 	case jobHashFile:
 		var hasher piece.FileHasher
 		var leaves aich.Hasher
-		done.err = loadRange(io.MultiWriter(&hasher, &leaves), job.file, 0, job.size)
+		done.err = loadRange(io.MultiWriter(&hasher, &leaves), job.file, job.block.Begin, job.block.End)
 		done.digest, done.partHashes, done.leaves = hasher.FileHash(), hasher.PartHashes(), leaves.Leaves()
-	case jobHashBlocks:
+	case jobHashBlocks, jobHashTree:
 		var leaves aich.Hasher
 		done.err = loadRange(&leaves, job.file, job.block.Begin, job.block.End)
-		done.leaves = leaves.Leaves()
-	case jobHashTree:
-		var leaves aich.Hasher
-		done.err = loadRange(&leaves, job.file, 0, job.size)
 		done.leaves = leaves.Leaves()
 	case jobSync:
 		done.err = job.file.Sync()

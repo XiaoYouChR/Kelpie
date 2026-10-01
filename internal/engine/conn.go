@@ -597,7 +597,7 @@ func (e *Engine) requestTree(file wire.Hash) {
 		return
 	}
 	r.isTreeHashing = true
-	e.sendDiskJob(diskJob{kind: jobHashTree, run: r.id, file: r.handle, size: r.file.Size})
+	e.disk.send(diskJob{kind: jobHashTree, run: r.id, file: r.handle, block: piece.Block{End: r.file.Size}})
 }
 
 func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
@@ -761,7 +761,7 @@ func (e *Engine) sendUploadReads(c *conn) {
 			continue
 		}
 		c.uploadBuffered += job.block.End - job.block.Begin
-		e.sendDiskJob(job)
+		e.disk.send(job)
 	}
 }
 

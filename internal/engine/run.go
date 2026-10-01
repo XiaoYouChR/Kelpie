@@ -98,7 +98,7 @@ func (e *Engine) startRun(c RunCommand) *Error {
 		if state != nil && isComplete(state) {
 			e.startTransfer(r, state)
 		} else {
-			e.sendDiskJob(diskJob{kind: jobHashFile, run: r.id, file: r.handle, size: file.Size})
+			e.disk.send(diskJob{kind: jobHashFile, run: r.id, file: r.handle, block: piece.Block{End: file.Size}})
 		}
 		e.refreshProgress(r, true)
 		return nil
@@ -235,7 +235,7 @@ func (e *Engine) refreshRuns() {
 		case transfer.StatusComplete:
 			if r.mode == ModeDownload && !r.isSyncing {
 				r.isSyncing = true
-				e.sendDiskJob(diskJob{kind: jobSync, run: r.id, file: r.handle})
+				e.disk.send(diskJob{kind: jobSync, run: r.id, file: r.handle})
 			}
 		}
 	}
@@ -349,11 +349,11 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 		case transfer.Publish:
 			r.published = a.Parts
 		case transfer.Write:
-			e.sendDiskJob(diskJob{kind: jobWrite, run: r.id, file: r.handle, block: a.Block, data: a.Data})
+			e.disk.send(diskJob{kind: jobWrite, run: r.id, file: r.handle, block: a.Block, data: a.Data})
 		case transfer.HashPart:
-			e.sendDiskJob(diskJob{kind: jobHashPart, run: r.id, file: r.handle, part: a.Part, block: piece.PartRange(r.file.Size, a.Part)})
+			e.disk.send(diskJob{kind: jobHashPart, run: r.id, file: r.handle, part: a.Part, block: piece.PartRange(r.file.Size, a.Part)})
 		case transfer.HashBlocks:
-			e.sendDiskJob(diskJob{kind: jobHashBlocks, run: r.id, file: r.handle, part: a.Part, block: piece.PartRange(r.file.Size, a.Part)})
+			e.disk.send(diskJob{kind: jobHashBlocks, run: r.id, file: r.handle, part: a.Part, block: piece.PartRange(r.file.Size, a.Part)})
 		case transfer.RequestRecovery:
 			if c := e.conns[a.Peer]; c != nil && c.session != nil {
 				e.runSession(c, c.session.RequestRecovery(r.file.Hash, a.Part, a.Root))
