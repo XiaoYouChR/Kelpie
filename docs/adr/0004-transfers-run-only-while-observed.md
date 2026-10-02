@@ -43,6 +43,9 @@ end message follows each Run.
 - Run ids, not hashes, route events, so a stopped download cannot end the seed
   that follows it.
 - Removing a Transfer's Durable State is an explicit `remove(hash)`.
+- The sources an ended download Run leaves behind are kept in memory for the
+  next Run of the file (CONTEXT.md, Source). They are no paused state:
+  nothing runs or resumes from them, and they end with the Engine Process.
 - Restarting the Engine Process ends every open Run, so Settings never
   restart it: `update()` sends them to the running Engine Process, which
   changes what it can at once.

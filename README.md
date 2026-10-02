@@ -108,6 +108,8 @@ Kelpie/
 
 ## Develop
 
+Building and testing need Go no older than the `go` line in [go.mod](go.mod).
+
 ```sh
 go build -o build/kelpie ./cmd/kelpie
 go test -race ./...

@@ -70,6 +70,7 @@
 - `wire` 编解码：一个包一个 struct，`Build` 写出协议字节、opcode 和正文，各族 `Parse` 解码
 - 外部依赖只经 `transport`、`disk`、`clock` 三个接缝；测试用它们的 fake，不 mock 其他东西。例外写在 `internal/archtest`：`store` 直接写 `state.json`，`nat` 自己是通往路由器的接缝
 - 测试跑 `go test -race ./...`，只用 fake，不碰真实网络；真实网络的验证用 `bench/`
+- engine 测试各自 `t.Parallel()` 并跑在 `synctest.Test` 气泡里：fake 时钟等引擎的 goroutine 都空闲了才往前走，不靠真实时间等待
 - 从 goed2k 搬来的代码保留 MIT 出处（见 NOTICE）；eMule、aMule（GPL）只提供协议知识，不抄代码
 
 ## Python
