@@ -897,6 +897,19 @@ func TestA4AFSourceWaits(t *testing.T) {
 	}
 }
 
+// A LowID peer on no server, as a firewalled Kad client names itself 1,
+// cannot be called back through a server, even while we have none either.
+func TestLowIDHelloWithoutServerIsNotCalledBack(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	h.run(h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(1), ClientID: 1, UserHash: userHash(1)}, start))
+	h.transfer.OnPeerParts(1, piece.Set{true})
+	h.run(h.transfer.OnPeerGone(1, "idle", start))
+	if got := h.tick(transfer.Tick{Now: start.Add(fileReaskTime), ConnectBudget: 1}); len(got) != 0 {
+		t.Fatalf("reask %+v", got)
+	}
+}
+
 // A LowID peer whose Hello offers direct callbacks is called back over UDP
 // when its reask is due, whatever server it is on; without that offer it
 // needs our own server (aMule BaseClient.cpp:1718-1747).

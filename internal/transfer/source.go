@@ -301,13 +301,15 @@ func (t *Transfer) isValid(s *source) bool {
 }
 
 // canReach mirrors requestConnect: callbacks need us reachable, and a server
-// callback needs the source on our server.
+// callback needs the source on our server. A LowID peer on no server, as a
+// firewalled Kad client names itself 1 in its Hello, has none to call
+// through.
 func (t *Transfer) canReach(s *source) bool {
 	switch {
 	case s.Buddy.IsValid():
 		return !t.tick.IsFirewalled
 	case s.ClientID != 0:
-		return !t.tick.IsFirewalled && s.Server == t.tick.Server
+		return !t.tick.IsFirewalled && s.Server.IsValid() && s.Server == t.tick.Server
 	default:
 		return true
 	}
