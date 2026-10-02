@@ -314,25 +314,48 @@ def test_engine_exit_ends_every_open_run_and_next_call_restarts(engine: Engine) 
     assert len(engine.loadMessages("hello")) == 2
 
 
-def test_rate_limits_are_sent_in_hello_and_live(engine: Engine) -> None:
+def test_update_sends_the_settings_to_the_running_engine(engine: Engine) -> None:
+    settings = [Settings(downloadRateLimit=1000, uploadRateLimit=2000)]
+
     async def main():
-        kelpie = engine.buildKelpie()
-        kelpie.setRateLimits(1000, 2000)
-        assert engine.starts == 0
+        kelpie = Kelpie(lambda: FAKE_ENGINE, engine.folder / "data", lambda: settings[0])
+        kelpie.update()
         await kelpie.remove(HASH_A)
-        kelpie.setRateLimits(0, 512)
+        settings[0] = Settings(enableKad=False, uploadRateLimit=512)
+        kelpie.update()
         await kelpie.close()
 
+        settings[0] = Settings(port=4662)
+        kelpie.update()
         await kelpie.remove(HASH_A)
         await kelpie.close()
 
     run(main())
     first, second = engine.loadMessages("hello")
     assert first["rateLimits"] == {"download": 1000, "upload": 2000}
-    assert second["rateLimits"] == {"download": 0, "upload": 512}
-    assert engine.loadMessages("setRateLimits") == [
-        {"type": "setRateLimits", "download": 0, "upload": 512}
-    ]
+    assert second["settings"]["port"] == 4662
+    (update,) = engine.loadMessages("update")
+    assert update["settings"]["enableKad"] is False
+    assert update["rateLimits"] == {"download": 0, "upload": 512}
+
+
+def test_update_during_startup_reaches_the_engine(engine: Engine) -> None:
+    reads = []
+
+    def settings() -> Settings:
+        reads.append(None)
+        return Settings(enableKad=len(reads) == 1)
+
+    async def main():
+        kelpie = Kelpie(lambda: FAKE_ENGINE, engine.folder / "data", settings)
+        await kelpie.remove(HASH_A)
+        await kelpie.close()
+
+    run(main())
+    (hello,) = engine.loadMessages("hello")
+    (update,) = engine.loadMessages("update")
+    assert hello["settings"]["enableKad"] is True
+    assert update["settings"]["enableKad"] is False
 
 
 def test_network_is_reported_while_the_engine_runs(engine: Engine) -> None:

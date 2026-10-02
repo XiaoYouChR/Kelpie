@@ -43,6 +43,9 @@ end message follows each Run.
 - Run ids, not hashes, route events, so a stopped download cannot end the seed
   that follows it.
 - Removing a Transfer's Durable State is an explicit `remove(hash)`.
+- Restarting the Engine Process ends every open Run, so Settings never
+  restart it: `update()` sends them to the running Engine Process, which
+  changes what it can at once.
 - A Run ended by anyone but its caller — `close()`, or `remove(hash)` while it
   is open — raises `asyncio.CancelledError` in the caller, because a normal
   end would read as a finished download.

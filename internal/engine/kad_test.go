@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/XiaoYouChR/Kelpie/internal/kad"
 	"github.com/XiaoYouChR/Kelpie/internal/store"
+	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
@@ -302,4 +304,105 @@ func TestFirewalledSeederTakesDirectCallback(t *testing.T) {
 		return w.clock.Now().Sub(start) >= 3*time.Minute
 	})
 	k.downloadFromKad(f)
+}
+
+// TestKadTurnsOffAndOnWhileRunning: turning Kad off ends its goroutines
+// and leaves the UDP port to the engine, which still answers eD2k UDP on
+// it; turning Kad on again bootstraps it from the nodes it knew.
+func TestKadTurnsOffAndOnWhileRunning(t *testing.T) {
+	w := buildWorld(t)
+	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+	w.joinKad(a, b)
+	a.start()
+	b.start()
+	w.waitFor("b to know a Kad node", func() bool { return b.events.lastNetwork().KadNodes > 0 })
+	asker, err := w.network.AddHost(netip.MustParseAddr("198.51.100.40")).OpenUDP(kadPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer asker.Close()
+	kads := countKadGoroutines()
+
+	b.engine.Post(Settings{})
+	w.waitFor("b's Kad to stop", func() bool {
+		net := b.events.lastNetwork()
+		return net.KadNodes == 0 && !net.IsKadFirewalled
+	})
+	if got := countKadGoroutines(); got != kads-2 {
+		t.Fatalf("%d Kad goroutines after turning Kad off, want %d", got, kads-2)
+	}
+	w.requireReaskAnswered(asker, b)
+
+	b.engine.Post(Settings{EnableKad: true})
+	w.waitFor("b's Kad to bootstrap again", func() bool { return b.events.lastNetwork().KadNodes > 0 })
+	if got := countKadGoroutines(); got != kads {
+		t.Fatalf("%d Kad goroutines after turning Kad on, want %d", got, kads)
+	}
+	w.requireReaskAnswered(asker, b)
+}
+
+// TestKadTurnsOffWithABuddyLink: Kad turns off on both ends of a buddy
+// link, and later events on that link find no Kad to tell.
+func TestKadTurnsOffWithABuddyLink(t *testing.T) {
+	w := buildWorld(t)
+	f := buildTestFile("buddyoff.bin", 300_000, 11)
+	k := w.buildKadWorld(f, true)
+	k.seeder.seed(1, f)
+	w.waitFor("the seeder to have looked for a buddy", func() bool {
+		return w.clock.Now().Sub(start) >= 8*time.Minute
+	})
+	k.downloadFromKad(f)
+
+	k.seeder.engine.Post(Settings{})
+	k.buddy.engine.Post(Settings{})
+	turnedOff := w.clock.Now()
+	w.waitFor("the buddy links to be checked", func() bool {
+		return w.clock.Now().Sub(turnedOff) >= time.Minute
+	})
+	for _, n := range []*node{k.seeder, k.buddy} {
+		if net := n.events.lastNetwork(); net.KadNodes != 0 || net.IsKadFirewalled {
+			t.Fatalf("network %+v with Kad off", net)
+		}
+	}
+	k.seeder.engine.Post(Settings{EnableKad: true})
+	w.waitFor("the seeder's Kad to bootstrap again", func() bool { return k.seeder.events.lastNetwork().KadNodes > 0 })
+}
+
+// countKadGoroutines counts the goroutines in Kad.Run and its reader.
+func countKadGoroutines() int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			stacks := string(buf[:n])
+			return strings.Count(stacks, "kad.(*Kad).Run(") + strings.Count(stacks, "kad.runReader(")
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
+// requireReaskAnswered sends n a reask for a file it does not share from
+// asker and waits for OP_FILENOTFOUND.
+func (w *world) requireReaskAnswered(asker transport.PacketConn, n *node) {
+	w.t.Helper()
+	answers := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 1500)
+		if size, _, err := asker.ReadFrom(buf); err == nil {
+			answers <- buf[:size]
+		}
+	}()
+	asker.WriteTo(client.ReaskFilePing{Hash: wire.Hash{0xAB}}.Build(nil), netip.AddrPortFrom(n.ip, kadPort))
+	var answer []byte
+	w.waitFor("an answer to a reask", func() bool {
+		select {
+		case answer = <-answers:
+			return true
+		default:
+			return false
+		}
+	})
+	if !bytes.Equal(answer, client.FileNotFound{}.Build(nil)) {
+		w.t.Fatalf("reask answer %x, want OP_FILENOTFOUND", answer)
+	}
 }

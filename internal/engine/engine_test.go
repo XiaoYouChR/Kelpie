@@ -545,7 +545,7 @@ func TestStopAndResumeAcrossRestart(t *testing.T) {
 	w := buildWorld(t)
 	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
 	a.start()
-	b.config.RateLimits = RateLimitsCommand{Download: 1 << 20}
+	b.config.DownloadLimit = 1 << 20
 	b.start()
 	f := buildTestFile("resume.bin", int(piece.PartSize)+400_000, 8)
 	a.seed(1, f)
@@ -559,7 +559,7 @@ func TestStopAndResumeAcrossRestart(t *testing.T) {
 	stopped, _ := b.events.progressByRun(2)
 	b.close()
 
-	b.config.RateLimits = RateLimitsCommand{}
+	b.config.DownloadLimit = 0
 	b.start()
 	b.download(3, f, a.endpoint())
 	w.waitFor("the resumed run's first progress", func() bool {
@@ -582,7 +582,7 @@ func TestRateLimitCapsDownload(t *testing.T) {
 	b.start()
 	f := buildTestFile("slow.bin", 1_500_000, 9)
 	a.seed(1, f)
-	b.engine.Post(RateLimitsCommand{Download: limit})
+	b.engine.Post(Settings{DownloadLimit: limit})
 	began := w.clock.Now()
 	b.download(2, f, a.endpoint())
 	requireEndedOK(t, w.waitEnded(b, 2))

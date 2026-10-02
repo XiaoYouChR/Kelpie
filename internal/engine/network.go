@@ -13,6 +13,7 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/server"
 	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
+	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/upload"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
@@ -227,14 +228,20 @@ func (e *Engine) sendDatagram(to netip.AddrPort, data []byte) {
 		e.kad.Post(kad.Datagram{Addr: to, Data: data})
 		return
 	}
-	e.udp.WriteTo(data, to)
+	// e.udp is nil only if another program took the port while Kad let go
+	// of it.
+	if e.udp != nil {
+		e.udp.WriteTo(data, to)
+	}
 }
 
-// runUDPReader serves the UDP socket when Kad does not own it.
-func (e *Engine) runUDPReader() {
+// runUDPReader serves the UDP socket while Kad does not own it. It takes
+// udp rather than reading e.udp, which the hub replaces when Kad turns on
+// or off.
+func (e *Engine) runUDPReader(udp transport.PacketConn) {
 	buf := make([]byte, maxDatagram)
 	for {
-		n, from, err := e.udp.ReadFrom(buf)
+		n, from, err := udp.ReadFrom(buf)
 		if err != nil {
 			return
 		}

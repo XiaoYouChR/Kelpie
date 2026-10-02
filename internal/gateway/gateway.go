@@ -75,7 +75,12 @@ func Run(in io.Reader, out io.Writer, version string, start func(engine.Config, 
 
 type helloLine struct {
 	DataFolder string `json:"dataFolder"`
-	Settings   struct {
+	settingsLine
+}
+
+// settingsLine is the part hello and update share.
+type settingsLine struct {
+	Settings struct {
 		Port        int      `json:"port"`
 		EnableKad   bool     `json:"enableKad"`
 		EnableUpnp  bool     `json:"enableUpnp"`
@@ -111,7 +116,7 @@ func parseHello(line []byte, version string) (engine.Config, error) {
 	if hello.Settings.Port < 0 || hello.Settings.Port > 65535 {
 		return engine.Config{}, fmt.Errorf("hello: port %d out of range", hello.Settings.Port)
 	}
-	limits, err := toRateLimitsCommand(hello.RateLimits)
+	settings, err := toSettings(hello.settingsLine)
 	if err != nil {
 		return engine.Config{}, fmt.Errorf("hello: %w", err)
 	}
@@ -119,24 +124,21 @@ func parseHello(line []byte, version string) (engine.Config, error) {
 		Version:     version,
 		DataFolder:  hello.DataFolder,
 		Port:        hello.Settings.Port,
-		EnableKad:   hello.Settings.EnableKad,
-		EnableUPnP:  hello.Settings.EnableUpnp,
 		ServerLists: hello.Settings.ServerLists,
 		NodeLists:   hello.Settings.NodeLists,
 		TraceFile:   hello.Settings.TraceFile,
-		RateLimits:  limits,
+		Settings:    settings,
 	}, nil
 }
 
 type commandLine struct {
-	Type     string `json:"type"`
-	Run      int64  `json:"run"`
-	Mode     string `json:"mode"`
-	Link     string `json:"link"`
-	File     string `json:"file"`
-	Hash     string `json:"hash"`
-	Download int64  `json:"download"`
-	Upload   int64  `json:"upload"`
+	Type string `json:"type"`
+	Run  int64  `json:"run"`
+	Mode string `json:"mode"`
+	Link string `json:"link"`
+	File string `json:"file"`
+	Hash string `json:"hash"`
+	settingsLine
 }
 
 func parseCommand(line []byte) (engine.Command, error) {
@@ -168,8 +170,8 @@ func parseCommand(line []byte) (engine.Command, error) {
 			return nil, err
 		}
 		return engine.RemoveCommand{Hash: hash}, nil
-	case "setRateLimits":
-		return toRateLimitsCommand(rateLimits{Download: c.Download, Upload: c.Upload})
+	case "update":
+		return toSettings(c.settingsLine)
 	default:
 		return nil, fmt.Errorf("unknown message type %q", c.Type)
 	}
@@ -185,11 +187,17 @@ func parseMode(text string) (engine.Mode, error) {
 	return 0, fmt.Errorf("unknown run mode %q", text)
 }
 
-func toRateLimitsCommand(limits rateLimits) (engine.RateLimitsCommand, error) {
+func toSettings(line settingsLine) (engine.Settings, error) {
+	limits := line.RateLimits
 	if limits.Download < 0 || limits.Upload < 0 {
-		return engine.RateLimitsCommand{}, fmt.Errorf("negative rate limit %+v", limits)
+		return engine.Settings{}, fmt.Errorf("negative rate limit %+v", limits)
 	}
-	return engine.RateLimitsCommand{Download: limits.Download, Upload: limits.Upload}, nil
+	return engine.Settings{
+		EnableKad:     line.Settings.EnableKad,
+		EnableUPnP:    line.Settings.EnableUpnp,
+		DownloadLimit: limits.Download,
+		UploadLimit:   limits.Upload,
+	}, nil
 }
 
 type readyLine struct {

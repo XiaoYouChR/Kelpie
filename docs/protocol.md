@@ -29,7 +29,7 @@ Engine Process writes diagnostics to stderr, never to stdout.
 {"type": "run", "run": 1, "mode": "download", "link": "ed2k://|file|...|/", "file": "/abs/dir/name.iso"}
 {"type": "stop", "run": 1}
 {"type": "remove", "hash": "31D6CFE0D16AE931B73C59D7E0C089C0"}
-{"type": "setRateLimits", "download": 0, "upload": 102400}
+{"type": "update", "settings": {...}, "rateLimits": {"download": 0, "upload": 102400}}
 ```
 
 - `run` ids are chosen by Kelpie, positive, and never reused within one Engine
@@ -37,6 +37,12 @@ Engine Process writes diagnostics to stderr, never to stdout.
 - `mode` is `download` or `seed`. `file` is the final file path; the name in the
   link is ignored.
 - `stop` for an unknown or ended run is ignored.
+- `update` carries `settings` and `rateLimits` as `hello` does. The Engine
+  Process applies `enableKad`, `enableUpnp` and `rateLimits` at once, without
+  ending any run, and ignores the other fields. Turning Kad off keeps the
+  nodes it knew for the next start and leaves the UDP port to eD2k; turning
+  it on bootstraps from those nodes and the `nodeLists` of `hello`. Turning
+  port mapping off deletes the mappings.
 - `remove` deletes the Transfer's Durable State, never the file. If a run is
   open for that hash, it ends first as if stopped. Unknown hashes are ignored.
 - A line that cannot be parsed, or has an unknown `type`, a non-positive run

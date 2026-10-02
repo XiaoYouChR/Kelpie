@@ -31,23 +31,28 @@ type StopCommand struct{ ID RunID }
 
 type RemoveCommand struct{ Hash wire.Hash }
 
-type RateLimitsCommand struct{ Download, Upload int64 }
+// Settings are the part of Config that a posted Settings changes while
+// the engine runs.
+type Settings struct {
+	EnableKad  bool
+	EnableUPnP bool
+	// DownloadLimit and UploadLimit are bytes per second; 0 is unlimited.
+	DownloadLimit, UploadLimit int64
+}
 
-func (RunCommand) isCommand()        {}
-func (StopCommand) isCommand()       {}
-func (RemoveCommand) isCommand()     {}
-func (RateLimitsCommand) isCommand() {}
+func (RunCommand) isCommand()    {}
+func (StopCommand) isCommand()   {}
+func (RemoveCommand) isCommand() {}
+func (Settings) isCommand()      {}
 
 type Config struct {
 	Version     string
 	DataFolder  string
 	Port        int
-	EnableKad   bool
-	EnableUPnP  bool
 	ServerLists []string
 	NodeLists   []string
 	TraceFile   string
-	RateLimits  RateLimitsCommand
+	Settings
 	// PacketLog, when set, gets one line per TCP packet sent or received
 	// and per closed connection, for debugging against real peers.
 	PacketLog io.Writer

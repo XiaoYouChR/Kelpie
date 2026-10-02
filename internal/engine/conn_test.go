@@ -228,7 +228,7 @@ func TestIncomingSourceIsNotReasked(t *testing.T) {
 func TestSeedAnswersSourceExchange(t *testing.T) {
 	w := buildWorld(t)
 	a, c := w.addNode("198.51.100.1"), w.addNode("198.51.100.3")
-	a.config.RateLimits.Upload = 100_000
+	a.config.UploadLimit = 100_000
 	a.start()
 	c.start()
 	f := buildTestFile("sx.bin", 3*int(piece.PartSize), 13)

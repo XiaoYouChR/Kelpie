@@ -53,6 +53,8 @@ class Settings:
     serverLists: tuple[Path, ...] = ()
     nodeLists: tuple[Path, ...] = ()
     traceFile: Path | None = None
+    downloadRateLimit: int = 0
+    uploadRateLimit: int = 0
 
 
 @dataclass(frozen=True, slots=True)

@@ -81,7 +81,6 @@ class Kelpie:
         self._executable = executable
         self._dataFolder = dataFolder
         self._settings = settings
-        self._rateLimits = (0, 0)
         self._engine: EngineProcess | None = None
         self._starting: asyncio.Task[None] | None = None
         self._runs: dict[str, Run] = {}
@@ -98,13 +97,9 @@ class Kelpie:
     def runSeed(self, link: Link, file: Path) -> AbstractAsyncContextManager[Run]:
         return self.run("seed", link, file)
 
-    def setRateLimits(self, download: int, upload: int) -> None:
-        self._rateLimits = (download, upload)
+    def update(self) -> None:
         if self._engine is not None:
-            send(
-                self._engine.process,
-                {"type": "setRateLimits", "download": download, "upload": upload},
-            )
+            send(self._engine.process, {"type": "update", **buildSettings(self._settings())})
 
     def isActive(self, hash: str) -> bool:
         return hash in self._runs
@@ -197,12 +192,15 @@ class Kelpie:
                 raise Error(
                     ErrorCode.START_FAILED, f"cannot start {executable}: {error}"
                 ) from error
-            send(process, buildHello(self._dataFolder, settings, self._rateLimits))
+            send(process, buildHello(self._dataFolder, settings))
             ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             task = asyncio.create_task(self.supervise(process, ready))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
             await ready
+            # An update() during the handshake found no Engine Process.
+            if self._settings() != settings:
+                self.update()
         finally:
             self._starting = None
 
@@ -272,11 +270,17 @@ def send(process: asyncio.subprocess.Process, message: dict[str, Any]) -> None:
     process.stdin.write(json.dumps(message, separators=(",", ":")).encode() + b"\n")
 
 
-def buildHello(dataFolder: Path, settings: Settings, rateLimits: tuple[int, int]) -> dict[str, Any]:
+def buildHello(dataFolder: Path, settings: Settings) -> dict[str, Any]:
     return {
         "type": "hello",
         "protocol": PROTOCOL,
         "dataFolder": str(dataFolder),
+        **buildSettings(settings),
+    }
+
+
+def buildSettings(settings: Settings) -> dict[str, Any]:
+    return {
         "settings": {
             "port": settings.port,
             "enableKad": settings.enableKad,
@@ -285,7 +289,7 @@ def buildHello(dataFolder: Path, settings: Settings, rateLimits: tuple[int, int]
             "nodeLists": [str(path) for path in settings.nodeLists],
             "traceFile": str(settings.traceFile) if settings.traceFile is not None else "",
         },
-        "rateLimits": {"download": rateLimits[0], "upload": rateLimits[1]},
+        "rateLimits": {"download": settings.downloadRateLimit, "upload": settings.uploadRateLimit},
     }
 
 

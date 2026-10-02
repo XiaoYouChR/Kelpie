@@ -59,10 +59,8 @@ func (e *Engine) onCommand(command Command) {
 			delete(e.state.Transfers, c.Hash)
 			e.requestSave()
 		}
-	case RateLimitsCommand:
-		e.downloadLimiter.setRate(c.Download)
-		e.uploadLimiter.setRate(c.Upload)
-		e.queue.SetRate(c.Upload)
+	case Settings:
+		e.update(c)
 	}
 }
 
