@@ -99,7 +99,6 @@ func (e *Engine) onKadHandshake(c *conn) {
 		return
 	}
 	if check.udp == nil {
-		c.kadCheck = nil
 		e.sendFirewallAck(c, check.kadPort)
 		return
 	}

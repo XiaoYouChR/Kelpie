@@ -71,7 +71,9 @@ type conn struct {
 	uploadBlocks   []diskJob
 	uploadBuffered int64
 	// kadCheck is set on a connection opened for a Kad check until the
-	// check is done with it.
+	// check is done with it; a TCP check keeps it after the acknowledgement,
+	// as the node we acknowledged may be dialling us for a check of its own
+	// (closeDuplicate).
 	kadCheck *kadCheck
 	// isRefused: the dial was refused or never answered, which alone
 	// counts against a server (server.OnDisconnected). It is kept because
