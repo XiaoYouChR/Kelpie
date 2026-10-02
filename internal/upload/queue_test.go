@@ -66,9 +66,11 @@ func matchActions(t *testing.T, got []Action, want ...Action) {
 	}
 }
 
-// startSlots gives peers 1 and 2 the two minimum slots, one second apart.
+// startSlots gives peers 1 and 2 the two minimum slots, one second apart,
+// under a 3 KB/s Rate Limit that allows no more.
 func startSlots(t *testing.T, q *Queue) {
 	t.Helper()
+	q.SetRate(3 * 1024)
 	matchActions(t, q.OnRequest(1, buildPeer(1), file, toTime(0)), Grant{1})
 	matchActions(t, q.OnRequest(2, buildPeer(2), file, toTime(1)), Grant{2})
 }
@@ -79,7 +81,7 @@ func TestFirstRequestsGetSlotsOneSecondApart(t *testing.T) {
 	matchActions(t, q.OnRequest(2, buildPeer(2), file, toTime(0.5)), SendRank{2, 1})
 	matchActions(t, q.OnTick(toTime(0.9)))
 	matchActions(t, q.OnTick(toTime(1.1)), Grant{2})
-	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(3)), SendRank{3, 1})
+	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(3)), Grant{3})
 	matchActions(t, q.OnTick(toTime(5)))
 }
 
@@ -315,10 +317,10 @@ func TestSlotCountFollowsRate(t *testing.T) {
 	}{
 		{"3 KB/s limit keeps the minimum", 3 * kb, 3 * kb, 50 * kb, 2, 2},
 		{"10 KB/s limit", 10 * kb, 10 * kb, 50 * kb, 4, 4},
-		{"unlimited with an idle link", 0, 0, 0, 2, 2},
+		{"unlimited with an idle link keeps the floor", 0, 0, 0, 20, 20},
 		{"100 KB/s limit", 100 * kb, 100 * kb, 50 * kb, 6, 10},
-		{"unlimited grows with what peers take", 0, 4096 * kb, 10 * kb, 5, 10},
-		{"unlimited fast link", 0, 100 * 1024 * kb, 50 * kb, 15, 25},
+		{"unlimited with slow peers keeps the floor", 0, 4096 * kb, 10 * kb, 20, 20},
+		{"unlimited fast link", 0, 100 * 1024 * kb, 50 * kb, 20, 25},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -408,4 +410,24 @@ func TestHasPeerWhileWaitingOrHoldingASlot(t *testing.T) {
 			t.Errorf("HasPeer(peer %d) = true", n)
 		}
 	}
+}
+
+func TestNoRotationWhileSlotsCanOpen(t *testing.T) {
+	_, q := buildWorld()
+	matchActions(t, q.OnRequest(1, buildPeer(1), file, toTime(0)), Grant{1})
+	matchActions(t, q.OnRequest(2, buildPeer(2), file, toTime(0.5)), SendRank{2, 1})
+	q.OnSent(1, sessionMaxTrans+1)
+	matchActions(t, q.OnTick(toTime(2)), Grant{2})
+}
+
+func TestOneRotationPerTick(t *testing.T) {
+	_, q := buildWorld()
+	startSlots(t, q)
+	matchActions(t, q.OnRequest(3, buildPeer(3), file, toTime(10)), SendRank{3, 1})
+	matchActions(t, q.OnRequest(4, buildPeer(4), file, toTime(11)), SendRank{4, 2})
+	q.OnSent(1, sessionMaxTrans+1)
+	q.OnSent(2, sessionMaxTrans+1)
+	matchActions(t, q.OnTick(toTime(20)), Revoke{1}, SendRank{1, 3}, Grant{3})
+	matchActions(t, q.OnTick(toTime(20.5)))
+	matchActions(t, q.OnTick(toTime(21)), Revoke{2}, SendRank{2, 3}, Grant{4})
 }
