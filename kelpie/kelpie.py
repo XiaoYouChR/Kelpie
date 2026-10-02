@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import re
-from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
@@ -206,43 +205,32 @@ class Kelpie:
     async def _supervise(
         self, process: asyncio.subprocess.Process, ready: asyncio.Future[None]
     ) -> None:
-        stderr: deque[str] = deque(maxlen=20)
-        stderrTask = asyncio.create_task(refreshStderr(process, stderr))
-        engine = EngineProcess(process)
+        lastStderrLine = asyncio.create_task(parseLastLine(process.stderr))
         try:
-            async with asyncio.timeout(HANDSHAKE_TIMEOUT):
-                line = await process.stdout.readline()
-        except TimeoutError:
-            process.kill()
-            line = b""
-            failure = Error(
-                ErrorCode.START_FAILED,
-                f"Engine Process did not answer hello within {HANDSHAKE_TIMEOUT} s",
-            )
-        else:
-            failure = parseHandshake(line) if line else None
-        isReady = bool(line) and failure is None
+            isReady = await runHandshake(process)
+        except Error as error:
+            process.stdin.close()
+            await lastStderrLine
+            await process.wait()
+            ready.set_exception(error)
+            return
+        engine = EngineProcess(process)
         if isReady:
             self._engine = engine
             ready.set_result(None)
             while line := await process.stdout.readline():
                 onMessage(engine, line)
-        elif failure is not None:
-            process.stdin.close()
-        await stderrTask
+        lastLine = await lastStderrLine
         exitCode = await process.wait()
-        lastLine = stderr[-1] if stderr else f"exit code {exitCode}"
+        reason = lastLine if lastLine is not None else f"exit code {exitCode}"
         if not isReady:
             ready.set_exception(
-                failure
-                or Error(
-                    ErrorCode.START_FAILED, f"Engine Process exited during startup: {lastLine}"
-                )
+                Error(ErrorCode.START_FAILED, f"Engine Process exited during startup: {reason}")
             )
             return
         if self._engine is engine:
             self._engine = None
-        exited = Error(ErrorCode.ENGINE_EXITED, lastLine)
+        exited = Error(ErrorCode.ENGINE_EXITED, reason)
         for run in engine.routes.values():
             run.setEnded(exited)
 
@@ -292,20 +280,35 @@ def buildSettings(settings: Settings) -> dict[str, Any]:
     }
 
 
-def parseHandshake(line: bytes) -> Error | None:
+async def runHandshake(process: asyncio.subprocess.Process) -> bool:
+    try:
+        async with asyncio.timeout(HANDSHAKE_TIMEOUT):
+            line = await process.stdout.readline()
+    except TimeoutError:
+        process.kill()
+        raise Error(
+            ErrorCode.START_FAILED,
+            f"Engine Process did not answer hello within {HANDSHAKE_TIMEOUT} s",
+        ) from None
+    if not line:
+        return False
+    parseHandshake(line)
+    return True
+
+
+def parseHandshake(line: bytes) -> None:
     try:
         message = json.loads(line)
         if message["type"] == "failed":
-            return Error(ErrorCode.START_FAILED, message["error"]["message"])
+            raise Error(ErrorCode.START_FAILED, message["error"]["message"])
         if message["type"] != "ready":
-            return Error(ErrorCode.START_FAILED, f"unexpected handshake: {line!r}")
+            raise Error(ErrorCode.START_FAILED, f"unexpected handshake: {line!r}")
         version = message["version"]
     except (ValueError, KeyError, TypeError) as error:
-        return Error(ErrorCode.START_FAILED, f"invalid handshake {line!r}: {error}")
+        raise Error(ErrorCode.START_FAILED, f"invalid handshake {line!r}: {error}") from error
     if matchOutdated(version):
         required = ".".join(map(str, MIN_ENGINE_VERSION))
-        return Error(ErrorCode.OUTDATED, f"Engine Process {version} is older than v{required}")
-    return None
+        raise Error(ErrorCode.OUTDATED, f"Engine Process {version} is older than v{required}")
 
 
 def matchOutdated(version: str) -> bool:
@@ -346,6 +349,8 @@ def parseError(error: dict[str, Any] | None) -> Error | None:
     return Error(code, error["message"])
 
 
-async def refreshStderr(process: asyncio.subprocess.Process, lines: deque[str]) -> None:
-    while line := await process.stderr.readline():
-        lines.append(line.decode(errors="replace").rstrip())
+async def parseLastLine(stream: asyncio.StreamReader) -> str | None:
+    lastLine = None
+    while line := await stream.readline():
+        lastLine = line.decode(errors="replace").rstrip()
+    return lastLine
