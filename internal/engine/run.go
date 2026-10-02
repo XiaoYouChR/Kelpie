@@ -319,8 +319,7 @@ func (e *Engine) runTransfers(now time.Time) {
 			LocalAddrs:    e.config.LocalAddrs,
 		})
 		for _, action := range actions {
-			switch action.(type) {
-			case transfer.Connect, transfer.RequestServerCallback, transfer.RequestKadCallback:
+			if _, isConnect := action.(transfer.Connect); isConnect {
 				budget--
 			}
 		}
