@@ -646,22 +646,44 @@ func TestSlotAskedSourceStaysQueuedWhenClosedBeforeRank(t *testing.T) {
 
 // A source whose slot ended goes back to its queue and is reasked a whole
 // reask interval later, not after MIN_REQUESTTIME.
+// The reask after a slot counts from when we connected, not from the end of
+// the slot: a source whose reask came due meanwhile is asked again at once
+// (aMule sets m_dwLastAskedTime only when it asks).
 func TestEndedSlotIsReaskedAfterReaskTime(t *testing.T) {
-	data := buildData(piece.PartSize + 100)
-	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
-	h.connect(1, 1, piece.Set{true, true})
-	h.deliver(1, 1, false)
-	ended := start.Add(time.Minute)
-	h.run(h.transfer.OnPeerGone(1, "idle", ended))
+	for _, test := range []struct {
+		name     string
+		slot     time.Duration
+		reaskAt  time.Duration
+		isQueued bool
+	}{
+		{"short slot closed", time.Minute, fileReaskTime, false},
+		{"short slot queued", time.Minute, fileReaskTime, true},
+		{"long slot", fileReaskTime + time.Hour, fileReaskTime + time.Hour + 40*time.Second, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := buildData(piece.PartSize + 100)
+			h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+			h.connect(1, 1, piece.Set{true, true})
+			h.deliver(1, 1, false)
+			ended := start.Add(test.slot)
+			if test.isQueued {
+				h.run(h.transfer.OnQueued(1, 0, ended))
+			}
+			closed := test.slot + 40*time.Second
+			h.run(h.transfer.OnPeerGone(1, "idle", start.Add(closed)))
 
-	at := func(d time.Duration) []transfer.Action {
-		return h.tick(transfer.Tick{Now: ended.Add(d), ConnectBudget: 1})
-	}
-	if got := at(fileReaskTime - time.Second); countActions[transfer.Connect](got) != 0 {
-		t.Fatalf("Connect before the reask interval: %+v", got)
-	}
-	if got := at(fileReaskTime); countActions[transfer.Connect](got) != 1 {
-		t.Fatalf("no Connect at the reask interval: %+v", got)
+			at := func(d time.Duration) []transfer.Action {
+				return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 1})
+			}
+			if before := test.reaskAt - time.Second; before >= closed {
+				if got := at(before); countActions[transfer.Connect](got) != 0 {
+					t.Fatalf("Connect before the reask: %+v", got)
+				}
+			}
+			if got := at(test.reaskAt); countActions[transfer.Connect](got) != 1 {
+				t.Fatalf("no Connect at the reask: %+v", got)
+			}
+		})
 	}
 }
 

@@ -437,7 +437,11 @@ func (t *Transfer) isExchangeAllowed(s *source, now time.Time) bool {
 		isSourceDue(exchangeReaskSlow*commonPenalty) && isFileDue(exchangeReaskFast*commonPenalty)
 }
 
-// OnQueued records the queue rank a peer gave us.
+// OnQueued records the queue rank a peer gave us. A slot that ended keeps
+// the reask counted from when we last asked the source, not from the end of
+// the slot: aMule sets m_dwLastAskedTime only when it asks
+// (DownloadClient.cpp:138-140, 1230-1235), so a source whose reask came due
+// during the slot is asked again at once and queues up anew.
 func (t *Transfer) OnQueued(peer uint64, rank int, now time.Time) []Action {
 	s := t.peers[peer]
 	if !t.isDownloading() || s == nil {
@@ -447,13 +451,14 @@ func (t *Transfer) OnQueued(peer uint64, rank int, now time.Time) []Action {
 	if s.state == stateDownloading {
 		t.picker.cancel(peer)
 		actions = append(actions, t.sendReceived(s, now)...)
+	} else {
+		s.lastAsked = now
 	}
 	return append(actions, t.setQueued(s, rank, now))
 }
 
 func (t *Transfer) setQueued(s *source, rank int, now time.Time) TraceEvent {
 	s.state = stateQueued
-	s.lastAsked = now
 	event := t.buildTrace(now, s, EventQueued)
 	event.Rank = rank
 	return event
@@ -463,6 +468,7 @@ func (t *Transfer) setQueued(s *source, rank int, now time.Time) TraceEvent {
 func (t *Transfer) OnReaskAnswered(endpoint netip.AddrPort, rank int, now time.Time) []Action {
 	for _, s := range t.sources {
 		if s.state == stateReasking && netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort) == endpoint {
+			s.lastAsked = now
 			return []Action{t.setQueued(s, rank, now)}
 		}
 	}
@@ -475,17 +481,16 @@ func (t *Transfer) OnSlotGranted(peer uint64, now time.Time) []Action {
 		return nil
 	}
 	s.state = stateDownloading
-	s.lastAsked = now
 	return []Action{t.buildTrace(now, s, EventSlot)}
 }
 
 // OnPeerGone detaches a closed connection. A source that answered our file
 // request keeps its place and is reasked a reask interval after we connected,
 // even when it closed before telling its queue rank, as a full upload queue
-// does; only one that never answered counts as failed (aMule
-// CUpDownClient::Disconnected, BaseClient.cpp:1280-1290: DS_ONQUEUE is set as
-// soon as OP_STARTUPLOADREQ is sent and is kept, DS_CONNECTED goes to the dead
-// list).
+// does, or closed during its slot; only one that never answered counts as
+// failed (aMule CUpDownClient::Disconnected, BaseClient.cpp:1280-1290:
+// DS_ONQUEUE is set as soon as OP_STARTUPLOADREQ is sent and is kept,
+// DS_CONNECTED goes to the dead list).
 func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Action {
 	s := t.peers[peer]
 	if s == nil {
@@ -497,7 +502,6 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 		return append(actions, t.setFailed(s, reason, now))
 	case stateDownloading:
 		s.state = stateQueued
-		s.lastAsked = now
 	}
 	event := t.buildTrace(now, s, EventClosed)
 	event.Reason = reason
