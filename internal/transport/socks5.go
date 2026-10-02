@@ -158,6 +158,10 @@ func (p *proxy) OpenUDP(port int) (PacketConn, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &relayConn{proxy: p, local: local, cancel: cancel}
 	control, relay, err := p.associate(ctx)
+	if err == nil {
+		// Held before returning, so the first datagrams have a relay.
+		c.control, c.relay = control, relay
+	}
 	go c.keepAssociated(ctx, control, relay, err)
 	return c, nil
 }

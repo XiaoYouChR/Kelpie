@@ -232,6 +232,32 @@ func openProxied(t *testing.T, proxyURL string) (Transport, chan string) {
 	return p, issues
 }
 
+// readWithin reads one datagram, failing the test rather than hanging.
+func readWithin(t *testing.T, conn PacketConn) (string, netip.AddrPort) {
+	t.Helper()
+	type read struct {
+		data string
+		from netip.AddrPort
+		err  error
+	}
+	reads := make(chan read, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, from, err := conn.ReadFrom(buf)
+		reads <- read{string(buf[:n]), from, err}
+	}()
+	select {
+	case r := <-reads:
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		return r.data, r.from
+	case <-time.After(5 * time.Second):
+		t.Fatal("no datagram")
+		return "", netip.AddrPort{}
+	}
+}
+
 func waitIssue(t *testing.T, issues chan string, want string) {
 	t.Helper()
 	timeout := time.After(5 * time.Second)
@@ -334,14 +360,15 @@ func TestProxiedUDPRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
+			if !conn.(*relayConn).currentRelay().IsValid() {
+				t.Fatal("OpenUDP returned before its relay was known")
+			}
 			echo := startEcho(t, "udp", netip.MustParseAddr("127.0.0.1"))
 			if _, err := conn.WriteTo([]byte("ping"), echo); err != nil {
 				t.Fatal(err)
 			}
-			buf := make([]byte, 64)
-			n, from, err := conn.ReadFrom(buf)
-			if err != nil || string(buf[:n]) != "ping" || from != echo {
-				t.Fatalf("read %q from %s: %v", buf[:n], from, err)
+			if got, from := readWithin(t, conn); got != "ping" || from != echo {
+				t.Fatalf("read %q from %s", got, from)
 			}
 		})
 	}
@@ -368,10 +395,8 @@ func TestRelayConnHearsOnlyWellFormedRelayedDatagrams(t *testing.T) {
 	relay.WriteToUDPAddrPort([]byte{0, 0, 0, atypIPv4, 1}, client)
 	relay.WriteToUDPAddrPort(append([]byte{0, 0, 0, atypDomain, 3, 'a', 'b', 'c', 0, 1}, "named"...), client)
 	conn.WriteTo([]byte("hello"), startEcho(t, "udp", netip.MustParseAddr("127.0.0.1")))
-	buf := make([]byte, 64)
-	n, _, err := conn.ReadFrom(buf)
-	if err != nil || string(buf[:n]) != "hello" {
-		t.Fatalf("heard %q: %v", buf[:n], err)
+	if got, _ := readWithin(t, conn); got != "hello" {
+		t.Fatalf("heard %q", got)
 	}
 }
 
@@ -474,9 +499,7 @@ func TestSilentRelayIsReportedAsNoUDPUntilItAnswers(t *testing.T) {
 
 	s.isUDPDropped.Store(false)
 	conn.WriteTo([]byte("back"), echo)
-	if _, _, err := conn.ReadFrom(make([]byte, 64)); err != nil {
-		t.Fatal(err)
-	}
+	readWithin(t, conn)
 	waitIssue(t, issues, "")
 }
 
@@ -490,7 +513,7 @@ func TestWorkingRelayIsNeverSilent(t *testing.T) {
 	defer conn.Close()
 	echo := startEcho(t, "udp", netip.MustParseAddr("127.0.0.1"))
 	conn.WriteTo([]byte("ping"), echo)
-	conn.ReadFrom(make([]byte, 64))
+	readWithin(t, conn)
 	time.Sleep(60 * time.Millisecond)
 	for range 2 * silentAfterSent {
 		conn.WriteTo([]byte("more"), echo)
