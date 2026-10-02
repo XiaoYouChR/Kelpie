@@ -57,8 +57,9 @@ asyncio.run(main())
 Each `async with` block is one **Run**. The file transfers while the block is
 open and stops when you leave it; `runSeed` uploads a complete file the same
 way. Kelpie starts the Engine Process when you need it, and `close()` stops
-it. Errors come from the Run as `kelpie.Error`. `setRateLimits`, `remove` and
-the `network` property cover the rest.
+it. Errors come from the Run as `kelpie.Error`. After your settings change,
+`update()` applies them without ending any Run. `remove` and the `network`
+property cover the rest.
 
 [CONTEXT.md](CONTEXT.md) defines these words.
 [ADR-0004](docs/adr/0004-transfers-run-only-while-observed.md) gives the reasons.

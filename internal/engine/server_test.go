@@ -298,7 +298,7 @@ func TestServerProbeSkipsRateLimit(t *testing.T) {
 	a := w.addNode("198.51.100.1")
 	log := &lockedBuffer{}
 	a.config.PacketLog = log
-	a.config.RateLimits = RateLimitsCommand{Download: 1000, Upload: 1000}
+	a.config.DownloadLimit, a.config.UploadLimit = 1000, 1000
 	a.setServer(srv)
 	e := a.start()
 	w.waitFor("login attempt", func() bool { return strings.Contains(log.String(), "out 198.51.100.100:4661 server.Login") })

@@ -247,11 +247,16 @@ func (e *Engine) sendDatagram(to netip.AddrPort, data []byte) {
 		e.kad.Post(kad.Datagram{Addr: to, Data: data})
 		return
 	}
-	e.udp.WriteTo(data, to)
+	// e.udp is nil only if another program took the port while Kad let go
+	// of it.
+	if e.udp != nil {
+		e.udp.WriteTo(data, to)
+	}
 }
 
 // runUDPReader serves a UDP socket the engine owns: the server UDP socket,
-// and the eD2k one when Kad does not own it.
+// and the eD2k one while Kad does not own it. It takes the socket rather
+// than reading e.udp, which the hub replaces when Kad turns on or off.
 func (e *Engine) runUDPReader(socket transport.PacketConn, isServer bool) {
 	buf := make([]byte, maxDatagram)
 	for {

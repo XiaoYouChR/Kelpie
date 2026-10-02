@@ -60,9 +60,12 @@ another peer, or the peer itself announced it.
 
 ## Settings
 
-The startup settings the caller chooses: port, Kad, port mapping on the home
-gateway, the local server list and node list files, and an optional trace
-file. Kelpie reads them again each time it starts the Engine Process.
+What the caller chooses: port, Kad, port mapping on the home gateway, the
+local server list and node list files, an optional trace file, and the Rate
+Limits. Kelpie reads them each time it starts the Engine Process, and again
+when the caller asks it to update: Kad, port mapping, and the Rate Limits
+then change at once without ending any Run; the others wait for the next
+start.
 
 ## Rate Limit
 
@@ -72,8 +75,7 @@ included, so the observed rate never exceeds it unless protocol messages
 alone do: outgoing ones are sent at once, ahead of file data, which waits
 longer for the bytes they took. Server traffic, including a server's
 connection that checks whether peers can reach us, Kad, and other UDP traffic
-is not limited. Rate Limits change while running and survive Engine
-Process restarts.
+is not limited.
 
 ## Network
 

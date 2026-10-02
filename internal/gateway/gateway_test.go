@@ -120,9 +120,9 @@ func TestSessionTranscript(t *testing.T) {
 		t.Errorf("output\n got %v\nwant %v", got, want)
 	}
 	wantConfig := engine.Config{
-		Version: "v0.1.0", DataFolder: "/data/kelpie", Port: 4662, EnableKad: true, EnableUPnP: true,
+		Version: "v0.1.0", DataFolder: "/data/kelpie", Port: 4662,
 		ServerLists: []string{"/data/server.met"}, NodeLists: []string{"/data/nodes.dat"},
-		RateLimits: engine.RateLimitsCommand{Upload: 102400},
+		Settings: engine.Settings{EnableKad: true, EnableUPnP: true, UploadLimit: 102400},
 	}
 	if !reflect.DeepEqual(config, wantConfig) {
 		t.Errorf("config %+v, want %+v", config, wantConfig)
@@ -130,7 +130,7 @@ func TestSessionTranscript(t *testing.T) {
 	wantCommands := []engine.Command{
 		engine.RunCommand{ID: 1, Mode: engine.ModeDownload, Link: "ed2k://|file|empty.bin|0|31D6CFE0D16AE931B73C59D7E0C089C0|/", File: "/downloads/empty.bin"},
 		engine.RunCommand{ID: 2, Mode: engine.ModeSeed, Link: "not a link", File: "/downloads/other.bin"},
-		engine.RateLimitsCommand{Download: 1048576},
+		engine.Settings{EnableUPnP: true, DownloadLimit: 1048576},
 		engine.RemoveCommand{Hash: emptyHash},
 		engine.StopCommand{ID: 1},
 	}
@@ -227,12 +227,12 @@ func TestCommandDecoding(t *testing.T) {
 		`{"type":"stop","run":0}`,
 		`{"type":"remove","hash":"31D6"}`,
 		`{"type":"remove","hash":"ZZD6CFE0D16AE931B73C59D7E0C089C0"}`,
-		`{"type":"setRateLimits","download":-5,"upload":0}`,
+		`{"type":"update","settings":{},"rateLimits":{"download":-5,"upload":0}}`,
 		``,
 		`{"type":"run","run":7,"mode":"seed","link":"garbage link","file":"/f","extra":true}`,
 		`{"type":"stop","run":9}`,
 		`{"type":"remove","hash":"31d6cfe0d16ae931b73c59d7e0c089c0"}`,
-		`{"type":"setRateLimits","upload":100}`,
+		`{"type":"update","settings":{"port":1,"enableKad":true},"rateLimits":{"upload":100}}`,
 	}
 	eng := &fakeEngine{}
 	start, _ := startFake(eng)
@@ -246,7 +246,7 @@ func TestCommandDecoding(t *testing.T) {
 		engine.RunCommand{ID: 7, Mode: engine.ModeSeed, Link: "garbage link", File: "/f"},
 		engine.StopCommand{ID: 9},
 		engine.RemoveCommand{Hash: emptyHash},
-		engine.RateLimitsCommand{Upload: 100},
+		engine.Settings{EnableKad: true, UploadLimit: 100},
 	}
 	if got := eng.postedCommands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("commands %#v, want %#v", got, want)

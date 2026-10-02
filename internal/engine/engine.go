@@ -72,7 +72,7 @@ type capacities struct {
 
 var defaultCapacities = capacities{inbox: 256, writer: 64, disk: 16, trace: 256}
 
-// openNAT maps the listening ports on the gateway; nil skips UPnP.
+// openNAT maps the listening ports on the gateway.
 type openNAT func(ctx context.Context, tcpPort, udpPort int) (func(context.Context) error, netip.Addr, error)
 
 type Engine struct {
@@ -110,8 +110,9 @@ type Engine struct {
 	queue  *upload.Queue
 	server *server.Server
 	kad    *kad.Kad
-	// stopKad cancels Kad and returns its last state; false if Run failed.
-	stopKad   func() (kad.State, bool)
+	// cancelKad ends Kad's goroutine and returns its last state; false if
+	// Run failed.
+	cancelKad func() (kad.State, bool)
 	kadStatus kad.Status
 	buddy     buddy
 	listener  transport.Listener
@@ -123,7 +124,15 @@ type Engine struct {
 	saverDone chan struct{}
 	trace     *leafQueue[traceLine]
 	disk      *leafQueue[diskJob]
-	unmapNAT  func(context.Context) error
+	// mapPorts is kept because port mapping can be turned on while
+	// running.
+	mapPorts openNAT
+	// stopNAT ends the port mapping leaf, which then deletes its mapping;
+	// nil while port mapping is off. natDone closes once that leaf is gone:
+	// a mapping turned on again waits for it, since a late delete of the
+	// same ports would remove the new mapping.
+	stopNAT context.CancelFunc
+	natDone chan struct{}
 	// directCallbacks holds when each IP last asked us for a direct
 	// callback.
 	directCallbacks map[netip.Addr]time.Time
@@ -162,11 +171,8 @@ func Start(config Config, events Events) (*Engine, error) {
 		Clock:     clock.Real{},
 		Rand:      rand.New(rand.NewChaCha8(seed)),
 	}
-	var mapPorts openNAT
-	if config.EnableUPnP {
-		mapPorts = func(ctx context.Context, tcpPort, udpPort int) (func(context.Context) error, netip.Addr, error) {
-			return nat.Open(ctx, tcpPort, udpPort, "Kelpie")
-		}
+	mapPorts := func(ctx context.Context, tcpPort, udpPort int) (func(context.Context) error, netip.Addr, error) {
+		return nat.Open(ctx, tcpPort, udpPort, "Kelpie")
 	}
 	return build(config, ports, events, defaultCapacities, mapPorts)
 }
@@ -189,8 +195,8 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 		inbox:           make(chan any, caps.inbox),
 		ctx:             ctx,
 		cancel:          cancel,
-		downloadLimiter: buildRateLimiter(ports.Clock, config.RateLimits.Download),
-		uploadLimiter:   buildRateLimiter(ports.Clock, config.RateLimits.Upload),
+		downloadLimiter: buildRateLimiter(ports.Clock, config.DownloadLimit),
+		uploadLimiter:   buildRateLimiter(ports.Clock, config.UploadLimit),
 		state:           state,
 		self:            self,
 		ledger:          identity.BuildLedger(toCredits(state.Credits), ports.Clock.Now()),
@@ -203,6 +209,7 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 		a4afClients:     map[wire.Hash]*a4afClient{},
 		buddy:           buddy{incoming: map[netip.Addr]incomingBuddy{}},
 		directCallbacks: map[netip.Addr]time.Time{},
+		mapPorts:        mapPorts,
 	}
 	if config.PacketLog != nil {
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)
@@ -212,8 +219,8 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 		r := e.runByHash[file]
 		return r != nil && r.transfer != nil
 	})
-	e.queue.SetRate(config.RateLimits.Upload)
-	if err := e.start(mapPorts); err != nil {
+	e.queue.SetRate(config.UploadLimit)
+	if err := e.start(); err != nil {
 		cancel()
 		return nil, toStartFailed(err)
 	}
@@ -222,7 +229,7 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 
 // start opens the sockets and the trace file, then starts the leaves, Kad
 // and the hub.
-func (e *Engine) start(mapPorts openNAT) error {
+func (e *Engine) start() error {
 	if err := e.openSockets(); err != nil {
 		return err
 	}
@@ -252,12 +259,13 @@ func (e *Engine) start(mapPorts openNAT) error {
 	}
 	go e.runSaver()
 	e.startLeaf(e.runAcceptor)
-	if e.udp != nil {
-		e.startLeaf(func() { e.runUDPReader(e.udp, false) })
+	if udp := e.udp; udp != nil {
+		e.startLeaf(func() { e.runUDPReader(udp, false) })
 	}
-	e.startLeaf(func() { e.runUDPReader(e.serverUDP, true) })
-	if mapPorts != nil {
-		e.startLeaf(func() { e.runNAT(mapPorts) })
+	serverUDP := e.serverUDP
+	e.startLeaf(func() { e.runUDPReader(serverUDP, true) })
+	if e.config.EnableUPnP {
+		e.startNAT()
 	}
 	e.network = e.buildNetwork()
 	e.events.SetNetwork(e.network)
@@ -377,7 +385,7 @@ func (e *Engine) closeSockets() {
 
 func (e *Engine) startKad(nodes []kad.Node) {
 	random := e.ports.Rand
-	e.kad = kad.BuildKad(kad.Config{
+	k := kad.BuildKad(kad.Config{
 		Transport: e.ports.Transport,
 		Clock:     e.ports.Clock,
 		Port:      e.udpPort,
@@ -387,23 +395,73 @@ func (e *Engine) startKad(nodes []kad.Node) {
 		Nodes:     nodes,
 		Rand:      rand.New(rand.NewPCG(random.Uint64(), random.Uint64())),
 	})
-	e.kadStatus = kad.Status{IsFirewalled: true}
+	e.kad, e.kadStatus = k, kad.Status{IsFirewalled: true}
 	ctx, cancel := context.WithCancel(e.ctx)
 	done := make(chan kad.State, 1)
 	go func() {
 		defer close(done)
-		state, err := e.kad.Run(ctx)
+		state, err := k.Run(ctx)
 		if err != nil {
 			log.Printf("engine: kad: %v", err)
 			return
 		}
 		done <- state
 	}()
-	e.stopKad = func() (kad.State, bool) {
+	e.cancelKad = func() (kad.State, bool) {
 		cancel()
 		state, ok := <-done
 		return state, ok
 	}
+}
+
+// stopKad ends Kad and what waits on it: Kad checks, the buddy link and
+// Kad's part of Network. Kad's last State keeps its nodes for the next
+// save and the next start.
+func (e *Engine) stopKad() {
+	for _, c := range e.conns {
+		c.kadCheck = nil
+	}
+	if c := e.buddy.conn; c != nil && c.isHandshaken {
+		c.session.SetIdleTimeout(connectTimeout)
+	}
+	e.buddy = buddy{incoming: map[netip.Addr]incomingBuddy{}}
+	if s, ok := e.cancelKad(); ok {
+		e.state.Kad = store.Kad(s)
+	}
+	e.kad, e.cancelKad, e.kadStatus = nil, nil, kad.Status{}
+}
+
+// update applies Settings while running. The UDP port stays ours across
+// a Kad switch: Kad releases it on stop and the engine opens it again.
+func (e *Engine) update(s Settings) {
+	e.downloadLimiter.setRate(s.DownloadLimit)
+	e.uploadLimiter.setRate(s.UploadLimit)
+	e.queue.SetRate(s.UploadLimit)
+	switch {
+	case s.EnableKad && e.kad == nil:
+		if e.udp != nil {
+			e.udp.Close()
+			e.udp = nil
+		}
+		e.startKad(loadLists(e.ports.Disk, e.config.NodeLists, kad.ParseNodes))
+	case !s.EnableKad && e.kad != nil:
+		e.stopKad()
+		udp, err := e.ports.Transport.OpenUDP(e.udpPort)
+		if err != nil {
+			log.Printf("engine: udp: %v", err)
+			break
+		}
+		e.udp = udp
+		e.startLeaf(func() { e.runUDPReader(udp, false) })
+	}
+	switch {
+	case s.EnableUPnP && e.stopNAT == nil:
+		e.startNAT()
+	case !s.EnableUPnP && e.stopNAT != nil:
+		e.stopNAT()
+		e.stopNAT, e.mappedIP = nil, netip.Addr{}
+	}
+	e.config.Settings = s
 }
 
 func (e *Engine) startLeaf(f func()) {
@@ -475,11 +533,7 @@ type (
 		data     []byte
 		isServer bool
 	}
-	natOpened struct {
-		unmap func(context.Context) error
-		ip    netip.Addr
-		err   error
-	}
+	natOpened struct{ ip netip.Addr }
 )
 
 // leafQueue is how the hub sends to a leaf without ever blocking: it puts
@@ -519,11 +573,11 @@ func (e *Engine) now() time.Time { return e.ports.Clock.Now() }
 func (e *Engine) run() {
 	ticker := e.ports.Clock.CreateTicker(tickInterval)
 	defer ticker.Stop()
-	var kadEvents <-chan kad.Event
-	if e.kad != nil {
-		kadEvents = e.kad.Events()
-	}
 	for {
+		var kadEvents <-chan kad.Event
+		if e.kad != nil {
+			kadEvents = e.kad.Events()
+		}
 		select {
 		case m := <-e.inbox:
 			if request, ok := m.(closeRequested); ok {
@@ -638,21 +692,38 @@ func (e *Engine) isFirewalled() bool {
 	return wire.IsLowID(clientID) && (e.kad == nil || e.kadStatus.IsFirewalled)
 }
 
-func (e *Engine) runNAT(mapPorts openNAT) {
-	ctx, cancel := context.WithTimeout(e.ctx, natTimeout)
-	unmap, ip, err := mapPorts(ctx, e.tcpPort, e.udpPort)
-	cancel()
-	if !e.send(e.ctx, natOpened{unmap, ip, err}) && err == nil {
-		e.closeNAT(unmap)
-	}
+func (e *Engine) startNAT() {
+	ctx, cancel := context.WithCancel(e.ctx)
+	previous, done := e.natDone, make(chan struct{})
+	e.stopNAT, e.natDone = cancel, done
+	e.startLeaf(func() {
+		defer close(done)
+		if previous != nil {
+			<-previous
+		}
+		e.runNAT(ctx)
+	})
 }
 
-func (e *Engine) onNATOpened(m natOpened) {
-	if m.err != nil {
-		log.Printf("engine: upnp: %v", m.err)
+// runNAT holds the port mapping until ctx ends, then deletes it.
+func (e *Engine) runNAT(ctx context.Context) {
+	openCtx, cancel := context.WithTimeout(ctx, natTimeout)
+	unmap, ip, err := e.mapPorts(openCtx, e.tcpPort, e.udpPort)
+	cancel()
+	if err != nil {
+		log.Printf("engine: upnp: %v", err)
 		return
 	}
-	e.unmapNAT = m.unmap
+	e.send(ctx, natOpened{ip})
+	<-ctx.Done()
+	e.closeNAT(unmap)
+}
+
+// onNATOpened ignores a mapping turned off before its report came.
+func (e *Engine) onNATOpened(m natOpened) {
+	if e.stopNAT == nil {
+		return
+	}
 	e.mappedIP = m.ip
 	if _, clientID := e.server.Login(); isPublicIPv4(m.ip) && !e.publicIP.IsValid() && wire.IsLowID(clientID) {
 		e.publicIP = m.ip
@@ -686,22 +757,18 @@ func (e *Engine) closeNAT(unmap func(context.Context) error) {
 }
 
 // stop is the hub's last step: end every run, then save and close
-// everything it owns.
+// everything it owns. The port mapping leaf deletes its mapping once Close
+// cancels e.ctx.
 func (e *Engine) stop() error {
 	for _, r := range append([]*run(nil), e.runs...) {
 		e.stopRun(r, nil)
-	}
-	if unmap := e.unmapNAT; unmap != nil {
-		e.startLeaf(func() { e.closeNAT(unmap) })
 	}
 	for _, c := range e.sortedConns() {
 		e.closeConn(c, "engine closed")
 	}
 	e.closeSockets()
 	if e.kad != nil {
-		if s, ok := e.stopKad(); ok {
-			e.state.Kad = store.Kad(s)
-		}
+		e.stopKad()
 	}
 	close(e.saves)
 	<-e.saverDone

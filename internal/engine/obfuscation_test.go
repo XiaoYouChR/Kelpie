@@ -36,7 +36,7 @@ func (b *lockedBuffer) String() string {
 func TestExchangedSourceIsObfuscated(t *testing.T) {
 	w := buildWorld(t)
 	a, b, c := w.addNode("198.51.100.1"), w.addNode("198.51.100.2"), w.addNode("198.51.100.3")
-	a.config.RateLimits.Upload = 500_000
+	a.config.UploadLimit = 500_000
 	log := &lockedBuffer{}
 	b.config.PacketLog = log
 	for _, n := range []*node{a, b, c} {
@@ -76,7 +76,7 @@ func TestUDPReaskIsObfuscated(t *testing.T) {
 	c, d := w.addNode("198.51.100.3"), w.addNode("198.51.100.4")
 	aLog, bLog := &lockedBuffer{}, &lockedBuffer{}
 	a.config.PacketLog, b.config.PacketLog = aLog, bLog
-	a.config.RateLimits.Upload = 2_000
+	a.config.UploadLimit = 2_000
 	for _, n := range []*node{a, b} {
 		n.setServer(srv)
 		n.start()
