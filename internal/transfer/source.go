@@ -344,7 +344,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Source, now time.Time) []A
 		return nil
 	}
 	found := Source{Endpoint: hello.Endpoint, UserHash: hello.UserHash, UDPPort: hello.UDPPort}
-	if wire.IsLowID(hello.ClientID) {
+	if hello.ClientID != 0 {
 		found.ClientID = hello.ClientID
 		found.Server = hello.Server
 	}

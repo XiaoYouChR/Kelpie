@@ -147,7 +147,7 @@ func (e *Engine) runBuddy(now time.Time) {
 	switch {
 	case status.Nodes == 0:
 		e.removeBuddyLink()
-	case b.isServing && !wire.IsLowID(c.session.Capabilities().ClientID):
+	case b.isServing && c.session.Capabilities().ClientID == 0:
 		e.removeBuddyLink()
 	case b.isServing:
 	case !status.IsFirewalled || !status.IsUDPFirewalled:

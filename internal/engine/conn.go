@@ -796,7 +796,7 @@ func toUploadPeer(c *conn) upload.Peer {
 		User:        caps.UserHash,
 		IP:          c.remote.Addr(),
 		UDPPort:     caps.UDPPort,
-		IsLowID:     wire.IsLowID(caps.ClientID),
+		IsLowID:     caps.ClientID != 0,
 		MuleVersion: caps.MuleVersion,
 	}
 }
@@ -840,14 +840,13 @@ func (e *Engine) buildPeerSources(file wire.Hash, asking *conn, askerParts piece
 			continue
 		}
 		caps := c.session.Capabilities()
-		isLowID := caps.ClientID != 0 && wire.IsLowID(caps.ClientID)
-		if isSeed && (c.uploadFile != file || isLowID || !matchNeededSource(c.uploadParts, askerParts)) ||
+		if isSeed && (c.uploadFile != file || caps.ClientID != 0 || !matchNeededSource(c.uploadParts, askerParts)) ||
 			!isSeed && !slices.Contains(c.session.Files(), file) {
 			continue
 		}
 		src := peer.Source{Port: caps.Port, UserHash: caps.UserHash, IPv6: caps.IPv6, CryptOptions: caps.CryptOptions}
 		switch {
-		case !wire.IsLowID(caps.ClientID) && c.remote.Addr().Is4():
+		case caps.ClientID == 0 && c.remote.Addr().Is4():
 			src.IPv4 = c.remote.Addr()
 		case caps.ClientID != 0 && caps.Server.IsValid():
 			src.LowID, src.Server = caps.ClientID, caps.Server

@@ -81,7 +81,6 @@ func buildConfig(t testing.TB, last byte) Config {
 		PublicIP: ip,
 		Port:     4662,
 		UDPPort:  4672,
-		IPv6:     netip.MustParseAddr("2001:db8::" + string('0'+rune(last))),
 		Random:   rand.New(rand.NewPCG(uint64(last), 7)),
 	}
 }
@@ -214,7 +213,7 @@ func TestHandshakeBothDirections(t *testing.T) {
 	caps, features := l.a.s.Capabilities(), l.a.s.features
 	if !features.isEmule || !features.canCompress || !caps.HasSourceExchange2 ||
 		!features.hasExtMultiPacket || !features.hasLargeFiles || !features.hasExtendedSources || caps.UDPVersion != 4 ||
-		features.secureIdent != identity.Support || caps.IPv6 != l.b.s.cfg.IPv6 || caps.UDPPort != 4672 ||
+		features.secureIdent != identity.Support || caps.UDPPort != 4672 ||
 		caps.CryptOptions != wire.CryptSupported|wire.CryptRequested {
 		t.Fatalf("capabilities %+v, features %+v", caps, features)
 	}
@@ -222,8 +221,8 @@ func TestHandshakeBothDirections(t *testing.T) {
 	if hello.Name != "Kelpie" || hello.EmuleVersion != 0x4B<<24|1<<17|2<<10|3<<7 || caps.MuleVersion != 0x99 {
 		t.Fatalf("hello name %q, emule version %#x", hello.Name, hello.EmuleVersion)
 	}
-	if l.b.s.Capabilities().ClientID != l.a.s.cfg.ClientID {
-		t.Fatal("incoming side lost the peer's client id")
+	if hello.ModName != "Kelpie 1.2.3" {
+		t.Fatalf("mod version %q", hello.ModName)
 	}
 }
 

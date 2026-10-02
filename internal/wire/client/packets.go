@@ -387,6 +387,22 @@ func parseSignature(r *wire.Reader) Signature {
 	return s
 }
 
+// PublicIPRequest is OP_PUBLICIP_REQ: a LowID peer that does not know its
+// public IPv4 address asks what we see.
+type PublicIPRequest struct{}
+
+func (PublicIPRequest) Build(b []byte) []byte {
+	return append(b, wire.ProtocolEMule, opPublicIPRequest)
+}
+
+// PublicIPAnswer is OP_PUBLICIP_ANSWER, the IPv4 address we see the asker at.
+type PublicIPAnswer struct{ Addr netip.Addr }
+
+func (a PublicIPAnswer) Build(b []byte) []byte {
+	b = append(b, wire.ProtocolEMule, opPublicIPAnswer)
+	return binary.LittleEndian.AppendUint32(b, wire.ToClientID(a.Addr))
+}
+
 // IPv6Changed is OP_CHANGE_CLIENT_IP (ipv6-spec §3.2): the sender's public
 // IPv6 changed. It travels under 0xE3, not 0xC5.
 type IPv6Changed struct{ Addr netip.Addr }

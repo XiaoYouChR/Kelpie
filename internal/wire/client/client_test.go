@@ -67,7 +67,7 @@ func samplePackets() []wire.Packet {
 		Misc1:        MiscOptions1{IsUnicode: true, UDPVersion: 4, DataCompressionVersion: 1, SecureIdentVersion: 2, SourceExchange1Version: 3, ExtendedRequestsVersion: ExtendedRequestsVersion, HasMultiPacket: true, IsSharedFilesHidden: true},
 		Misc2:        MiscOptions2{HasLargeFiles: true, HasExtMultiPacket: true, HasSourceExchange2: true, HasCaptcha: true},
 		EmuleVersion: 0x00002000,
-		ModMisc:      ModMiscExtendedSources | ModMiscIPv6,
+		ModMisc:      ModMiscExtendedSources | 0x04,
 		YourIP:       netip.MustParseAddr("9.9.9.9"),
 		IPv6:         netip.MustParseAddr("2a01:4f8::1"),
 		Tags:         []wire.Tag{{Type: wire.TagString, Name: "custom", String: "x"}},
@@ -150,8 +150,11 @@ func samplePackets() []wire.Packet {
 		KadFirewallAck{},
 		Callback{BuddyID: userHash, File: fileHash, Endpoint: netip.MustParseAddrPort("1.2.3.4:4662")},
 		ReaskCallbackTCP{Endpoint: netip.MustParseAddrPort("1.2.3.4:4672"), Ping: ReaskFilePing{Hash: fileHash, HasParts: true, Parts: parts(true), HasCompleteSources: true, CompleteSources: 2}},
+		ReaskCallbackTCP{Endpoint: netip.MustParseAddrPort("[2001:db8::1]:4672"), Ping: ReaskFilePing{Hash: fileHash, HasParts: true, Parts: parts(true), HasCompleteSources: true, CompleteSources: 2}},
 		BuddyPing{},
 		BuddyPong{},
+		PublicIPRequest{},
+		PublicIPAnswer{Addr: netip.MustParseAddr("1.2.3.4")},
 	}
 }
 
@@ -212,7 +215,7 @@ func TestUnknownOpcodesSurvive(t *testing.T) {
 }
 
 func TestHelloGolden(t *testing.T) {
-	hello := Hello{UserHash: userHash, ClientID: 0x04030201, Port: 4662, ModMisc: ModMiscExtendedSources | ModMiscIPv6}
+	hello := Hello{UserHash: userHash, ClientID: 0x04030201, Port: 4662, ModMisc: ModMiscExtendedSources | 0x04}
 	want := unhex(t, "10"+"23a8ceff57a7a32d562d649ed7893796"+"01020304"+"3612"+
 		"01000000"+"030100aa05000000"+"000000000000")
 	if got := hello.Build(nil)[2:]; !bytes.Equal(got, want) {
@@ -415,5 +418,19 @@ func TestMultiPacketKeepsOnePerOpcode(t *testing.T) {
 	}
 	if got := len(p.(MultiPacketAnswer).Answers); got != 1 {
 		t.Fatalf("answers = %d, want 1", got)
+	}
+}
+
+// An IPv6 requester follows 0xFFFFFFFF: 255.255.255.255 is never one, and
+// reading the sentinel as an address would take the IPv6 bytes for the file
+// hash (ipv6-spec §3.5.1).
+func TestReaskCallbackTCPIPv6Layout(t *testing.T) {
+	requester := netip.MustParseAddrPort("[2001:db8::7]:4672")
+	body := ReaskCallbackTCP{Endpoint: requester, Ping: ReaskFilePing{Hash: fileHash}}.Build(nil)[2:]
+	want := append([]byte{0xFF, 0xFF, 0xFF, 0xFF}, requester.Addr().AsSlice()...)
+	want = append(want, 0x40, 0x12)
+	want = append(want, fileHash[:]...)
+	if !bytes.Equal(body, want) {
+		t.Fatalf("body %x\nwant %x", body, want)
 	}
 }
