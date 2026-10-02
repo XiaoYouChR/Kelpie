@@ -38,7 +38,7 @@ func TestUDPSearchBatchingAndRotation(t *testing.T) {
 		{Endpoint: ep("1.0.0.1:4661"), Users: 100, UDPFlags: getSources2},
 		{Endpoint: ep("1.0.0.2:4661"), UDPFlags: getSources2},
 		{Endpoint: ep("1.0.0.3:4661")},
-		{Endpoint: ep("1.0.0.4:4661"), UDPFlags: getSources2, Failures: 1},
+		{Endpoint: ep("1.0.0.4:4661"), UDPFlags: getSources2, Failures: 10},
 		{Endpoint: ep("1.0.0.5:4661"), UDPFlags: getSources2},
 	}
 	wanted := downloads(50)
@@ -70,7 +70,7 @@ func TestUDPSearchBatchingAndRotation(t *testing.T) {
 		}
 	}
 	// The connected server and the one without known UDP flags are not
-	// asked; the one that failed over TCP is. Each series asks 35 files,
+	// asked; the one that failed over TCP, however often, is. Each series asks 35 files,
 	// rotated, and a server is asked again only UDPSERVERREASKTIME later.
 	var series []sentTo
 	for i, l := range log {

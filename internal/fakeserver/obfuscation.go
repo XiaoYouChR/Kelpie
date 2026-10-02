@@ -131,12 +131,16 @@ func openDatagram(data []byte, key uint32) ([]byte, bool) {
 }
 
 // sealDatagram encrypts a datagram for a client with key, padded with three
-// bytes so that the client must skip padding.
-func sealDatagram(packet []byte, key uint32) []byte {
+// bytes so that the client must skip padding; a non-zero marker is its first
+// byte.
+func sealDatagram(packet []byte, key uint32, marker byte) []byte {
 	var head [3]byte
 	rand.Read(head[:])
 	if head[0] == 0xE3 {
 		head[0] = 0x00
+	}
+	if marker != 0 {
+		head[0] = marker
 	}
 	plain := binary.LittleEndian.AppendUint32(nil, udpSyncServer)
 	plain = append(append(plain, 3, 7, 7, 7), packet...)

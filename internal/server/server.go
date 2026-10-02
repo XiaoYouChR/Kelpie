@@ -15,7 +15,6 @@ import (
 const (
 	connectTimeout = 25 * time.Second // CONSERVTIMEOUT, covers connect and login
 	passRetryTime  = 30 * time.Second // CS_RETRYCONNECTTIME (sockets.h)
-	maxFailures    = 10               // MAX_SERVERFAILCOUNT
 	// maxAttempts follows aMule's TryAnotherConnectionrequest
 	// (ServerConnect.cpp): two servers at once unless SafeServerConnect,
 	// which is off by default; the first to log in wins.
@@ -136,8 +135,13 @@ type SourcesFound struct {
 	IsGlobal bool
 }
 
-// IDChanged reports the id the connected server gave us.
-type IDChanged struct{ ClientID uint32 }
+// IDChanged reports the id the connected server gave us and the address
+// it sees us at, invalid when it did not say; with a LowID that address
+// is the only one the server tells.
+type IDChanged struct {
+	ClientID   uint32
+	ReportedIP netip.Addr
+}
 
 type MessageReceived struct{ Text string }
 
@@ -167,10 +171,6 @@ type listed struct {
 	// is awaited.
 	resolvedAt  time.Time
 	isResolving bool
-	// udpKey is the server's UDP obfuscation key for udpKeyIP, our public
-	// address when it came; the server derives it from that address.
-	udpKey   uint32
-	udpKeyIP netip.Addr
 	// isCryptPinging: the status ping awaiting its answer is obfuscated.
 	isCryptPinging bool
 }
@@ -187,6 +187,10 @@ func (l *listed) canObfuscateTCP() bool {
 type attempt struct {
 	server *listed
 	since  time.Time
+	// isConnected: the dial succeeded. A dial left unanswered counts
+	// against the server, a login left unanswered does not
+	// (CheckForTimeout, aMule ServerConnect.cpp:486-514).
+	isConnected bool
 }
 
 // Server owns the server list, the connection attempts and the one
@@ -199,6 +203,10 @@ type Server struct {
 	attempts []attempt
 	// current is the server we are logged in to.
 	current *listed
+	// tried holds the servers this round dialled or lost. The plain pass
+	// dials again those the obfuscated pass dialled, marked true; a lost
+	// server waits for the next round, so one that drops us at once is not
+	// redialled in a loop.
 	tried   map[*listed]bool
 	retryAt time.Time
 	// isPlainPass is aMule's !m_bTryObfuscated: a pass first tries only
@@ -268,7 +276,7 @@ func (s *Server) OnTick(now time.Time, wanted []Wanted, publicIP netip.Addr) []A
 	for _, a := range slices.Clone(s.attempts) {
 		if now.Sub(a.since) > connectTimeout {
 			out = append(out, Close{a.server.Endpoint})
-			s.setFailed(a.server.Endpoint)
+			s.removeAttempt(a.server.Endpoint, !a.isConnected)
 		}
 	}
 	s.runResolve(now, &out)
@@ -281,10 +289,16 @@ func (s *Server) OnTick(now time.Time, wanted []Wanted, publicIP netip.Addr) []A
 	return out
 }
 
+// OnConnected starts the login on a dialled connection. A server that
+// accepts the connection is alive, so its failures are forgiven, as in
+// aMule's ConnectionEstablished (ServerConnect.cpp:247-251).
 func (s *Server) OnConnected(server netip.AddrPort) []Action {
-	if s.attemptIndex(server) < 0 {
+	i := s.attemptIndex(server)
+	if i < 0 {
 		return nil
 	}
+	s.attempts[i].isConnected = true
+	s.attempts[i].server.Failures = 0
 	login := serverwire.Login{
 		UserHash:     s.config.UserHash,
 		Port:         s.config.Port,
@@ -297,16 +311,18 @@ func (s *Server) OnConnected(server netip.AddrPort) []Action {
 }
 
 // OnDisconnected handles the end of a server connection at any stage, a
-// failed dial included. Losing a server before login counts against it;
-// losing it afterwards moves on to the next server, as eMule's reconnect
-// does.
-func (s *Server) OnDisconnected(server netip.AddrPort, now time.Time) []Action {
+// failed dial included; either way the next server is tried, as eMule's
+// reconnect does. Only a dial the server refused or left unanswered,
+// isRefused, counts against it: aMule 3.1.0 counts only CS_SERVERDEAD
+// (ServerSocket.cpp:99-139), so that a fault of our own link does not mark
+// every server at once.
+func (s *Server) OnDisconnected(server netip.AddrPort, isRefused bool, now time.Time) []Action {
 	switch {
 	case s.current != nil && s.current.Endpoint == server:
-		s.tried[s.current] = true
+		s.tried[s.current] = false
 		s.current = nil
 	case s.attemptIndex(server) >= 0:
-		s.setFailed(server)
+		s.removeAttempt(server, isRefused)
 	default:
 		return nil
 	}
@@ -441,13 +457,16 @@ func (s *Server) onIDChange(sender *listed, p serverwire.IDChange, now time.Time
 		s.current = sender
 		s.current.Failures = 0
 		s.lastSent = now
+		// The next reconnect starts over with the obfuscated pass, as
+		// aMule's ConnectToAnyServer does (ServerConnect.cpp:144).
+		s.isPlainPass = false
 		clear(s.tried)
 		clear(s.offered)
 		s.nextSourceFrame = now
 		s.nextOffer = now
 	}
 	s.clientID = p.ClientID
-	*out = append(*out, IDChanged{ClientID: p.ClientID})
+	*out = append(*out, IDChanged{ClientID: p.ClientID, ReportedIP: p.ReportedIP})
 	s.runSession(now, out)
 }
 
@@ -502,9 +521,11 @@ func (s *Server) attemptIndex(server netip.AddrPort) int {
 	return slices.IndexFunc(s.attempts, func(a attempt) bool { return a.server.Endpoint == server })
 }
 
-func (s *Server) setFailed(server netip.AddrPort) {
+func (s *Server) removeAttempt(server netip.AddrPort, isFailed bool) {
 	i := s.attemptIndex(server)
-	s.attempts[i].server.Failures++
+	if isFailed {
+		s.attempts[i].server.Failures++
+	}
 	s.attempts = slices.Delete(s.attempts, i, i+1)
 }
 
@@ -526,7 +547,6 @@ func (s *Server) runConnect(now time.Time, out *[]Action) {
 			return
 		case next == nil && !s.isPlainPass:
 			s.isPlainPass = true
-			clear(s.tried)
 			continue
 		case next == nil:
 			if len(s.tried) > 0 {
@@ -536,7 +556,7 @@ func (s *Server) runConnect(now time.Time, out *[]Action) {
 			}
 			return
 		}
-		s.tried[next] = true
+		s.tried[next] = !s.isPlainPass
 		s.attempts = append(s.attempts, attempt{server: next, since: now})
 		dial := Dial{Server: next.Endpoint}
 		if !s.isPlainPass && next.canObfuscateTCP() {
@@ -547,14 +567,18 @@ func (s *Server) runConnect(now time.Time, out *[]Action) {
 }
 
 // nextServer prefers high preference, then fewer failures, then more users
-// and files: a bigger server knows more sources. An obfuscated pass skips
-// servers that support neither TCP nor UDP obfuscation, as aMule's
-// GetNextServer does (ServerList.cpp:580-596).
+// and files: a bigger server knows more sources. Failures only order the
+// list: a server skipped for them could never be forgiven, and aMule's
+// GetNextServer skips none for them either. An obfuscated pass skips
+// servers that support neither TCP nor UDP obfuscation, as GetNextServer
+// does (ServerList.cpp:569-585).
 func (s *Server) nextServer() *listed {
 	var best *listed
 	for _, l := range s.servers {
 		canObfuscate := l.canObfuscateTCP() || l.UDPFlags&serverwire.UDPFlagUDPObfuscation != 0
-		if s.tried[l] || l.Failures >= maxFailures || !l.isResolved() || l.isResolving || (!s.isPlainPass && !canObfuscate) {
+		wasObfuscated, isTried := s.tried[l]
+		isDue := !isTried || s.isPlainPass && wasObfuscated
+		if !isDue || !l.isResolved() || l.isResolving || (!s.isPlainPass && !canObfuscate) {
 			continue
 		}
 		if best == nil || isBetter(l, best) {

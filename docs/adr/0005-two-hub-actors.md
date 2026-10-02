@@ -10,9 +10,10 @@ The engine has two actors that own state. Engine owns transfers, peer
 sessions, the upload queue, credits, the server connection, buddy links, and
 the ticker. Kad owns the routing table, lookups, the source index, buddy
 search, its timers, and the UDP socket it shares with eD2k UDP; with Kad off,
-Engine holds that socket. Every other goroutine is a stateless leaf: the
-gateway on stdin and stdout, the acceptor, one reader and one writer per
-connection, the UDP reader, the disk workers, the trace writer, the store
+Engine holds that socket. Server UDP has a socket of its own, held by Engine.
+Every other goroutine is a stateless leaf: the gateway on stdin and stdout,
+the acceptor, one reader and one writer per connection, the UDP readers, the
+disk workers, the trace writer, the store
 saver, port mapping, and host lookups. Engine and Kad talk only through
 `Post` and `Events`.
 

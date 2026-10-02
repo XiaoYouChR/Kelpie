@@ -13,6 +13,7 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/server"
 	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
+	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/upload"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
@@ -52,7 +53,7 @@ func (e *Engine) runServer(actions []server.Action) {
 			if a.Key != 0 {
 				data = obfuscation.BuildServerDatagram(data, a.Key, e.ports.Rand.Uint32())
 			}
-			e.sendDatagram(a.To, data)
+			e.serverUDP.WriteTo(data, a.To)
 		case server.Callback:
 			if e.connByEndpoint(a.Endpoint) == nil && len(e.conns) < maxConnections {
 				canObfuscate := a.CanObfuscate && !e.hasOtherUser(a.Endpoint, a.UserHash)
@@ -69,8 +70,13 @@ func (e *Engine) runServer(actions []server.Action) {
 				e.runTransferActions(r, r.transfer.OnSourcesFound(toServerSources(a.Sources), channel, e.now()))
 			}
 		case server.IDChanged:
-			if !wire.IsLowID(a.ClientID) {
+			// A LowID server's view of our address is the best we get, as
+			// aMule's SetPublicIP from OP_IDCHANGE (ServerSocket.cpp:380-382).
+			switch {
+			case !wire.IsLowID(a.ClientID):
 				e.publicIP = wire.ToAddr(a.ClientID)
+			case isPublicIPv4(a.ReportedIP):
+				e.publicIP = a.ReportedIP
 			}
 		case server.MessageReceived:
 			log.Printf("engine: server message: %s", a.Text)
@@ -112,6 +118,7 @@ func updateLearned(entries []server.Entry, saved []store.Server) []server.Entry 
 		entries[i].Users, entries[i].Files, entries[i].SoftFiles = s.Users, s.Files, s.SoftFiles
 		entries[i].UDPFlags = s.UDPFlags
 		entries[i].TCPObfuscationPort, entries[i].UDPObfuscationPort = s.TCPObfuscationPort, s.UDPObfuscationPort
+		entries[i].UDPKey, entries[i].UDPKeyIP = s.UDPKey, s.UDPKeyIP
 	}
 	return entries
 }
@@ -130,6 +137,8 @@ func toStoreServers(entries []server.Entry) []store.Server {
 			TCPObfuscationPort: e.TCPObfuscationPort,
 			UDPObfuscationPort: e.UDPObfuscationPort,
 			PingedAt:           e.PingedAt,
+			UDPKey:             e.UDPKey,
+			UDPKeyIP:           e.UDPKeyIP,
 		}
 		if e.Host != "" {
 			s.Endpoint, s.Host, s.Port = netip.AddrPort{}, e.Host, e.Endpoint.Port()
@@ -154,6 +163,17 @@ func (e *Engine) hasOtherUser(endpoint netip.AddrPort, user wire.Hash) bool {
 		hasOther = true
 	}
 	return hasOther
+}
+
+// hasServerConn tells whether a server connection, logged in or not, goes
+// to ip.
+func (e *Engine) hasServerConn(ip netip.Addr) bool {
+	for _, c := range e.conns {
+		if c.isServer && c.remote.Addr() == ip {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) serverConnByEndpoint(addr netip.AddrPort) *conn {
@@ -230,57 +250,63 @@ func (e *Engine) sendDatagram(to netip.AddrPort, data []byte) {
 	e.udp.WriteTo(data, to)
 }
 
-// runUDPReader serves the UDP socket when Kad does not own it.
-func (e *Engine) runUDPReader() {
+// runUDPReader serves a UDP socket the engine owns: the server UDP socket,
+// and the eD2k one when Kad does not own it.
+func (e *Engine) runUDPReader(socket transport.PacketConn, isServer bool) {
 	buf := make([]byte, maxDatagram)
 	for {
-		n, from, err := e.udp.ReadFrom(buf)
+		n, from, err := socket.ReadFrom(buf)
 		if err != nil {
 			return
 		}
-		if !e.send(e.ctx, datagramReceived{from, append([]byte(nil), buf[:n]...)}) {
+		if !e.send(e.ctx, datagramReceived{from, append([]byte(nil), buf[:n]...), isServer}) {
 			return
 		}
 	}
 }
 
-// onDatagram routes eD2k UDP: server packets to the server, peer reasks to
-// the upload queue and the downloads.
-func (e *Engine) onDatagram(from netip.AddrPort, data []byte) {
+// onServerDatagram opens a datagram from a server, obfuscated when the
+// server owes us an obfuscated answer (ServerUDPSocket.cpp:59-117).
+func (e *Engine) onServerDatagram(from netip.AddrPort, data []byte) {
 	if key := e.server.UDPKeyByAddr(from); key != 0 {
 		if packet, ok := obfuscation.ParseServerDatagram(data, key); ok {
 			data = packet
 		}
-	} else if packet, ok := obfuscation.ParsePeerDatagram(data, e.self.UserHash, from.Addr()); ok {
+	}
+	frame, err := wire.ParseDatagram(data)
+	if err != nil || frame.Protocol != wire.ProtocolEDonkey {
+		return
+	}
+	if p, err := serverwire.ParseUDP(frame.Protocol, frame.Opcode, frame.Body); err == nil {
+		e.runServer(e.server.OnPacket(from, p, e.now()))
+	}
+}
+
+// onDatagram routes eD2k client UDP: reasks to the upload queue and the
+// downloads.
+func (e *Engine) onDatagram(from netip.AddrPort, data []byte) {
+	if packet, ok := obfuscation.ParsePeerDatagram(data, e.self.UserHash, from.Addr()); ok {
 		data = packet
 	}
 	frame, err := wire.ParseDatagram(data)
+	if err != nil || frame.Protocol != wire.ProtocolEMule {
+		return
+	}
+	p, err := client.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)
 	if err != nil {
 		return
 	}
-	now := e.now()
-	switch frame.Protocol {
-	case wire.ProtocolEDonkey:
-		if p, err := serverwire.ParseUDP(frame.Protocol, frame.Opcode, frame.Body); err == nil {
-			e.runServer(e.server.OnPacket(from, p, now))
-		}
-	case wire.ProtocolEMule:
-		p, err := client.ParseUDP(frame.Protocol, frame.Opcode, frame.Body)
-		if err != nil {
-			return
-		}
-		switch p := p.(type) {
-		case client.ReaskFilePing:
-			e.onReask(from, p)
-		case client.ReaskCallbackUDP:
-			e.onReaskCallbackUDP(from, p)
-		case client.DirectCallbackReq:
-			e.onDirectCallbackReq(from, p)
-		case client.ReaskAck:
-			for _, r := range slices.Clone(e.runs) {
-				if e.downloadByHash(r.file.Hash) != nil {
-					e.runTransferActions(r, r.transfer.OnReaskAnswered(from, int(p.Rank), now))
-				}
+	switch p := p.(type) {
+	case client.ReaskFilePing:
+		e.onReask(from, p)
+	case client.ReaskCallbackUDP:
+		e.onReaskCallbackUDP(from, p)
+	case client.DirectCallbackReq:
+		e.onDirectCallbackReq(from, p)
+	case client.ReaskAck:
+		for _, r := range slices.Clone(e.runs) {
+			if e.downloadByHash(r.file.Hash) != nil {
+				e.runTransferActions(r, r.transfer.OnReaskAnswered(from, int(p.Rank), e.now()))
 			}
 		}
 	}

@@ -389,3 +389,32 @@ func TestLookupHost(t *testing.T) {
 		t.Fatalf("real lookup of localhost = %v, %v", addrs, err)
 	}
 }
+
+// A refused dial is the remote host's answer; an unreachable host or
+// network is our own link's fault.
+func TestIsRefused(t *testing.T) {
+	network := BuildNetwork()
+	client, server := network.AddHost(v4b), network.AddHost(v4a)
+	server.SetLowID(true)
+	_, refused := client.OpenTCP(context.Background(), netip.AddrPortFrom(v4a, 4662))
+	_, unreachable := client.OpenTCP(context.Background(), netip.AddrPortFrom(netip.MustParseAddr("10.0.0.9"), 4662))
+	_, noRoute := client.OpenTCP(context.Background(), netip.AddrPortFrom(v6a, 4662))
+	if !IsRefused(refused) || IsRefused(unreachable) || IsRefused(noRoute) || IsRefused(errors.New("handshake failed")) || IsRefused(nil) {
+		t.Fatalf("refused %v, unreachable %v, no route %v", refused, unreachable, noRoute)
+	}
+
+	l, err := Real{}.OpenListener(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(l.Port()))
+	l.Close()
+	if _, err := (Real{}).OpenTCP(context.Background(), closed); !IsRefused(err) {
+		t.Fatalf("closed local port: %v, want refused", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := (Real{}).OpenTCP(ctx, closed); IsRefused(err) {
+		t.Fatalf("cancelled dial: %v, want not refused", err)
+	}
+}

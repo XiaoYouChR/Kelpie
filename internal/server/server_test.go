@@ -122,7 +122,7 @@ func TestChoiceAndRotation(t *testing.T) {
 		{Endpoint: ep("1.0.0.2:4661"), Users: 10, Preference: PreferenceHigh},
 		{Endpoint: ep("1.0.0.3:4661"), Users: 1000, Failures: 2},
 		{Endpoint: ep("1.0.0.4:4661"), Users: 5000, Preference: PreferenceLow},
-		{Endpoint: ep("1.0.0.5:4661"), Users: 9000, Failures: maxFailures},
+		{Endpoint: ep("1.0.0.5:4661"), Users: 9000, Failures: 10},
 		{Endpoint: ep("1.0.0.1:4661"), Users: 99999, Preference: PreferenceHigh},
 	}
 	s := BuildServer(config, entries)
@@ -138,10 +138,10 @@ func TestChoiceAndRotation(t *testing.T) {
 		if again := byKind(s.OnTick(now, nil, noIP)); len(dialed(again)) > 0 {
 			t.Fatalf("tick connects %v while %v are pending", dialed(again), pending)
 		}
-		out = byKind(s.OnDisconnected(pending[0], now))
+		out = byKind(s.OnDisconnected(pending[0], true, now))
 		pending = pending[1:]
 	}
-	want := []netip.AddrPort{ep("1.0.0.2:4661"), ep("1.0.0.1:4661"), ep("1.0.0.3:4661"), ep("1.0.0.4:4661")}
+	want := []netip.AddrPort{ep("1.0.0.2:4661"), ep("1.0.0.1:4661"), ep("1.0.0.3:4661"), ep("1.0.0.5:4661"), ep("1.0.0.4:4661")}
 	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("pass order = %v, want %v", order, want)
 	}
@@ -182,7 +182,7 @@ func TestFirstLoginWins(t *testing.T) {
 	if server, clientID := s.Login(); clientID == 0 || server != b {
 		t.Fatal("not logged in to b")
 	}
-	if out := byKind(s.OnDisconnected(a, start)); len(dialed(out)) > 0 || s.servers[0].Failures != 0 {
+	if out := byKind(s.OnDisconnected(a, false, start)); len(dialed(out)) > 0 || s.servers[0].Failures != 0 {
 		t.Fatalf("closed loser reported: %+v failures=%d", out, s.servers[0].Failures)
 	}
 	out = byKind(s.OnPacket(a, serverwire.IDChange{ClientID: 1234}, start))
@@ -194,35 +194,59 @@ func TestFirstLoginWins(t *testing.T) {
 	}
 }
 
-func TestFailedAttemptCountsAgainstItsServer(t *testing.T) {
+// Only a refused dial counts against a server, as aMule 3.1.0's
+// CS_SERVERDEAD; a dial that failed on our side, and a server lost after
+// it took the connection, do not. Taking a connection forgives a server.
+func TestOnlyRefusedDialCountsAgainstItsServer(t *testing.T) {
 	a, b := ep("1.0.0.1:4661"), ep("1.0.0.2:4661")
-	s := BuildServer(config, []Entry{{Endpoint: a, Users: 10}, {Endpoint: b}})
+	s := BuildServer(config, []Entry{{Endpoint: a, Users: 10}, {Endpoint: b, Failures: 3}})
 	byKind(s.OnTick(start, nil, noIP))
-	byKind(s.OnConnected(a))
-	if out := byKind(s.OnDisconnected(a, start)); len(dialed(out)) > 0 {
+	if out := byKind(s.OnDisconnected(a, true, start)); len(dialed(out)) > 0 {
 		t.Fatalf("reconnected while b is pending: %v", dialed(out))
 	}
+	byKind(s.OnConnected(b))
+	byKind(s.OnDisconnected(b, false, start))
 	if s.servers[0].Failures != 1 || s.servers[1].Failures != 0 {
-		t.Fatalf("failures = %d, %d", s.servers[0].Failures, s.servers[1].Failures)
+		t.Fatalf("failures = %d, %d, want 1, 0", s.servers[0].Failures, s.servers[1].Failures)
+	}
+	out := byKind(s.OnTick(start.Add(passRetryTime+time.Second), nil, noIP))
+	byKind(s.OnDisconnected(dialed(out)[0], false, start))
+	byKind(s.OnDisconnected(dialed(out)[1], false, start))
+	if s.servers[0].Failures != 1 || s.servers[1].Failures != 0 {
+		t.Fatalf("failures after errors of our own = %d, %d, want 1, 0", s.servers[0].Failures, s.servers[1].Failures)
 	}
 }
 
-func TestServerIsGivenUpAfterMaxFailures(t *testing.T) {
+// However often a server failed, it is still dialled every pass, so the
+// list recovers once the link is back: failures only order it. Before
+// aMule 3.1.0's fix, a link down for ten passes left no server to dial.
+func TestServerIsNeverGivenUp(t *testing.T) {
 	s := BuildServer(config, []Entry{{Endpoint: first}})
 	now := start
 	attempts := 0
 	for range 1000 {
 		if out := byKind(s.OnTick(now, nil, noIP)); len(dialed(out)) > 0 {
 			attempts++
-			byKind(s.OnDisconnected(first, now))
+			byKind(s.OnDisconnected(first, true, now))
 		}
 		now = now.Add(5 * time.Second)
 	}
-	if attempts != maxFailures {
-		t.Fatalf("%d attempts, want %d", attempts, maxFailures)
+	if want := int(1000 * 5 * time.Second / (passRetryTime + 5*time.Second)); attempts < want {
+		t.Fatalf("%d attempts in %v, want one per pass, %d", attempts, now.Sub(start), want)
+	}
+	for len(dialed(byKind(s.OnTick(now, nil, noIP)))) == 0 {
+		now = now.Add(5 * time.Second)
+	}
+	byKind(s.OnConnected(first))
+	byKind(s.OnPacket(first, serverwire.IDChange{ClientID: highID}, now))
+	if _, id := s.Login(); id != highID || s.servers[0].Failures != 0 {
+		t.Fatalf("login after the outage: id %d, failures %d", id, s.servers[0].Failures)
 	}
 }
 
+// An attempt times out after CONSERVTIMEOUT. A server that never took the
+// connection counts it as a failure, one that never logged us in does
+// not.
 func TestLoginTimesOut(t *testing.T) {
 	a, b, c := ep("1.0.0.1:4661"), ep("1.0.0.2:4661"), ep("1.0.0.3:4661")
 	s := BuildServer(config, []Entry{{Endpoint: a, Users: 2}, {Endpoint: b, Users: 1}, {Endpoint: c}})
@@ -234,6 +258,9 @@ func TestLoginTimesOut(t *testing.T) {
 	out := byKind(s.OnTick(start.Add(connectTimeout+time.Second), nil, noIP))
 	if !reflect.DeepEqual(out.Close, []netip.AddrPort{a, b}) || !reflect.DeepEqual(dialed(out), []netip.AddrPort{c}) {
 		t.Fatalf("timeout output = %+v", out)
+	}
+	if s.servers[0].Failures != 0 || s.servers[1].Failures != 1 {
+		t.Fatalf("failures = %d, %d, want 0, 1", s.servers[0].Failures, s.servers[1].Failures)
 	}
 }
 
@@ -264,20 +291,76 @@ func TestIDChangeGivesLowIDOrHighID(t *testing.T) {
 	if !reflect.DeepEqual(out.Events, []Action{IDChanged{ClientID: 1234}}) {
 		t.Fatalf("events = %+v", out.Events)
 	}
+	reported := netip.MustParseAddr("203.0.113.5")
+	out = byKind(s.OnPacket(first, serverwire.IDChange{ClientID: 1234, ReportedIP: reported}, start))
+	if !reflect.DeepEqual(out.Events, []Action{IDChanged{ClientID: 1234, ReportedIP: reported}}) {
+		t.Fatalf("events with the reported IP = %+v", out.Events)
+	}
 	s, _ = loggedIn(t, entries, highID, 0, nil)
 	if _, id := s.Login(); id != highID {
 		t.Fatal("HighID not reported")
 	}
-	byKind(s.OnDisconnected(first, start))
+	byKind(s.OnDisconnected(first, false, start))
 	if server, clientID := s.Login(); clientID != 0 || server.IsValid() {
 		t.Fatal("still connected after disconnect")
+	}
+}
+
+// A server we logged in to during the plain pass is lost; the reconnect
+// starts over with the obfuscated pass, as aMule's ConnectToAnyServer
+// does, and the lost server waits for the next round.
+func TestReconnectStartsObfuscated(t *testing.T) {
+	obfuscates := func(addr string, users uint32) Entry {
+		return Entry{Endpoint: ep(addr), Users: users, TCPObfuscationPort: 4665, UDPFlags: serverwire.UDPFlagTCPObfuscation}
+	}
+	a, c, b := obfuscates("1.0.0.1:4661", 30), obfuscates("1.0.0.3:4661", 20), Entry{Endpoint: ep("1.0.0.2:4661"), Users: 10}
+	s := BuildServer(config, []Entry{a, c, b})
+	byKind(s.OnTick(start, nil, noIP))
+	byKind(s.OnDisconnected(a.Endpoint, true, start))
+	out := byKind(s.OnDisconnected(c.Endpoint, true, start))
+	if want := []Dial{{Server: b.Endpoint}, {Server: a.Endpoint}}; !reflect.DeepEqual(out.Dial, want) {
+		t.Fatalf("plain pass = %+v, want %+v", out.Dial, want)
+	}
+	byKind(s.OnConnected(b.Endpoint))
+	byKind(s.OnPacket(b.Endpoint, serverwire.IDChange{ClientID: highID}, start))
+	out = byKind(s.OnDisconnected(b.Endpoint, false, start))
+	if want := []Dial{{Server: a.Endpoint, ObfuscationPort: 4665}, {Server: c.Endpoint, ObfuscationPort: 4665}}; !reflect.DeepEqual(out.Dial, want) {
+		t.Fatalf("reconnect = %+v, want %+v", out.Dial, want)
+	}
+	byKind(s.OnDisconnected(a.Endpoint, true, start))
+	out = byKind(s.OnDisconnected(c.Endpoint, true, start))
+	if want := []Dial{{Server: a.Endpoint}, {Server: c.Endpoint}}; !reflect.DeepEqual(out.Dial, want) {
+		t.Fatalf("plain pass after the reconnect = %+v, want %+v without the lost server", out.Dial, want)
+	}
+}
+
+// A server that drops us right after every login is dialled again only
+// once a round has passed, never in a loop.
+func TestServerThatDropsUsIsNotRedialledAtOnce(t *testing.T) {
+	a := Entry{Endpoint: first, TCPObfuscationPort: 4665, UDPFlags: serverwire.UDPFlagTCPObfuscation}
+	s := BuildServer(config, []Entry{a})
+	now := start
+	logins := 0
+	for range 600 {
+		for _, d := range byKind(s.OnTick(now, nil, noIP)).Dial {
+			byKind(s.OnConnected(d.Server))
+			byKind(s.OnPacket(d.Server, serverwire.IDChange{ClientID: highID}, now))
+			logins++
+			if out := byKind(s.OnDisconnected(d.Server, false, now)); len(out.Dial) > 0 {
+				t.Fatalf("redialled at once after a drop: %+v", out.Dial)
+			}
+		}
+		now = now.Add(time.Second)
+	}
+	if max := int(now.Sub(start) / passRetryTime); logins > max {
+		t.Fatalf("%d logins in %v, want at most one per CS_RETRYCONNECTTIME", logins, now.Sub(start))
 	}
 }
 
 func TestReconnectMovesToAnotherServer(t *testing.T) {
 	entries := []Entry{{Endpoint: ep("1.0.0.1:4661"), Users: 10}, {Endpoint: ep("1.0.0.2:4661")}}
 	s, _ := loggedIn(t, entries, highID, 0, nil)
-	if out := byKind(s.OnDisconnected(first, start.Add(time.Hour))); !reflect.DeepEqual(dialed(out), []netip.AddrPort{ep("1.0.0.2:4661")}) {
+	if out := byKind(s.OnDisconnected(first, false, start.Add(time.Hour))); !reflect.DeepEqual(dialed(out), []netip.AddrPort{ep("1.0.0.2:4661")}) {
 		t.Fatalf("reconnect = %v", dialed(out))
 	}
 }
@@ -574,19 +657,19 @@ func TestObfuscatedPassFirst(t *testing.T) {
 	if want := []Dial{{Server: a, ObfuscationPort: 4665}, {Server: b}}; !reflect.DeepEqual(out.Dial, want) {
 		t.Fatalf("obfuscated pass = %+v, want %+v", out.Dial, want)
 	}
-	if out := byKind(s.OnDisconnected(a, start)); len(out.Dial) > 0 {
+	if out := byKind(s.OnDisconnected(a, true, start)); len(out.Dial) > 0 {
 		t.Fatalf("plain pass began while b is pending: %+v", out.Dial)
 	}
 	// a and b failed once, so c comes first.
-	out = byKind(s.OnDisconnected(b, start))
+	out = byKind(s.OnDisconnected(b, true, start))
 	if want := []Dial{{Server: c}, {Server: a}}; !reflect.DeepEqual(out.Dial, want) {
 		t.Fatalf("plain pass = %+v, want %+v", out.Dial, want)
 	}
-	if out := byKind(s.OnDisconnected(c, start)); !reflect.DeepEqual(out.Dial, []Dial{{Server: b}}) {
+	if out := byKind(s.OnDisconnected(c, true, start)); !reflect.DeepEqual(out.Dial, []Dial{{Server: b}}) {
 		t.Fatalf("plain pass continues with %+v", out.Dial)
 	}
-	byKind(s.OnDisconnected(a, start))
-	if out := byKind(s.OnDisconnected(b, start)); len(out.Dial) > 0 {
+	byKind(s.OnDisconnected(a, true, start))
+	if out := byKind(s.OnDisconnected(b, true, start)); len(out.Dial) > 0 {
 		t.Fatalf("connected again before CS_RETRYCONNECTTIME: %+v", out.Dial)
 	}
 	out = byKind(s.OnTick(start.Add(passRetryTime+time.Second), nil, noIP))
@@ -612,7 +695,7 @@ func TestTimedOutAttemptClosesBeforeRedial(t *testing.T) {
 func TestObfuscationPortFromLogin(t *testing.T) {
 	s, _ := loggedIn(t, []Entry{{Endpoint: first}}, highID, 0, nil)
 	byKind(s.OnPacket(first, serverwire.IDChange{ClientID: highID, Flags: serverwire.FlagTCPObfuscation, ObfuscationPort: 4665}, start))
-	byKind(s.OnDisconnected(first, start))
+	byKind(s.OnDisconnected(first, false, start))
 	out := byKind(s.OnTick(start.Add(passRetryTime+time.Second), nil, noIP))
 	if want := []Dial{{Server: first, ObfuscationPort: 4665}}; !reflect.DeepEqual(out.Dial, want) {
 		t.Fatalf("reconnect = %+v, want %+v", out.Dial, want)
@@ -642,7 +725,7 @@ func TestHostNameServer(t *testing.T) {
 	if out := byKind(s.OnTick(later, nil, noIP)); len(out.Resolve) > 0 {
 		t.Fatalf("looked up the connected server: %v", out.Resolve)
 	}
-	byKind(s.OnDisconnected(resolved, later))
+	byKind(s.OnDisconnected(resolved, false, later))
 	if out := byKind(s.OnTick(later, nil, noIP)); !reflect.DeepEqual(out.Resolve, []string{"dyn.example"}) {
 		t.Fatalf("no new lookup once free: %+v", out)
 	}

@@ -6,8 +6,10 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
+	"syscall"
 )
 
 type Transport interface {
@@ -31,6 +33,17 @@ type PacketConn interface {
 	WriteTo(b []byte, addr netip.AddrPort) (int, error)
 	Close() error
 	Port() int
+}
+
+// IsRefused reports whether OpenTCP failed because the remote host refused
+// the connection or never answered it: evidence about that host. Other
+// failures, such as no route or no network, are about our own link.
+func IsRefused(err error) bool {
+	var dial *net.OpError
+	if !errors.As(err, &dial) || dial.Op != "dial" {
+		return false
+	}
+	return dial.Timeout() || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ETIMEDOUT) || isWindowsRefused(err)
 }
 
 // Real is the Transport of the running process.

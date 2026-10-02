@@ -17,7 +17,8 @@ Engine Process writes diagnostics to stderr, never to stdout.
 ```
 
 - `dataFolder` holds the Durable State; it must not be empty.
-- `port` is used for TCP and UDP; 0 picks a port free for both.
+- `port` is used for TCP and UDP; 0 picks a port free for both. Server UDP
+  uses a port of its own that the system picks; it needs no mapping.
 - `enableUpnp` maps the ports on the home gateway: PCP first, then NAT-PMP,
   then UPnP IGD.
 - A server or node list that cannot be read is skipped.
@@ -84,7 +85,7 @@ After `failed` the Engine Process exits with a non-zero status. Kelpie waits
   NAT, usually the carrier's, sits above the home gateway. It is true while
   `isHighId` is false, the gateway mapped our ports, and the external IPv4
   address the gateway reports is not public (100.64.0.0/10, a private range,
-  or another reserved range) or differs from the address a peer or server last
+  or another reserved range) or differs from the address the server or a peer
   reported for us. Without a port mapping it is false: nothing tells the cases
   apart.
 

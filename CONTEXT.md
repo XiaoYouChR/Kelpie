@@ -68,7 +68,8 @@ file. Kelpie reads them again each time it starts the Engine Process.
 
 A cap on download or upload bytes per second across all Transfers; 0 means
 unlimited. It counts every byte on peer connections, protocol overhead
-included, so the observed rate never exceeds it. Server, Kad, and other UDP
+included, so the observed rate never exceeds it. Server traffic, including a
+server's connection that checks whether peers can reach us, Kad, and other UDP
 traffic is not limited. Rate Limits change while running and survive Engine
 Process restarts.
 

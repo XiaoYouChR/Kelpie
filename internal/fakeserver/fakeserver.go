@@ -59,6 +59,10 @@ type Config struct {
 	// derives each client's key from the client's address; this one gives
 	// UDPKey XOR the client ID.
 	UDPKey uint32
+	// UDPMarker, when not 0, is the first byte of every obfuscated answer.
+	// A real server picks it at random, any byte but 0xE3, so it may be a
+	// Kad protocol byte.
+	UDPMarker byte
 }
 
 type Server struct {
@@ -369,7 +373,7 @@ func (s *Server) runUDP(ctx context.Context, conn transport.PacketConn, isObfusc
 		}
 		answer := reply.Build(nil)
 		if key != 0 {
-			answer = sealDatagram(answer, key)
+			answer = sealDatagram(answer, key, s.config.UDPMarker)
 		}
 		conn.WriteTo(answer, from)
 	}
