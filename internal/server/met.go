@@ -13,13 +13,13 @@ import (
 )
 
 // Preference is a server.met priority. The numbering is eMule's
-// (SRV_PR_NORMAL, SRV_PR_HIGH, SRV_PR_LOW), not an order.
+// (SRV_PR_NORMAL, SRV_PR_HIGH, SRV_PR_LOW), not an order; normal is the
+// zero value.
 type Preference uint32
 
 const (
-	PreferenceNormal Preference = 0
-	PreferenceHigh   Preference = 1
-	PreferenceLow    Preference = 2
+	PreferenceHigh Preference = 1
+	PreferenceLow  Preference = 2
 )
 
 // Entry is one server of a server.met list. A server listed by Host has
