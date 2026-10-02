@@ -393,7 +393,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Source, now time.Time) []A
 		found.Buddy, found.IsDirectCallback = hello.Buddy, true
 	}
 	if t.isBanned(found, now) {
-		return []Action{Close{Peer: peer, Reason: "banned"}}
+		return []Action{Close{Peer: peer, Reason: "banned", IsBanned: true}}
 	}
 	s := t.connectedSource(hello)
 	var actions []Action
@@ -597,7 +597,7 @@ func (t *Transfer) removeCorrupt(peer uint64, now time.Time) []Action {
 	event.Reason = "banned"
 	actions := []Action{event}
 	if t.peers[peer] == s {
-		actions = append(actions, Close{Peer: peer, Reason: "corrupt data"})
+		actions = append(actions, Close{Peer: peer, Reason: "corrupt data", IsBanned: true})
 		actions = append(actions, t.removePeer(peer, now)...)
 	}
 	return actions
