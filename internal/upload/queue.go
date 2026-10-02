@@ -22,6 +22,7 @@ const (
 	sessionMaxTime   = time.Hour                // SESSIONMAXTIME
 	connectTimeout   = 40 * time.Second         // CONNECTION_TIMEOUT
 	minSlots         = 2                        // MIN_UP_CLIENTS_ALLOWED
+	unlimitedSlots   = 20                       // aMule's N_FLOOR without an upload limit
 	maxSlots         = 100                      // MAX_UP_CLIENTS_ALLOWED
 	maxSlotRate      = 50 * 1024                // UPLOAD_CLIENT_MAXDATARATE
 	slotSpacing      = time.Second              // ForceNewClient: one new slot per second below 100 KB/s
@@ -287,11 +288,16 @@ func (q *Queue) OnTick(now time.Time) []Action {
 	}
 	var actions []Action
 	var rotated []*slot
+	// aMule rotates a slot only while no new one may open, and one per round
+	// (UploadQueue.cpp:246-258, 586-624): with room to spare the waiter gets a
+	// new slot instead of interrupting a download.
+	canRotate := len(q.waiters) > 0 && now.Sub(q.lastSlotStart) >= slotSpacing && !q.canAddSlot(now)
 	kept := q.slots[:0]
 	for _, s := range q.slots {
 		switch {
 		case s.conn == 0 && now.Sub(s.start) > connectTimeout:
-		case s.conn != 0 && len(q.waiters) > 0 && (s.sent > sessionMaxTrans || now.Sub(s.start) > sessionMaxTime):
+		case canRotate && s.conn != 0 && (s.sent > sessionMaxTrans || now.Sub(s.start) > sessionMaxTime):
+			canRotate = false
 			actions = append(actions, Revoke{s.conn})
 			rotated = append(rotated, s)
 		default:
@@ -467,7 +473,7 @@ func (q *Queue) canAddSlot(now time.Time) bool {
 		return false
 	}
 	n := len(q.slots)
-	if n < minSlots {
+	if n < q.slotFloor() {
 		return true
 	}
 	if !q.canAcceptSlot(n) {
@@ -505,7 +511,7 @@ func (q *Queue) canAcceptSlot(n int) bool {
 	if n >= maxSlots {
 		return false
 	}
-	if n < 4 {
+	if n < max(4, q.slotFloor()) {
 		return true
 	}
 	target := q.slotTarget()
@@ -513,6 +519,17 @@ func (q *Queue) canAcceptSlot(n int) bool {
 		return false
 	}
 	return q.rate == 0 || int64(n) < q.rate/target
+}
+
+// slotFloor is how many slots open on spacing alone. Without a Rate Limit
+// aMule keeps 20 (UploadQueue.cpp:295-322): eMule's two let the rate that
+// would justify more slots never come, as two streams rarely fill an
+// upstream.
+func (q *Queue) slotFloor() int {
+	if q.rate == 0 {
+		return unlimitedSlots
+	}
+	return minSlots
 }
 
 // slotTarget is eMule's GetTargetClientDataRate: 3 KB/s up to three slots,
