@@ -285,6 +285,8 @@ func (e *Engine) refreshProgress(r *run, isFirst bool) {
 			Uploaded:     p.Uploaded,
 			Peers:        p.Peers,
 			ActivePeers:  p.ActivePeers,
+			HeldSources:  p.HeldSources,
+			HeldUntil:    p.HeldUntil,
 		}
 	}
 	if !isFirst && progress == r.progress {

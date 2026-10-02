@@ -49,6 +49,11 @@ type Progress struct {
 	Uploaded     int64
 	Peers        int
 	ActivePeers  int
+	// HeldSources are due to be asked but wait so as not to count as
+	// aggressive (see holdUntil); HeldUntil is when the first of them may
+	// be asked, zero when none waits.
+	HeldSources int
+	HeldUntil   time.Time
 }
 
 // State is the Transfer's Durable State, field for field store.Transfer
@@ -216,6 +221,12 @@ func (t *Transfer) Progress(now time.Time) Progress {
 		}
 		if s.state == stateDownloading {
 			progress.ActivePeers++
+		}
+		if until := s.holdUntil(); t.isHeld(s, now) {
+			progress.HeldSources++
+			if progress.HeldUntil.IsZero() || until.Before(progress.HeldUntil) {
+				progress.HeldUntil = until
+			}
 		}
 	}
 	return progress

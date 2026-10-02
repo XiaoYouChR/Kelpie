@@ -56,6 +56,9 @@ func (e *Engine) onSlotAsked(c *conn, file wire.Hash) {
 	client.file = file
 	client.lastAsked = e.now()
 	client.endpoint = c.endpoint()
+	if r := e.downloadByHash(file); r != nil {
+		r.transfer.OnSlotAsked(c.id, e.now())
+	}
 }
 
 // isA4AF tells whether another running download holds the client.

@@ -67,6 +67,8 @@ class Progress:
     uploaded: int
     peers: int
     activePeers: int
+    heldSources: int
+    heldUntil: int
 
 
 @dataclass(frozen=True, slots=True)

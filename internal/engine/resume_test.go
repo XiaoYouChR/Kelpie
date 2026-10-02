@@ -11,65 +11,76 @@ import (
 // A Run stopped and opened again in the same Engine Process goes on with the
 // sources the first one knew, without waiting for the server, which is not
 // asked for the file again before its reask time. The seeder that was
-// sending is asked again once MIN_REQUESTTIME has passed since we asked it,
-// at once after a long slot, and not before after a short one.
+// sending is asked again at once, as aMule does after a pause. Paused and
+// resumed again at once, asking it would count as aggressive: Progress
+// tells that it is held, and it is asked once the ask is polite.
 func TestNextRunKeepsTheSources(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name string
-		slot time.Duration
-	}{
-		{"long slot", minRequestTime},
-		{"short slot", time.Minute},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				w := buildWorld(t)
-				srv := w.startFakeServer("198.51.100.100")
-				a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
-				a.setServer(srv)
-				b.setServer(srv)
-				b.config.DownloadLimit = 20_000
-				a.start()
-				b.start()
-				f := buildTestFile("again.bin", 2*int(piece.PartSize), 31)
-				a.seed(1, f)
-				for _, n := range []*node{a, b} {
-					w.waitFor("server login", func() bool { return n.events.lastNetwork().IsServerConnected })
-				}
-				w.waitUntil(w.clock.Now().Add(10 * time.Second))
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		srv := w.startFakeServer("198.51.100.100")
+		a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+		a.setServer(srv)
+		b.setServer(srv)
+		b.config.DownloadLimit = 20_000
+		a.start()
+		b.start()
+		f := buildTestFile("again.bin", 2*int(piece.PartSize), 31)
+		a.seed(1, f)
+		for _, n := range []*node{a, b} {
+			w.waitFor("server login", func() bool { return n.events.lastNetwork().IsServerConnected })
+		}
+		w.waitUntil(w.clock.Now().Add(10 * time.Second))
 
-				b.download(2, f)
-				w.waitFor("the seeder to send", func() bool {
-					p, _ := b.events.progressByRun(2)
-					return p.Received > 0
-				})
-				asked := traceTimes(b.loadTrace(), "connected", a.endpoint().String())[0]
-				w.waitUntil(w.clock.Now().Add(test.slot))
-				b.engine.Post(StopCommand{ID: 2})
-				requireEndedOK(t, w.waitEnded(b, 2))
-				stopped, _ := b.events.progressByRun(2)
-
-				b.download(3, f)
-				due := asked.Add(minRequestTime)
-				if due.Before(w.clock.Now()) {
-					due = w.clock.Now()
+		var received int64
+		receive := func(id RunID) {
+			t.Helper()
+			resumed := w.clock.Now()
+			w.waitFor("the run to receive", func() bool {
+				if w.clock.Now().After(resumed.Add(time.Minute)) {
+					t.Fatalf("run %d received nothing for a minute", id)
 				}
-				w.waitFor("the next run to receive", func() bool {
-					if w.clock.Now().After(due.Add(time.Minute)) {
-						t.Fatalf("no data a minute after the seeder was due")
-					}
-					p, _ := b.events.progressByRun(3)
-					return p.Received > stopped.Received
-				})
-				again := traceTimes(b.loadTrace(), "connected", a.endpoint().String())[1]
-				if again.Before(asked.Add(minRequestTime)) {
-					t.Fatalf("seeder asked again %v after the first ask", again.Sub(asked))
-				}
+				p, _ := b.events.progressByRun(id)
+				return p.Received > received
 			})
-		})
-	}
+		}
+		stop := func(id RunID) {
+			t.Helper()
+			b.engine.Post(StopCommand{ID: id})
+			requireEndedOK(t, w.waitEnded(b, id))
+			p, _ := b.events.progressByRun(id)
+			received = p.Received
+		}
+
+		b.download(2, f)
+		receive(2)
+		w.waitUntil(w.clock.Now().Add(time.Minute))
+		stop(2)
+		b.download(3, f)
+		receive(3)
+		asked := traceTimes(b.loadTrace(), "connected", a.endpoint().String())[1]
+
+		stop(3)
+		b.download(4, f)
+		w.waitUntil(w.clock.Now().Add(10 * time.Second))
+		// The slot ask follows the connection by the time the file request
+		// takes to be answered.
+		const politeGap = 11 * time.Minute
+		p, _ := b.events.progressByRun(4)
+		held := p.HeldUntil
+		if p.HeldSources != 1 || held.Before(asked.Add(politeGap)) || held.After(asked.Add(politeGap+time.Minute)) || p.Received != received {
+			t.Fatalf("progress held %d until %v with %d received, want 1 until %v with %d", p.HeldSources, held, p.Received, asked.Add(politeGap), received)
+		}
+		w.waitUntil(held.Add(-time.Second))
+		if p, _ := b.events.progressByRun(4); p.Received != received {
+			t.Fatal("the held seeder sent before its ask was polite")
+		}
+		w.waitUntil(held)
+		receive(4)
+		if p, _ := b.events.progressByRun(4); p.HeldSources != 0 || !p.HeldUntil.IsZero() {
+			t.Fatalf("progress still held %d until %v once asked", p.HeldSources, p.HeldUntil)
+		}
+	})
 }
 
 // traceTimes lists when each trace line of event for source was written.

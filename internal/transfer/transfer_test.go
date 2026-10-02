@@ -106,6 +106,7 @@ func (h *harness) tick(tick transfer.Tick) []transfer.Action {
 func (h *harness) connect(peer uint64, i int, parts piece.Set) {
 	h.run(h.transfer.OnPeerConnected(peer, transfer.Source{Endpoint: endpoint(i), UserHash: userHash(i)}, h.now))
 	h.transfer.OnPeerParts(peer, parts)
+	h.transfer.OnSlotAsked(peer, h.now)
 	h.run(h.transfer.OnSlotGranted(peer, h.now))
 }
 
