@@ -69,7 +69,9 @@ var exceptions = map[edge]string{
 	// never need it.
 	{"internal/nat", "net"}:        "nat is the router seam",
 	{"internal/nat", "net/http"}:   "nat is the router seam",
+	{"internal/nat", "os"}:         "nat is the router seam",
 	{"internal/nat", "os/exec"}:    "nat is the router seam",
+	{"internal/nat", "syscall"}:    "nat is the router seam",
 	{"internal/nat", "wall clock"}: "nat is the router seam",
 }
 
@@ -110,29 +112,59 @@ type listed struct {
 	XTestImports []string
 }
 
+// platforms are the release targets plus Android. go list resolves build tags
+// for one GOOS at a time, so each is listed and the imports are merged.
+var platforms = []string{"linux", "darwin", "windows", "android"}
+
 func loadPackages(t *testing.T) []listed {
 	t.Helper()
 	readTree(t)
-	cmd := exec.Command("go", "list", "-json", module+"...")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list: %v\n%s", err, stderr.String())
-	}
-	var packages []listed
-	decoder := json.NewDecoder(bytes.NewReader(out))
-	for {
-		var p listed
-		if err := decoder.Decode(&p); err == io.EOF {
-			break
-		} else if err != nil {
-			t.Fatal(err)
+	var packages []*listed
+	byPath := map[string]*listed{}
+	for _, goos := range platforms {
+		cmd := exec.Command("go", "list", "-json", module+"...")
+		cmd.Env = append(os.Environ(), "GOOS="+goos, "CGO_ENABLED=0")
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("go list for %s: %v\n%s", goos, err, stderr.String())
 		}
-		p.ImportPath = strings.TrimPrefix(p.ImportPath, module)
-		packages = append(packages, p)
+		decoder := json.NewDecoder(bytes.NewReader(out))
+		for {
+			var p listed
+			if err := decoder.Decode(&p); err == io.EOF {
+				break
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			p.ImportPath = strings.TrimPrefix(p.ImportPath, module)
+			merged, ok := byPath[p.ImportPath]
+			if !ok {
+				byPath[p.ImportPath] = &p
+				packages = append(packages, &p)
+				continue
+			}
+			merged.GoFiles = union(merged.GoFiles, p.GoFiles)
+			merged.Imports = union(merged.Imports, p.Imports)
+			merged.TestImports = union(merged.TestImports, p.TestImports)
+			merged.XTestImports = union(merged.XTestImports, p.XTestImports)
+		}
 	}
-	return packages
+	result := make([]listed, len(packages))
+	for i, p := range packages {
+		result[i] = *p
+	}
+	return result
+}
+
+func union(a, b []string) []string {
+	for _, s := range b {
+		if !slices.Contains(a, s) {
+			a = append(a, s)
+		}
+	}
+	return a
 }
 
 // readTree reads every folder and Go file of the module itself, because go
