@@ -2,10 +2,10 @@ import asyncio
 import json
 import logging
 import re
-from collections import deque
 from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from itertools import count
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 class Run:
-    def __init__(self, id: int, hash: str) -> None:
+    def __init__(self, id: int) -> None:
         self.id = id
-        self.hash = hash
+        # Only the newest Progress: a slow consumer skips the stale ones.
         self._progress: Progress | None = None
+        # Kept apart from _error, because a normal end has no error.
         self._isEnded = False
         self._error: BaseException | None = None
+        # An Event, not a queue: repeated set() calls collapse into one wake-up.
         self._changed = asyncio.Event()
 
     async def __aiter__(self) -> AsyncIterator[Progress]:
@@ -67,7 +69,11 @@ class Run:
 @dataclass
 class EngineProcess:
     process: asyncio.subprocess.Process
+    # The Runs this process still owes an `ended`, by run id because a stopped
+    # download must not end the seed that follows it. Whoever pops a Run ends
+    # it, and the `ended` that follows finds no route.
     routes: dict[int, Run] = field(default_factory=dict)
+    # Describes this process only, so it goes away with it.
     network: Network | None = None
 
 
@@ -81,10 +87,18 @@ class Kelpie:
         self._executable = executable
         self._dataFolder = dataFolder
         self._settings = settings
+        # None again once the process exits: only the next call starts another.
         self._engine: EngineProcess | None = None
+        # Callers that arrive during a start wait for it instead of starting
+        # a second Engine Process.
         self._starting: asyncio.Task[None] | None = None
+        # By hash and across Engine Process restarts: a Transfer has one open
+        # Run even while no Engine Process runs.
         self._runs: dict[str, Run] = {}
-        self._nextRunId = 1
+        # Never reused, so an id stays unique within every Engine Process.
+        self._runIds = count(1)
+        # The event loop keeps only weak references to tasks, and close() waits
+        # for them.
         self._tasks: set[asyncio.Task[None]] = set()
 
     @property
@@ -92,14 +106,14 @@ class Kelpie:
         return self._engine.network if self._engine is not None else None
 
     def runDownload(self, link: Link, file: Path) -> AbstractAsyncContextManager[Run]:
-        return self.run("download", link, file)
+        return self._run("download", link, file)
 
     def runSeed(self, link: Link, file: Path) -> AbstractAsyncContextManager[Run]:
-        return self.run("seed", link, file)
+        return self._run("seed", link, file)
 
     def update(self) -> None:
         if self._engine is not None:
-            send(self._engine.process, {"type": "update", **buildSettings(self._settings())})
+            send(self._engine.process, {"type": "update", **toMessageFields(self._settings())})
 
     def isActive(self, hash: str) -> bool:
         return hash in self._runs
@@ -109,16 +123,14 @@ class Kelpie:
         engine = self._engine
         if run is not None and engine is not None and engine.routes.pop(run.id, None) is not None:
             run.cancel()
-        await self.start()
+        await self._start()
         if self._engine is not None:
             send(self._engine.process, {"type": "remove", "hash": hash})
 
     async def close(self) -> None:
         if self._starting is not None:
-            try:
+            with suppress(Error):
                 await asyncio.shield(self._starting)
-            except Error:
-                pass
         engine = self._engine
         if engine is None:
             return
@@ -136,15 +148,14 @@ class Kelpie:
         await asyncio.gather(*self._tasks)
 
     @asynccontextmanager
-    async def run(self, mode: str, link: Link, file: Path) -> AsyncIterator[Run]:
+    async def _run(self, mode: str, link: Link, file: Path) -> AsyncIterator[Run]:
         if link.hash in self._runs:
             raise Error(ErrorCode.TRANSFER_BUSY, f"a Run is already open for {link.hash}")
-        run = Run(self._nextRunId, link.hash)
-        self._nextRunId += 1
+        run = Run(next(self._runIds))
         self._runs[link.hash] = run
         try:
             try:
-                await self.start()
+                await self._start()
             except Error as error:
                 run.setEnded(error)
             else:
@@ -169,14 +180,14 @@ class Kelpie:
             if engine is not None and engine.routes.pop(run.id, None) is not None:
                 send(engine.process, {"type": "stop", "run": run.id})
 
-    async def start(self) -> None:
+    async def _start(self) -> None:
         if self._engine is not None:
             return
         if self._starting is None:
-            self._starting = asyncio.create_task(self.createProcess())
+            self._starting = asyncio.create_task(self._createProcess())
         await asyncio.shield(self._starting)
 
-    async def createProcess(self) -> None:
+    async def _createProcess(self) -> None:
         try:
             executable = self._executable()
             settings = self._settings()
@@ -194,7 +205,7 @@ class Kelpie:
                 ) from error
             send(process, buildHello(self._dataFolder, settings))
             ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-            task = asyncio.create_task(self.supervise(process, ready))
+            task = asyncio.create_task(self._supervise(process, ready))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
             await ready
@@ -204,46 +215,35 @@ class Kelpie:
         finally:
             self._starting = None
 
-    async def supervise(
+    async def _supervise(
         self, process: asyncio.subprocess.Process, ready: asyncio.Future[None]
     ) -> None:
-        stderr: deque[str] = deque(maxlen=20)
-        stderrTask = asyncio.create_task(refreshStderr(process, stderr))
-        engine = EngineProcess(process)
+        lastStderrLine = asyncio.create_task(parseLastLine(process.stderr))
         try:
-            async with asyncio.timeout(HANDSHAKE_TIMEOUT):
-                line = await process.stdout.readline()
-        except TimeoutError:
-            process.kill()
-            line = b""
-            failure = Error(
-                ErrorCode.START_FAILED,
-                f"Engine Process did not answer hello within {HANDSHAKE_TIMEOUT} s",
-            )
-        else:
-            failure = parseHandshake(line) if line else None
-        isReady = bool(line) and failure is None
+            isReady = await runHandshake(process)
+        except Error as error:
+            process.stdin.close()
+            await lastStderrLine
+            await process.wait()
+            ready.set_exception(error)
+            return
+        engine = EngineProcess(process)
         if isReady:
             self._engine = engine
             ready.set_result(None)
             while line := await process.stdout.readline():
                 onMessage(engine, line)
-        elif failure is not None:
-            process.stdin.close()
-        await stderrTask
+        lastLine = await lastStderrLine
         exitCode = await process.wait()
-        lastLine = stderr[-1] if stderr else f"exit code {exitCode}"
+        reason = lastLine if lastLine is not None else f"exit code {exitCode}"
         if not isReady:
             ready.set_exception(
-                failure
-                or Error(
-                    ErrorCode.START_FAILED, f"Engine Process exited during startup: {lastLine}"
-                )
+                Error(ErrorCode.START_FAILED, f"Engine Process exited during startup: {reason}")
             )
             return
         if self._engine is engine:
             self._engine = None
-        exited = Error(ErrorCode.ENGINE_EXITED, lastLine)
+        exited = Error(ErrorCode.ENGINE_EXITED, reason)
         for run in engine.routes.values():
             run.setEnded(exited)
 
@@ -275,11 +275,11 @@ def buildHello(dataFolder: Path, settings: Settings) -> dict[str, Any]:
         "type": "hello",
         "protocol": PROTOCOL,
         "dataFolder": str(dataFolder),
-        **buildSettings(settings),
+        **toMessageFields(settings),
     }
 
 
-def buildSettings(settings: Settings) -> dict[str, Any]:
+def toMessageFields(settings: Settings) -> dict[str, Any]:
     return {
         "settings": {
             "port": settings.port,
@@ -293,20 +293,35 @@ def buildSettings(settings: Settings) -> dict[str, Any]:
     }
 
 
-def parseHandshake(line: bytes) -> Error | None:
+async def runHandshake(process: asyncio.subprocess.Process) -> bool:
+    try:
+        async with asyncio.timeout(HANDSHAKE_TIMEOUT):
+            line = await process.stdout.readline()
+    except TimeoutError:
+        process.kill()
+        raise Error(
+            ErrorCode.START_FAILED,
+            f"Engine Process did not answer hello within {HANDSHAKE_TIMEOUT} s",
+        ) from None
+    if not line:
+        return False
+    parseHandshake(line)
+    return True
+
+
+def parseHandshake(line: bytes) -> None:
     try:
         message = json.loads(line)
         if message["type"] == "failed":
-            return Error(ErrorCode.START_FAILED, message["error"]["message"])
+            raise Error(ErrorCode.START_FAILED, message["error"]["message"])
         if message["type"] != "ready":
-            return Error(ErrorCode.START_FAILED, f"unexpected handshake: {line!r}")
+            raise Error(ErrorCode.START_FAILED, f"unexpected handshake: {line!r}")
         version = message["version"]
     except (ValueError, KeyError, TypeError) as error:
-        return Error(ErrorCode.START_FAILED, f"invalid handshake {line!r}: {error}")
+        raise Error(ErrorCode.START_FAILED, f"invalid handshake {line!r}: {error}") from error
     if matchOutdated(version):
         required = ".".join(map(str, MIN_ENGINE_VERSION))
-        return Error(ErrorCode.OUTDATED, f"Engine Process {version} is older than v{required}")
-    return None
+        raise Error(ErrorCode.OUTDATED, f"Engine Process {version} is older than v{required}")
 
 
 def matchOutdated(version: str) -> bool:
@@ -347,6 +362,8 @@ def parseError(error: dict[str, Any] | None) -> Error | None:
     return Error(code, error["message"])
 
 
-async def refreshStderr(process: asyncio.subprocess.Process, lines: deque[str]) -> None:
-    while line := await process.stderr.readline():
-        lines.append(line.decode(errors="replace").rstrip())
+async def parseLastLine(stream: asyncio.StreamReader) -> str | None:
+    lastLine = None
+    while line := await stream.readline():
+        lastLine = line.decode(errors="replace").rstrip()
+    return lastLine
