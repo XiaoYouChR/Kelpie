@@ -136,9 +136,10 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 	if e.packetLog != nil {
 		e.packetLog.Printf("open %s obfuscated=%t", dial, c.isObfuscated)
 	}
+	t := e.transport
 	e.startLeaf(func() {
 		ctx, cancel := context.WithTimeout(c.ctx, connectTimeout)
-		netConn, err := e.ports.Transport.OpenTCP(ctx, dial)
+		netConn, err := t.OpenTCP(ctx, dial)
 		cancel()
 		switch {
 		case err != nil:

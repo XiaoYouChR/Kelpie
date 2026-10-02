@@ -111,7 +111,7 @@ func TestSessionTranscript(t *testing.T) {
 	var config engine.Config
 	start := func(c engine.Config, e engine.Events) (Engine, error) {
 		config, events = c, e
-		e.SetNetwork(engine.Network{IsServerConnected: true, IsKadFirewalled: true, KadNodes: 812, IsBehindCarrierNat: true})
+		e.SetNetwork(engine.Network{IsServerConnected: true, IsKadFirewalled: true, KadNodes: 812, IsBehindCarrierNat: true, ProxyIssue: "noUdp"})
 		return eng, nil
 	}
 	var out bytes.Buffer
@@ -134,7 +134,7 @@ func TestSessionTranscript(t *testing.T) {
 	wantCommands := []engine.Command{
 		engine.RunCommand{ID: 1, Mode: engine.ModeDownload, Link: "ed2k://|file|empty.bin|0|31D6CFE0D16AE931B73C59D7E0C089C0|/", File: "/downloads/empty.bin"},
 		engine.RunCommand{ID: 2, Mode: engine.ModeSeed, Link: "not a link", File: "/downloads/other.bin"},
-		engine.Settings{EnableUPnP: true, DownloadLimit: 1048576},
+		engine.Settings{EnableUPnP: true, DownloadLimit: 1048576, Proxy: "socks5h://user:pass@127.0.0.1:1080"},
 		engine.RemoveCommand{Hash: emptyHash},
 		engine.StopCommand{ID: 1},
 	}
@@ -332,7 +332,7 @@ func TestSlowConsumerCoalescesProgress(t *testing.T) {
 	got := parseLines(t, out.text())
 	want := []map[string]any{
 		{"type": "ready", "version": "v1", "protocol": 1.0},
-		{"type": "network", "isServerConnected": false, "isHighId": false, "isKadFirewalled": false, "kadNodes": 2.0, "isBehindCarrierNat": false},
+		{"type": "network", "isServerConnected": false, "isHighId": false, "isKadFirewalled": false, "kadNodes": 2.0, "isBehindCarrierNat": false, "proxyIssue": ""},
 		buildProgressMessage(1, 3),
 		buildProgressMessage(2, 10),
 		{"type": "ended", "run": 1.0, "error": nil},
@@ -431,7 +431,7 @@ func TestEOFClosesEngineThenFlushes(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("output\n got %v\nwant %v", got, want)
 	}
-	wantNetwork := map[string]any{"type": "network", "isServerConnected": false, "isHighId": false, "isKadFirewalled": false, "kadNodes": 9.0, "isBehindCarrierNat": false}
+	wantNetwork := map[string]any{"type": "network", "isServerConnected": false, "isHighId": false, "isKadFirewalled": false, "kadNodes": 9.0, "isBehindCarrierNat": false, "proxyIssue": ""}
 	if !reflect.DeepEqual(network, wantNetwork) {
 		t.Errorf("network %v, want %v", network, wantNetwork)
 	}

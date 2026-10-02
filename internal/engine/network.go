@@ -60,7 +60,8 @@ func (e *Engine) runServer(actions []server.Action) {
 				e.openPeerConn(a.Endpoint, a.UserHash, canObfuscate)
 			}
 		case server.Resolve:
-			e.startLeaf(func() { e.runLookup(a.Host) })
+			t := e.transport
+			e.startLeaf(func() { e.runLookup(t, a.Host) })
 		case server.SourcesFound:
 			channel := transfer.ChannelServer
 			if a.IsGlobal {
@@ -84,10 +85,11 @@ func (e *Engine) runServer(actions []server.Action) {
 	}
 }
 
-// runLookup is a leaf that resolves a server's host name.
-func (e *Engine) runLookup(host string) {
+// runLookup is a leaf that resolves a server's host name. Through a socks5h
+// Proxy it fails, and the server waits unresolved (ADR-0006).
+func (e *Engine) runLookup(t transport.Transport, host string) {
 	ctx, cancel := context.WithTimeout(e.ctx, lookupTimeout)
-	addrs, err := e.ports.Transport.LookupHost(ctx, host)
+	addrs, err := t.LookupHost(ctx, host)
 	cancel()
 	var addr netip.Addr
 	if err == nil && len(addrs) > 0 {

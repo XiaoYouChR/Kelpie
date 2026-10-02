@@ -118,8 +118,17 @@ type Engine struct {
 	cancelKad func() (kad.State, bool)
 	kadStatus kad.Status
 	buddy     buddy
-	listener  transport.Listener
-	udp       transport.PacketConn
+	// transport is what we send through: the seam itself, or the Proxy
+	// over it. Leaves take it when they start, since update replaces it.
+	transport transport.Transport
+	// proxy is the Proxy URL transport follows. proxyIssues holds the latest
+	// issue that transport reported; each transport has its own, so a
+	// replaced one cannot speak for the next. nil while going direct.
+	proxy       string
+	proxyIssue  string
+	proxyIssues chan string
+	listener    transport.Listener
+	udp         transport.PacketConn
 	// serverUDP is server UDP's own socket, as aMule 3.1.0 has: on the
 	// shared one Kad took a server's obfuscated answer, which can start
 	// with a Kad byte, for its own.
@@ -234,6 +243,9 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 // start opens the sockets and the trace file, then starts the leaves, Kad
 // and the hub. Settings apply as an update from everything off.
 func (e *Engine) start(mapPorts openNAT) error {
+	if err := e.setProxy(e.config.Proxy); err != nil {
+		return err
+	}
 	if err := e.openSockets(); err != nil {
 		return err
 	}
@@ -430,6 +442,9 @@ func (e *Engine) stopKad() {
 // update applies Settings while running. The UDP port stays ours across
 // a Kad switch: Kad releases it on stop and the engine opens it again.
 func (e *Engine) update(s Settings) {
+	if s.Proxy != e.proxy {
+		e.moveToProxy(s.Proxy)
+	}
 	e.downloadLimiter.setRate(s.DownloadLimit)
 	e.uploadLimiter.setRate(s.UploadLimit)
 	e.queue.SetRate(s.UploadLimit)
@@ -597,6 +612,7 @@ func (e *Engine) run() {
 			e.onTick()
 		case m := <-kadEvents:
 			e.onKadMessage(m)
+		case e.proxyIssue = <-e.proxyIssues:
 		}
 		e.refreshRuns()
 		e.refreshNetwork()
@@ -689,6 +705,7 @@ func (e *Engine) buildNetwork() Network {
 		IsHighID:          !wire.IsLowID(clientID),
 		IsKadFirewalled:   e.kadStatus.IsFirewalled,
 		KadNodes:          e.kadStatus.Nodes,
+		ProxyIssue:        e.proxyIssue,
 	}
 	network.IsBehindCarrierNat = !network.IsHighID && matchCarrierNAT(e.mappedIP, e.publicIP)
 	return network

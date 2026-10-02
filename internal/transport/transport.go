@@ -36,9 +36,17 @@ type PacketConn interface {
 }
 
 // IsRefused reports whether OpenTCP failed because the remote host refused
-// the connection or never answered it: evidence about that host. Other
-// failures, such as no route or no network, are about our own link.
+// the connection or never answered it, directly or as the Proxy reports:
+// evidence about that host. Other failures, such as no route, no network,
+// or a Proxy we cannot reach, are about our own link.
 func IsRefused(err error) bool {
+	if isProxyDown(err) {
+		return false
+	}
+	var re replyError
+	if errors.As(err, &re) {
+		return re.code == replyHostUnreachable || re.code == replyRefused || re.code == replyTTLExpired
+	}
 	var dial *net.OpError
 	if !errors.As(err, &dial) || dial.Op != "dial" {
 		return false
