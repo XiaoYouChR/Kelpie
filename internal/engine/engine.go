@@ -216,7 +216,6 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 	}
 	if config.PacketLog != nil {
 		e.packetLog = log.New(config.PacketLog, "packet ", log.Lmicroseconds)
-		e.ports.Transport = udpLogTransport{Transport: ports.Transport, log: e.packetLog, clock: ports.Clock}
 	}
 	e.queue = upload.BuildQueue(e.ledger.Ratio, e.ledger.TrustByUser, func(file wire.Hash) bool {
 		r := e.runByHash[file]
@@ -357,7 +356,7 @@ func (e *Engine) openSockets() error {
 			return err
 		}
 		var udp transport.PacketConn
-		udp, err = e.ports.Transport.OpenUDP(listener.Port())
+		udp, err = e.buildUDPTransport(false).OpenUDP(listener.Port())
 		if err != nil {
 			listener.Close()
 			continue
@@ -368,13 +367,10 @@ func (e *Engine) openSockets() error {
 		} else {
 			e.udp = udp
 		}
-		e.serverUDP, err = e.ports.Transport.OpenUDP(0)
+		e.serverUDP, err = e.buildUDPTransport(true).OpenUDP(0)
 		if err != nil {
 			e.closeSockets()
 			return err
-		}
-		if c, ok := e.serverUDP.(*udpLogConn); ok {
-			c.isServer = true
 		}
 		return nil
 	}
@@ -392,16 +388,15 @@ func (e *Engine) closeSockets() {
 }
 
 func (e *Engine) startKad(nodes []kad.Node) {
-	random := e.ports.Rand
 	k := kad.BuildKad(kad.Config{
-		Transport: e.ports.Transport,
+		Transport: e.buildUDPTransport(false),
 		Clock:     e.ports.Clock,
 		Port:      e.udpPort,
 		TCPPort:   uint16(e.tcpPort),
 		UserHash:  e.self.UserHash,
 		State:     e.state.Kad,
 		Nodes:     nodes,
-		Rand:      rand.New(rand.NewPCG(random.Uint64(), random.Uint64())),
+		Rand:      e.buildLeafRandom(),
 	})
 	e.kad, e.kadStatus = k, kad.Status{IsFirewalled: true, UDPPort: uint16(e.udpPort)}
 	ctx, cancel := context.WithCancel(e.ctx)
@@ -454,7 +449,7 @@ func (e *Engine) update(s Settings) {
 		e.startKad(loadLists(e.ports.Disk, e.config.NodeLists, kad.ParseNodes))
 	case !s.EnableKad && e.kad != nil:
 		e.stopKad()
-		udp, err := e.ports.Transport.OpenUDP(e.udpPort)
+		udp, err := e.buildUDPTransport(false).OpenUDP(e.udpPort)
 		if err != nil {
 			log.Printf("engine: udp: %v", err)
 			break
@@ -469,11 +464,10 @@ func (e *Engine) update(s Settings) {
 		e.stopNAT()
 		e.stopNAT, e.mappedIP = nil, netip.Addr{}
 	}
-	e.config.Settings = s
 }
 
-// buildLeafRandom seeds a source of randomness for one leaf from the hub's,
-// which only the hub goroutine may use.
+// buildLeafRandom seeds a source of randomness for one leaf, or Kad, from
+// the hub's, which only the hub goroutine may use.
 func (e *Engine) buildLeafRandom() *rand.Rand {
 	return rand.New(rand.NewPCG(e.ports.Rand.Uint64(), e.ports.Rand.Uint64()))
 }

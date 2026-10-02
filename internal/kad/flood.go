@@ -34,7 +34,8 @@ type flood struct {
 	// dropped, as aMule counts those too. It must outlive the packet: the
 	// rate is over a minute of packets.
 	due map[floodKey]time.Time
-	// banned holds each banned IP until its ban ends.
+	// banned holds each banned IP until its ban ends. Unlike due it is per
+	// IP: a ban drops every packet from it, responses too.
 	banned map[netip.Addr]time.Time
 }
 
@@ -64,11 +65,8 @@ func requestsPerMinute(p wire.Packet) (kind reflect.Type, perMinute int) {
 
 // matchAllowed counts p from ip and tells whether to handle it.
 func (f *flood) matchAllowed(ip netip.Addr, p wire.Packet, now time.Time) bool {
-	if until, ok := f.banned[ip]; ok {
-		if now.Before(until) {
-			return false
-		}
-		delete(f.banned, ip)
+	if now.Before(f.banned[ip]) {
+		return false
 	}
 	kind, perMinute := requestsPerMinute(p)
 	if perMinute == 0 {
