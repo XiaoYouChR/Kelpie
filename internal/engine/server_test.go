@@ -413,3 +413,42 @@ func TestServerUDPKeySurvivesRestart(t *testing.T) {
 		t.Fatalf("source request to S2 after the restart not obfuscated:\n%s", text)
 	}
 }
+
+// While the only listed server is down and Kad is off, a source that failed
+// is not marked dead and not dialled again; once the server is back it is
+// asked at once.
+func TestOfflineSourceWaitsForTheServer(t *testing.T) {
+	w := buildWorld(t)
+	serverHost := w.network.AddHost(netip.MustParseAddr("198.51.100.100"))
+	serverHost.SetUnreachable(true)
+	srv := w.startFakeServerWith(fakeserver.Config{Addr: netip.MustParseAddrPort("198.51.100.100:4661"), Transport: serverHost})
+	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+	b.setServer(srv)
+	a.start()
+	b.start()
+	f := buildTestFile("offline.bin", 500_000, 8)
+	a.seed(1, f)
+	a.host.SetUnreachable(true)
+	b.download(2, f, a.endpoint())
+	failures := func() int {
+		count := 0
+		for _, line := range b.loadTrace() {
+			if line["event"] == "failed" && line["source"] == a.endpoint().String() {
+				count++
+			}
+		}
+		return count
+	}
+	w.waitFor("the first dial to fail", func() bool { return failures() == 1 })
+	a.host.SetUnreachable(false)
+	for range 120 {
+		w.clock.Advance(time.Minute)
+		time.Sleep(stepPause)
+	}
+	if got := failures(); got != 1 || matchTrace(b.loadTrace(), "connected", a.endpoint().String()) {
+		t.Fatalf("source dialled again in two offline hours (%d failures)", got)
+	}
+	serverHost.SetUnreachable(false)
+	w.waitFor("server login", func() bool { return b.events.lastNetwork().IsServerConnected })
+	requireEndedOK(t, w.waitEnded(b, 2))
+}

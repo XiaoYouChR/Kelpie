@@ -295,13 +295,14 @@ func (e *Engine) runTransfers(now time.Time) {
 	}
 }
 
-// isOffline: Kad has no verified node and no server is logged in, aMule's
-// !theApp->IsConnected(). Without Kad nothing tells when we are back: a
-// server that failed MAX_SERVERFAILCOUNT times is never tried again, and
-// the sources would wait forever, so then we never count as offline.
+// isOffline: no server is logged in and Kad has no verified node, aMule's
+// !theApp->IsConnected(). With no server listed and Kad off nothing tells
+// whether we are online and only link sources are known, which are then
+// asked as usual.
 func (e *Engine) isOffline() bool {
 	server, _ := e.server.Login()
-	return e.kad != nil && e.kadStatus.Nodes == 0 && !server.IsValid()
+	isKadUp := e.kad != nil && e.kadStatus.Nodes > 0
+	return (e.kad != nil || len(e.server.Entries()) > 0) && !server.IsValid() && !isKadUp
 }
 
 // connectBudget follows maxConnections and maxNewConnections.
