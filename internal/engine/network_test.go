@@ -138,6 +138,16 @@ func TestPortMappingTurnsOffAndOnWhileRunning(t *testing.T) {
 	}
 }
 
+// A report from a mapping turned off and on before it arrived is not taken
+// for the new mapping's.
+func TestStaleNATReportIsIgnored(t *testing.T) {
+	e := &Engine{stopNAT: func() {}, natDone: make(chan struct{})}
+	e.onNATOpened(natOpened{netip.MustParseAddr("203.0.113.9"), make(chan struct{})})
+	if e.mappedIP.IsValid() {
+		t.Fatalf("stale report taken: %v", e.mappedIP)
+	}
+}
+
 func TestSharedAddressOnTheGatewayIsCarrierNAT(t *testing.T) {
 	w := buildWorld(t)
 	a := w.addNode("198.51.100.1")

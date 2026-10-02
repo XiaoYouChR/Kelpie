@@ -541,7 +541,12 @@ type (
 		data     []byte
 		isServer bool
 	}
-	natOpened struct{ ip netip.Addr }
+	// done names the port mapping leaf that sent it, so a report from a
+	// mapping turned off and on again before it arrived is told apart.
+	natOpened struct {
+		ip   netip.Addr
+		done chan struct{}
+	}
 )
 
 // leafQueue is how the hub sends to a leaf without ever blocking: it puts
@@ -709,12 +714,12 @@ func (e *Engine) startNAT() {
 		if previous != nil {
 			<-previous
 		}
-		e.runNAT(ctx)
+		e.runNAT(ctx, done)
 	})
 }
 
 // runNAT holds the port mapping until ctx ends, then deletes it.
-func (e *Engine) runNAT(ctx context.Context) {
+func (e *Engine) runNAT(ctx context.Context, done chan struct{}) {
 	openCtx, cancel := context.WithTimeout(ctx, natTimeout)
 	unmap, ip, err := e.mapPorts(openCtx, e.tcpPort, e.udpPort)
 	cancel()
@@ -722,14 +727,15 @@ func (e *Engine) runNAT(ctx context.Context) {
 		log.Printf("engine: upnp: %v", err)
 		return
 	}
-	e.send(ctx, natOpened{ip})
+	e.send(ctx, natOpened{ip, done})
 	<-ctx.Done()
 	e.closeNAT(unmap)
 }
 
-// onNATOpened ignores a mapping turned off before its report came.
+// onNATOpened ignores a mapping turned off, or replaced, before its report
+// came.
 func (e *Engine) onNATOpened(m natOpened) {
-	if e.stopNAT == nil {
+	if e.stopNAT == nil || m.done != e.natDone {
 		return
 	}
 	e.mappedIP = m.ip
