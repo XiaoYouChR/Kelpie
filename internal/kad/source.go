@@ -65,6 +65,13 @@ type Status struct {
 	// test runs; IsUDPVerified says a test has ever finished.
 	IsUDPFirewalled bool
 	IsUDPVerified   bool
+	// PublicIP is our IPv4 address as the last KADEMLIA_FIREWALLED_RES
+	// said; invalid until one did.
+	PublicIP netip.Addr
+	// UDPPort is our Kad port as others reach it, which our Hello names:
+	// the port our NAT shows once a UDP test passed through it, else our
+	// own (aMule BaseClient.cpp:1182-1197).
+	UDPPort uint16
 }
 
 // Callback asks a firewalled source's buddy to have the source connect to

@@ -418,6 +418,12 @@ func TestFirewallCheckGatesPublishing(t *testing.T) {
 		t.Fatal("published before the firewall check passed")
 	}
 
+	public := netip.MustParseAddr("198.51.100.7")
+	h.receive(fwReqs[0].to, kadwire.FirewalledRes{Addr: public})
+	if got := h.c.status().PublicIP; got != public {
+		t.Fatalf("public IP %v, want %v from the firewall answer", got, public)
+	}
+
 	stranger := netip.MustParseAddrPort("10.200.0.1:4672")
 	h.receive(stranger, wire.Unknown{Proto: wire.ProtocolKad, Op: 0x59})
 	h.c.onFirewallAck(stranger.Addr())

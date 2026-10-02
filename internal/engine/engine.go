@@ -396,7 +396,7 @@ func (e *Engine) startKad(nodes []kad.Node) {
 		Nodes:     nodes,
 		Rand:      rand.New(rand.NewPCG(random.Uint64(), random.Uint64())),
 	})
-	e.kad, e.kadStatus = k, kad.Status{IsFirewalled: true}
+	e.kad, e.kadStatus = k, kad.Status{IsFirewalled: true, UDPPort: uint16(e.udpPort)}
 	ctx, cancel := context.WithCancel(e.ctx)
 	done := make(chan kad.State, 1)
 	go func() {

@@ -333,11 +333,17 @@ func (c *core) addHello(from netip.AddrPort, h kadwire.Hello, isVerified bool, n
 }
 
 func (c *core) status() Status {
+	port := c.udpPort
+	if c.udp.useExternPort && c.udp.externPort != 0 && c.udp.isVerified {
+		port = c.udp.externPort
+	}
 	return Status{
 		Nodes:           c.table.verifiedCount(),
 		IsFirewalled:    c.firewall.isFirewalled(),
 		IsUDPFirewalled: c.udp.isFirewalledNow(),
 		IsUDPVerified:   c.udp.isVerified,
+		PublicIP:        c.publicIP,
+		UDPPort:         port,
 	}
 }
 

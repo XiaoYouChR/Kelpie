@@ -287,11 +287,11 @@ func (e *Engine) startConnLeaves(c *conn) {
 }
 
 func (e *Engine) buildPeerConfig(c *conn) peer.Config {
-	server, clientID := e.server.Login()
+	server, serverID := e.server.Login()
 	cfg := peer.Config{
 		Self:        e.self,
 		Version:     e.config.Version,
-		ClientID:    clientID,
+		ClientID:    toHelloID(serverID, e.kadStatus),
 		PublicIP:    e.publicIP,
 		Port:        uint16(e.tcpPort),
 		UDPPort:     uint16(e.udpPort),
@@ -304,7 +304,7 @@ func (e *Engine) buildPeerConfig(c *conn) peer.Config {
 		CanAskSlot: e.canAskSlot,
 	}
 	if e.kad != nil {
-		cfg.KadPort = uint16(e.udpPort)
+		cfg.KadPort = e.kadStatus.UDPPort
 		cfg.KadVersion = kadVersion
 		if e.isFirewalled() {
 			cfg.Buddy = e.buddyAddr()
@@ -312,6 +312,23 @@ func (e *Engine) buildPeerConfig(c *conn) peer.Config {
 		cfg.HasDirectCallback = e.canDirectCallback()
 	}
 	return cfg
+}
+
+// toHelloID is the ID our Hello names, aMule's GetID (amule.cpp:3170-3187):
+// Kad's word that peers reach us beats a LowID from the server, and a
+// client that only a firewalled Kad connects is 1, which tells peers not to
+// connect to it.
+func toHelloID(serverID uint32, status kad.Status) uint32 {
+	isKadConnected := status.Nodes > 0
+	switch {
+	case isKadConnected && !status.IsFirewalled && status.PublicIP.Is4():
+		return wire.ToClientID(status.PublicIP)
+	case serverID != 0:
+		return serverID
+	case isKadConnected && status.IsFirewalled:
+		return 1
+	}
+	return 0
 }
 
 // countingReader counts the bytes of each frame for the rate limiter.

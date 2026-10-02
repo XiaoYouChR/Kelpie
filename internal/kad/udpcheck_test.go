@@ -165,3 +165,25 @@ func TestUDPCheckSkipsClientsWeTested(t *testing.T) {
 		t.Fatalf("asked %+v, a client we sent test packets to", next)
 	}
 }
+
+// Status names the Kad port our Hello tells peers: the one our NAT shows
+// once a UDP test came through it, else our own (aMule
+// BaseClient.cpp:1182-1197).
+func TestStatusNamesTheKadPortOthersReach(t *testing.T) {
+	h := buildHarness(t)
+	tester := startUDPCheck(t, h).Addr
+	if got := h.c.status().UDPPort; got != h.c.udpPort {
+		t.Fatalf("port %d before a test passed, want our own %d", got, h.c.udpPort)
+	}
+	h.receive(netip.AddrPortFrom(tester.Addr(), 4672), kadwire.FirewalledUDP{Port: 30000})
+	if got := h.c.status().UDPPort; got != 30000 {
+		t.Fatalf("port %d after a test came through the NAT's port, want 30000", got)
+	}
+
+	h = buildHarness(t)
+	tester = startUDPCheck(t, h).Addr
+	h.receive(netip.AddrPortFrom(tester.Addr(), 4672), kadwire.FirewalledUDP{Port: h.c.udpPort})
+	if got := h.c.status().UDPPort; got != h.c.udpPort {
+		t.Fatalf("port %d after a test came to our own port", got)
+	}
+}
