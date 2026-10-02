@@ -74,7 +74,7 @@ func TestRepairRedownloadsOnlyTheBadBlock(t *testing.T) {
 	}
 
 	before = len(h.actions)
-	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0)))
+	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0), h.now))
 	if closed := closedPeers(h.actions[before:]); !slices.Equal(closed, []uint64{2}) {
 		t.Fatalf("closed %v, want only the sender of the bad block", closed)
 	}
@@ -110,7 +110,7 @@ func TestRepairKeepsASenderMostlyGood(t *testing.T) {
 
 	h.fillPart(1, 2, 4)
 	before := len(h.actions)
-	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0)))
+	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0), h.now))
 	if closed := closedPeers(h.actions[before:]); len(closed) != 0 {
 		t.Fatalf("closed %v, but the bad block is under 32%% of what 2 sent", closed)
 	}
@@ -142,7 +142,7 @@ func TestRepairCountsAShortBadBlockWhole(t *testing.T) {
 	}
 
 	before := len(h.actions)
-	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0)))
+	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0), h.now))
 	if closed := closedPeers(h.actions[before:]); !slices.Equal(closed, []uint64{2}) {
 		t.Fatalf("closed %v, want the sender of the short bad block", closed)
 	}
@@ -166,7 +166,7 @@ func TestRepairAsksAnotherSourceThenGivesUp(t *testing.T) {
 	first := lastRecovery(t, h.actions[before:]).Peer
 
 	before = len(h.actions)
-	h.run(h.transfer.OnRecoveryFailed(first))
+	h.run(h.transfer.OnRecoveryFailed(first, h.now))
 	second := lastRecovery(t, h.actions[before:]).Peer
 	if second == first || second != 3 && second != 4 {
 		t.Fatalf("asked %d after %d failed", second, first)
@@ -198,7 +198,7 @@ func TestRecoveryFromAnotherRootIsRefused(t *testing.T) {
 	wrong := append([]byte(nil), data...)
 	wrong[0] ^= 1
 	before := len(h.actions)
-	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), buildTree(wrong).BuildRecovery(0)))
+	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), buildTree(wrong).BuildRecovery(0), h.now))
 	if countActions[transfer.HashBlocks](h.actions[before:]) != 0 || len(closedPeers(h.actions[before:])) != 0 {
 		t.Fatalf("recovery data of other content: %+v", h.actions[before:])
 	}
@@ -220,7 +220,7 @@ func TestRepairThatFindsNoBadBlockDropsTheRoot(t *testing.T) {
 	h.fillPart(1, 2, 0)
 
 	before := len(h.actions)
-	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0)))
+	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0), h.now))
 	if closed := closedPeers(h.actions[before:]); len(closed) != 0 {
 		t.Fatalf("closed %v, want nobody banned by a wrong root", closed)
 	}
@@ -295,16 +295,14 @@ func TestRecoveryAsksASourceOncePerMinRequestTime(t *testing.T) {
 		for peer := range uint64(4) {
 			h.connect(peer+1, int(peer+1), nil)
 		}
-		h.tick(transfer.Tick{Now: h.now})
 		h.transfer.OnRoot(3, tree.Root())
 		h.fillPart(1, 2, 4)
 		if got := lastRecovery(t, h.actions).Peer; got != 3 {
 			t.Fatalf("asked %d", got)
 		}
-		h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0)))
+		h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0), h.now))
 
 		h.now = h.now.Add(wait)
-		h.tick(transfer.Tick{Now: h.now})
 		before := len(h.actions)
 		for index := range piece.BlockCount(int64(len(data)), 1) {
 			h.transfer.OnPeerParts(4, piece.Set{false, true, false})

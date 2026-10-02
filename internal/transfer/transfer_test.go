@@ -84,7 +84,7 @@ func (h *harness) run(actions []transfer.Action) {
 			var hasher piece.MD4
 			r := piece.PartRange(int64(len(h.disk)), a.Part)
 			hasher.Write(h.disk[r.Begin:r.End])
-			actions = append(actions, h.transfer.OnPartHashed(a.Part, hasher.Digest())...)
+			actions = append(actions, h.transfer.OnPartHashed(a.Part, hasher.Digest(), h.now)...)
 		case transfer.HashBlocks:
 			var hasher aich.Hasher
 			r := piece.PartRange(int64(len(h.disk)), a.Part)
