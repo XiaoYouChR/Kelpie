@@ -145,6 +145,7 @@ type core struct {
 	rpcs        rpcs
 	lookups     []*lookup
 	index       index
+	flood       flood
 	firewall    firewall
 	udp         udpCheck
 	buddy       Buddy
@@ -172,6 +173,7 @@ func buildCore(cfg coreConfig, now time.Time) *core {
 		id: cfg.ID, userHash: cfg.UserHash, version: kadwire.Version, tcpPort: cfg.TCPPort, udpPort: cfg.UDPPort, udpKey: cfg.UDPKey, rng: cfg.Rand,
 		table:       buildTable(cfg.ID, now),
 		index:       index{files: map[wire.Hash]map[wire.Hash]indexed{}},
+		flood:       buildFlood(),
 		firewall:    firewall{isLastFirewalled: true, asked: map[netip.Addr]bool{}},
 		udp:         buildUDPCheck(),
 		buddySearch: buddySearch{next: now.Add(firstBuddySearch)},
@@ -399,8 +401,11 @@ func (c *core) sendPlain(to netip.AddrPort, p wire.Packet) {
 }
 
 // onPacket handles a packet from from and the keys its datagram carried.
+// A plain datagram from port 53 is dropped, as aMule does against DNS
+// protocol confusion (KademliaUDPListener.cpp:243).
 func (c *core) onPacket(from netip.AddrPort, p wire.Packet, k keys, now time.Time) output {
-	if from.Addr().Is4() {
+	isDNS := from.Port() == 53 && k.sender == 0
+	if from.Addr().Is4() && !isDNS && c.flood.matchAllowed(from.Addr(), p, now) {
 		c.reply.from, c.reply.key = from, k.sender
 		c.reply.hasVerifyKey = k.receiver == obfuscation.BuildKadVerifyKey(c.udpKey, from.Addr())
 		c.runPacket(from, p, now)
@@ -570,6 +575,7 @@ func (c *core) onTick(now time.Time) output {
 	c.runLookups(now)
 	if !now.Before(c.nextIndexCleanup) {
 		c.index.clearExpired(now)
+		c.flood.clearExpired(now)
 		c.nextIndexCleanup = now.Add(indexCleanupGap)
 	}
 	out := c.out
