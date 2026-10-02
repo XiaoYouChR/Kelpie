@@ -176,6 +176,26 @@ func lastOf[T Event](t *testing.T, e *side) T {
 	return all[len(all)-1]
 }
 
+// receivedBlocks joins the pieces handed over packet by packet into the
+// blocks they continue, leaving out hand-overs of payload alone.
+func receivedBlocks(e *side) []BlockReceived {
+	var blocks []BlockReceived
+	for _, r := range eventsOf[BlockReceived](e) {
+		if len(r.Data) == 0 {
+			continue
+		}
+		if n := len(blocks); n > 0 && blocks[n-1].File == r.File && blocks[n-1].Block.End == r.Block.Begin && r.Block.Begin%piece.PartSize%piece.BlockSize != 0 {
+			last := &blocks[n-1]
+			last.Block.End = r.Block.End
+			last.Data = append(slices.Clip(last.Data), r.Data...)
+			last.Payload += r.Payload
+			continue
+		}
+		blocks = append(blocks, r)
+	}
+	return blocks
+}
+
 func sentCount[T wire.Packet](l *link) int {
 	n := 0
 	for _, p := range l.sent {
@@ -402,7 +422,7 @@ func TestSlotGrantOnIncomingConnection(t *testing.T) {
 	blocks := []piece.Block{{Begin: 0, End: piece.BlockSize}, {Begin: piece.BlockSize, End: size}}
 	l.run(downloader, downloader.s.Request(file, blocks))
 	l.sendRequestedBlocks(uploader, file, data)
-	got := eventsOf[BlockReceived](downloader)
+	got := receivedBlocks(downloader)
 	if len(got) != 2 {
 		t.Fatalf("received %d blocks", len(got))
 	}
@@ -446,8 +466,8 @@ func TestPipelineStaysFull(t *testing.T) {
 	l.a.events = nil
 	b0 := block(0)
 	l.run(l.b, l.b.s.SendBlock(file, b0, data[b0.Begin:b0.End]))
-	if r := lastOf[BlockReceived](t, l.a); r.Block != b0 {
-		t.Fatalf("received %+v", r.Block)
+	if r := receivedBlocks(l.a); len(r) != 1 || r[0].Block != b0 {
+		t.Fatalf("received %d blocks, want only %+v", len(r), b0)
 	}
 	if w := lastOf[BlocksWanted](t, l.a); w.Count != 1 {
 		t.Fatalf("after one block wanted %+v", w)
@@ -547,8 +567,8 @@ func TestIncompressibleBlockSentPlain(t *testing.T) {
 	if sentCount[client.CompressedPart](l) != 0 || sentCount[client.SendingPart](l) != 18 {
 		t.Fatalf("sent %d plain packets", sentCount[client.SendingPart](l))
 	}
-	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) || r.Payload != size {
-		t.Fatalf("block differs or payload %d", r.Payload)
+	if r := receivedBlocks(l.a); len(r) != 1 || !bytes.Equal(r[0].Data, data) || r[0].Payload != size {
+		t.Fatal("block differs or payload is not the plain size")
 	}
 }
 
@@ -582,7 +602,7 @@ func TestUploadAndDownloadOnOneConnection(t *testing.T) {
 		}
 	}
 	matchReceived := func(e *side, file wire.Hash, data []byte) {
-		got := eventsOf[BlockReceived](e)
+		got := receivedBlocks(e)
 		if len(got) != 2 {
 			t.Fatalf("%d blocks received", len(got))
 		}
@@ -767,15 +787,35 @@ func startOneBlock(t *testing.T, l *link, isCompressible bool) (wire.Hash, []byt
 	return file, data, l.b.s.SendBlock(file, block, data).Send
 }
 
+// A plain packet is handed over as it extends what arrived from the block's
+// start, so Progress and the rate move before the block is complete.
+func TestPacketIsHandedOverAtOnce(t *testing.T) {
+	l := buildLink(t)
+	file, data, packets := startOneBlock(t, l, false)
+	l.run(l.b, Output{Send: packets[:1]})
+	got := lastOf[BlockReceived](t, l.a)
+	want := piece.Block{Begin: 0, End: partPacketSize}
+	if got.File != file || got.Block != want || !bytes.Equal(got.Data, data[:want.End]) || got.Payload != partPacketSize {
+		t.Fatalf("received %+v (%d bytes, payload %d)", got.Block, len(got.Data), got.Payload)
+	}
+}
+
 func TestSlotEndHandsOverReceivedPrefix(t *testing.T) {
 	l := buildLink(t)
 	file, data, packets := startOneBlock(t, l, false)
 	l.run(l.b, Output{Send: []wire.Packet{packets[1], packets[0], packets[3]}})
 	l.run(l.b, l.b.s.StopUpload())
-	got := lastOf[BlockReceived](t, l.a)
+	got := receivedBlocks(l.a)
 	want := piece.Block{Begin: 0, End: 2 * partPacketSize}
-	if got.File != file || got.Block != want || !bytes.Equal(got.Data, data[:want.End]) {
-		t.Fatalf("received %+v (%d bytes)", got.Block, len(got.Data))
+	if len(got) != 1 || got[0].File != file || got[0].Block != want || !bytes.Equal(got[0].Data, data[:want.End]) {
+		t.Fatalf("received %d blocks, want only %+v", len(got), want)
+	}
+	var payload int64
+	for _, r := range eventsOf[BlockReceived](l.a) {
+		payload += r.Payload
+	}
+	if payload != 3*partPacketSize {
+		t.Fatalf("payload %d, want the three packets", payload)
 	}
 	if q, ok := l.a.events[len(l.a.events)-1].(Queued); !ok || q.Rank != 0 {
 		t.Fatal("slot revoked before the prefix was handed over")
@@ -1087,7 +1127,7 @@ func TestRepeatedSlotKeepsRequestedBlocks(t *testing.T) {
 		t.Fatal("repeated request not accepted again")
 	}
 	l.sendRequestedBlocks(l.b, file, data)
-	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) {
+	if r := receivedBlocks(l.a); len(r) != 1 || !bytes.Equal(r[0].Data, data) {
 		t.Fatal("block requested before the repeated grant was dropped")
 	}
 }
@@ -1107,7 +1147,7 @@ func TestArchiveBlockSentPlain(t *testing.T) {
 	if sentCount[client.CompressedPart](l) != 0 {
 		t.Fatal("archive block compressed")
 	}
-	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) {
+	if r := receivedBlocks(l.a); len(r) != 1 || !bytes.Equal(r[0].Data, data) {
 		t.Fatal("block differs")
 	}
 }
