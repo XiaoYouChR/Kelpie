@@ -119,8 +119,9 @@ type Source struct {
 // Tick carries what OnTick needs to know about the engine.
 type Tick struct {
 	Now time.Time
-	// ConnectBudget is how many connections and callbacks this Transfer may
-	// start now.
+	// ConnectBudget is how many connections this Transfer may open now.
+	// Callbacks do not count: the peer connects to us (aMule 3.1.0 counts
+	// only the sockets it opens toward MaxConperFive).
 	ConnectBudget int
 	// Server is the server we are connected to; invalid when none.
 	Server netip.AddrPort
@@ -789,13 +790,15 @@ func (t *Transfer) requestConnect(s *source, budget *int, now time.Time) []Actio
 	default:
 		action = Connect{Endpoint: s.Endpoint, UserHash: s.UserHash, CanObfuscate: s.CanObfuscate}
 	}
-	if *budget <= 0 {
-		return nil
+	_, isConnect := action.(Connect)
+	if isConnect {
+		if *budget <= 0 {
+			return nil
+		}
+		*budget--
 	}
-	*budget--
 	s.state = stateConnecting
 	s.deadline = time.Time{}
-	_, isConnect := action.(Connect)
 	s.isDialledPlain = isConnect && !s.CanObfuscate
 	if !isConnect {
 		s.deadline = now.Add(callbackTimeout)

@@ -555,6 +555,18 @@ func TestLowIDSourceNeedsServerCallback(t *testing.T) {
 	}
 }
 
+// A callback is the peer connecting to us, so it needs no room in the
+// budget for connections we open.
+func TestCallbackNeedsNoConnectBudget(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+	server := endpoint(9999)
+	h.run(h.transfer.OnSourcesFound([]transfer.Source{{ClientID: 1234, Server: server}}, transfer.ChannelServer, start))
+	if got := h.tick(transfer.Tick{ConnectBudget: 0, Server: server}); countActions[transfer.RequestServerCallback](got) != 1 {
+		t.Fatalf("callback held back by a spent budget: %+v", got)
+	}
+}
+
 func TestSeedMode(t *testing.T) {
 	data := buildData(piece.PartSize + 100)
 	file := buildFile(data)
