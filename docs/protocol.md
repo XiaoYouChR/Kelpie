@@ -78,7 +78,8 @@ After `failed` the Engine Process exits with a non-zero status. Kelpie waits
   before `ended` if something changed. A consumer may keep only the newest one.
 - `received` counts the bytes written, verified or not. Rates are bytes per
   second. `uploaded` is the Transfer's total across all runs. `peers` counts
-  the sources not known to have failed; `activePeers` those sending to us now.
+  the sources not known to have failed; `activePeers` those of them sending
+  to us now, so it never exceeds `peers`.
 - Each run gets exactly one `ended`, and no `progress` after it. A run that is
   not admitted gets `ended` with its error and no `progress`. A download run
   ends with `error: null` when the file is complete and flushed to the device
