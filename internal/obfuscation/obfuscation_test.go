@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"io"
 	"math/big"
+	"math/rand/v2"
 	"net"
 	"testing"
 	"time"
@@ -16,6 +17,23 @@ import (
 )
 
 var user = wire.Hash{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+
+func buildRandom() *rand.Rand { return rand.New(rand.NewPCG(1, 2)) }
+
+// readPadding reads <PaddingLen 1><Padding> from r, the length byte
+// decrypted by XOR with keystream.
+func readPadding(t *testing.T, r io.Reader, keystream byte) int {
+	t.Helper()
+	var n [1]byte
+	if _, err := io.ReadFull(r, n[:]); err != nil {
+		t.Fatal(err)
+	}
+	length := int(n[0] ^ keystream)
+	if _, err := io.ReadFull(r, make([]byte, length)); err != nil {
+		t.Fatal(err)
+	}
+	return length
+}
 
 // buildPair is a loopback TCP connection: unlike net.Pipe it buffers, as the
 // handshake expects.
@@ -39,36 +57,75 @@ func buildPair(t *testing.T) (net.Conn, net.Conn) {
 }
 
 // The expected bytes were computed by an independent RC4 and MD5 following
-// eMule's EncryptedStreamSocket description; aMule clients that require
-// obfuscation accepted this handshake on the real network.
+// eMule's EncryptedStreamSocket description, with no padding; aMule clients
+// that require obfuscation accepted this handshake on the real network. The
+// padding length is the next byte, 0x14 encrypting 0.
 func TestOutgoingRequestBytes(t *testing.T) {
 	a, b := buildPair(t)
-	go OpenOutgoing(a, user, [4]byte{1, 2, 3, 4})
-	got := make([]byte, 12)
+	go OpenOutgoing(a, user, [4]byte{1, 2, 3, 4}, buildRandom())
+	got := make([]byte, 11)
 	if _, err := io.ReadFull(b, got); err != nil {
 		t.Fatal(err)
 	}
 	if matchPlain(got[0]) || !bytes.Equal(got[1:5], []byte{1, 2, 3, 4}) {
 		t.Fatalf("head %x", got[:5])
 	}
-	if want := "1716dcbe604f14"; hex.EncodeToString(got[5:]) != want {
+	if want := "1716dcbe604f"; hex.EncodeToString(got[5:]) != want {
 		t.Fatalf("request %x, want %s", got[5:], want)
 	}
+	readPadding(t, b, 0x14)
 }
 
 func TestIncomingAnswerBytes(t *testing.T) {
 	a, b := buildPair(t)
 	request, _ := hex.DecodeString("11010203041716dcbe604f14")
 	a.Write(request)
-	if _, err := OpenIncoming(b, user); err != nil {
+	if _, err := OpenIncoming(b, user, buildRandom()); err != nil {
 		t.Fatal(err)
 	}
-	got := make([]byte, 6)
+	got := make([]byte, 5)
 	if _, err := io.ReadFull(a, got); err != nil {
 		t.Fatal(err)
 	}
-	if want := "a3fb30fc2126"; hex.EncodeToString(got) != want {
+	if want := "a3fb30fc21"; hex.EncodeToString(got) != want {
 		t.Fatalf("answer %x, want %s", got, want)
+	}
+	readPadding(t, a, 0x26)
+}
+
+// Handshakes are padded to random lengths, as aMule pads them, so that
+// their length is no fingerprint: up to 254 bytes in a request to a client,
+// under 16 in an answer, which may go to a server testing our port.
+func TestHandshakePaddingVaries(t *testing.T) {
+	random := buildRandom()
+	requests, answers := map[int]bool{}, map[int]bool{}
+	for range 20 {
+		a, b := buildPair(t)
+		go OpenOutgoing(a, user, [4]byte{1, 2, 3, 4}, random)
+		io.ReadFull(b, make([]byte, 11))
+		requests[readPadding(t, b, 0x14)] = true
+
+		a, b = buildPair(t)
+		request, _ := hex.DecodeString("11010203041716dcbe604f14")
+		a.Write(request)
+		if _, err := OpenIncoming(b, user, random); err != nil {
+			t.Fatal(err)
+		}
+		io.ReadFull(a, make([]byte, 5))
+		answers[readPadding(t, a, 0x26)] = true
+	}
+	if len(requests) < 10 || len(answers) < 5 {
+		t.Fatalf("%d request and %d answer padding lengths in 20", len(requests), len(answers))
+	}
+	for n := range requests {
+		if n > maxPadding {
+			t.Fatalf("request padding %d", n)
+		}
+	}
+	for n := range answers {
+		if n > maxServerPadding {
+			t.Fatalf("answer padding %d", n)
+		}
 	}
 }
 
@@ -76,13 +133,13 @@ func TestRoundTrip(t *testing.T) {
 	a, b := buildPair(t)
 	incoming := make(chan net.Conn)
 	go func() {
-		c, err := OpenIncoming(b, user)
+		c, err := OpenIncoming(b, user, buildRandom())
 		if err != nil {
 			t.Error(err)
 		}
 		incoming <- c
 	}()
-	out, err := OpenOutgoing(a, user, [4]byte{9, 8, 7, 6})
+	out, err := OpenOutgoing(a, user, [4]byte{9, 8, 7, 6}, buildRandom())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +164,7 @@ func TestIncomingPlainPassesThrough(t *testing.T) {
 	a, b := buildPair(t)
 	hello := wire.BuildPacket(nil, wire.Unknown{Proto: wire.ProtocolEDonkey, Op: 0x01, Body: []byte("hello")})
 	a.Write(hello)
-	in, err := OpenIncoming(b, user)
+	in, err := OpenIncoming(b, user, buildRandom())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,8 +176,8 @@ func TestIncomingPlainPassesThrough(t *testing.T) {
 
 func TestWrongUserHashFails(t *testing.T) {
 	a, b := buildPair(t)
-	go OpenOutgoing(a, wire.Hash{1}, [4]byte{1, 2, 3, 4})
-	if _, err := OpenIncoming(b, user); err != errHandshake {
+	go OpenOutgoing(a, wire.Hash{1}, [4]byte{1, 2, 3, 4}, buildRandom())
+	if _, err := OpenIncoming(b, user, buildRandom()); err != errHandshake {
 		t.Fatalf("err %v", err)
 	}
 }
@@ -131,10 +188,11 @@ func TestOutgoingWaitsForAnswer(t *testing.T) {
 	a, b := buildPair(t)
 	opened := make(chan error)
 	go func() {
-		_, err := OpenOutgoing(a, user, [4]byte{1, 2, 3, 4})
+		_, err := OpenOutgoing(a, user, [4]byte{1, 2, 3, 4}, buildRandom())
 		opened <- err
 	}()
-	io.ReadFull(b, make([]byte, 12))
+	io.ReadFull(b, make([]byte, 11))
+	readPadding(t, b, 0x14)
 	select {
 	case err := <-opened:
 		t.Fatalf("returned before the answer: %v", err)
@@ -150,10 +208,10 @@ func TestOutgoingWaitsForAnswer(t *testing.T) {
 func TestOutgoingRejectsBadAnswer(t *testing.T) {
 	a, b := buildPair(t)
 	go func() {
-		io.ReadFull(b, make([]byte, 12))
+		io.ReadFull(b, make([]byte, 11))
 		b.Write([]byte{1, 2, 3, 4, 5, 6})
 	}()
-	if _, err := OpenOutgoing(a, user, [4]byte{1, 2, 3, 4}); err != errHandshake {
+	if _, err := OpenOutgoing(a, user, [4]byte{1, 2, 3, 4}, buildRandom()); err != errHandshake {
 		t.Fatalf("err %v", err)
 	}
 }
@@ -164,14 +222,15 @@ func TestOutgoingReadsPaddedAnswerAndPayload(t *testing.T) {
 	a, b := buildPair(t)
 	keyPart := [4]byte{1, 2, 3, 4}
 	go func() {
-		io.ReadFull(b, make([]byte, 12))
+		io.ReadFull(b, make([]byte, 11))
+		readPadding(t, b, 0x14)
 		answer := binary.LittleEndian.AppendUint32(nil, magicSync)
 		answer = append(answer, methodObfuscation, 3, 7, 7, 7)
 		answer = append(answer, "data"...)
 		buildCipher(user[:], []byte{magicServer}, keyPart[:]).XORKeyStream(answer, answer)
 		b.Write(answer)
 	}()
-	out, err := OpenOutgoing(a, user, keyPart)
+	out, err := OpenOutgoing(a, user, keyPart, buildRandom())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,13 +246,13 @@ func TestIncomingSendsOnlyTheAnswer(t *testing.T) {
 	a, b := buildPair(t)
 	request, _ := hex.DecodeString("11010203041716dcbe604f14")
 	a.Write(request)
-	if _, err := OpenIncoming(b, user); err != nil {
+	if _, err := OpenIncoming(b, user, buildRandom()); err != nil {
 		t.Fatal(err)
 	}
 	a.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	got, _ := io.ReadAll(a)
-	if len(got) != 6 {
-		t.Fatalf("sent %d bytes, want the 6-byte answer", len(got))
+	if want := 6 + int(got[5]^0x26); len(got) != want {
+		t.Fatalf("sent %d bytes, want the %d-byte answer", len(got), want)
 	}
 }
 
@@ -209,19 +268,22 @@ func TestServerHandshake(t *testing.T) {
 	clientSide, serverSide := buildPair(t)
 	opened := make(chan net.Conn)
 	go func() {
-		c, err := OpenServer(clientSide, secret, wire.ProtocolEDonkey)
+		c, err := OpenServer(clientSide, secret, wire.ProtocolEDonkey, buildRandom())
 		if err != nil {
 			t.Error(err)
 		}
 		opened <- c
 	}()
 
-	request := make([]byte, 98)
+	request := make([]byte, 97)
 	if _, err := io.ReadFull(serverSide, request); err != nil {
 		t.Fatal(err)
 	}
-	if matchPlain(request[0]) || request[97] != 0 {
-		t.Fatalf("marker %#x, padding %d", request[0], request[97])
+	if matchPlain(request[0]) {
+		t.Fatalf("marker %#x", request[0])
+	}
+	if n := readPadding(t, serverSide, 0); n > maxServerPadding {
+		t.Fatalf("request padding %d", n)
 	}
 	gA := new(big.Int).SetBytes(request[1:97])
 	if want := new(big.Int).Exp(big.NewInt(2), new(big.Int).SetBytes(secret[:]), prime); gA.Cmp(want) != 0 {
@@ -250,9 +312,12 @@ func TestServerHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	receive.XORKeyStream(reply, reply)
-	if binary.LittleEndian.Uint32(reply) != 0x835E6FC4 || reply[4] != 0 || reply[5] != 0 {
+	if binary.LittleEndian.Uint32(reply) != 0x835E6FC4 || reply[4] != 0 || reply[5] > maxServerPadding {
 		t.Fatalf("reply %x", reply)
 	}
+	padding := make([]byte, reply[5])
+	io.ReadFull(serverSide, padding)
+	receive.XORKeyStream(padding, padding)
 	c := <-opened
 	c.Write([]byte("login"))
 	got := make([]byte, 5)
@@ -273,11 +338,12 @@ func TestServerHandshake(t *testing.T) {
 func TestServerHandshakeRejectsBadMagic(t *testing.T) {
 	clientSide, serverSide := buildPair(t)
 	go func() {
-		io.ReadFull(serverSide, make([]byte, 98))
+		io.ReadFull(serverSide, make([]byte, 97))
+		readPadding(t, serverSide, 0)
 		serverSide.Write(make([]byte, 96+7))
 	}()
 	clientSide.SetDeadline(time.Now().Add(5 * time.Second))
-	if _, err := OpenServer(clientSide, [16]byte{1}, 0x55); err != errHandshake {
+	if _, err := OpenServer(clientSide, [16]byte{1}, 0x55, buildRandom()); err != errHandshake {
 		t.Fatalf("err = %v, want errHandshake", err)
 	}
 }

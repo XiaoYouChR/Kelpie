@@ -31,10 +31,9 @@ const (
 // EDonkeyVersion is the value every eMule-family client sends in CT_VERSION.
 const EDonkeyVersion = 0x3C
 
-// CT_MOD_MISCOPTIONS bits (emule-qt ipv6-spec §1.3).
+// CT_MOD_MISCOPTIONS bits Kelpie sends (emule-qt ipv6-spec §1.3).
 const (
 	ModMiscExtendedSources         uint32 = 0x01
-	ModMiscIPv6                    uint32 = 0x04
 	ModMiscExtendedSourcesSkipTags uint32 = 0x20
 )
 

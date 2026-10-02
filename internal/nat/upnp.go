@@ -228,32 +228,25 @@ func probeLocalIP(ctx context.Context, host string) (netip.Addr, error) {
 	return conn.LocalAddr().(*net.TCPAddr).AddrPort().Addr().Unmap(), nil
 }
 
+// parseServices takes every WANIPConnection and WANPPPConnection under the
+// gateway whatever version each level names, since routers mix IGD:1 and
+// IGD:2 parts (aMule UPnPBase.cpp TypeMatchesIgnoringVersion).
 func parseServices(base *url.URL, localIP netip.Addr, root upnpDevice) ([]service, error) {
-	var version string
-	switch root.DeviceType {
-	case gatewayTypes[0]:
-		version = "1"
-	case gatewayTypes[1]:
-		version = "2"
-	default:
+	if !matchType(root.DeviceType, "device:InternetGatewayDevice") {
 		return nil, fmt.Errorf("nat: [%s] malformed root device description: not an InternetGatewayDevice", base)
 	}
-	urns := []string{
-		"urn:schemas-upnp-org:service:WANIPConnection:" + version,
-		"urn:schemas-upnp-org:service:WANPPPConnection:" + version,
-	}
-
 	var services []service
 	for _, wan := range root.Devices {
-		if wan.DeviceType != "urn:schemas-upnp-org:device:WANDevice:"+version {
+		if !matchType(wan.DeviceType, "device:WANDevice") {
 			continue
 		}
 		for _, connection := range wan.Devices {
-			if connection.DeviceType != "urn:schemas-upnp-org:device:WANConnectionDevice:"+version {
+			if !matchType(connection.DeviceType, "device:WANConnectionDevice") {
 				continue
 			}
 			for _, s := range connection.Services {
-				if !slices.Contains(urns, s.Type) || s.ControlURL == "" {
+				isConnection := matchType(s.Type, "service:WANIPConnection") || matchType(s.Type, "service:WANPPPConnection")
+				if !isConnection || s.ControlURL == "" {
 					continue
 				}
 				controlURL, err := toControlURL(base, s.ControlURL)
@@ -268,6 +261,14 @@ func parseServices(base *url.URL, localIP netip.Addr, root upnpDevice) ([]servic
 		return nil, fmt.Errorf("nat: [%s] malformed device description: no compatible service descriptions found", base)
 	}
 	return services, nil
+}
+
+// matchType tells whether a UPnP type URN is of kind, such as
+// "device:WANDevice", in any version. The colon after kind keeps
+// WANIPConnection from matching WANIPConnectionFoo.
+func matchType(urn, kind string) bool {
+	prefix := "urn:schemas-upnp-org:" + kind + ":"
+	return len(urn) > len(prefix) && strings.EqualFold(urn[:len(prefix)], prefix)
 }
 
 // toControlURL keeps the description's scheme and host even for an absolute

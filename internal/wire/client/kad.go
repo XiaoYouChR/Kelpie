@@ -67,7 +67,9 @@ func parseCallback(r *wire.Reader) Callback {
 }
 
 // ReaskCallbackTCP is OP_REASKCALLBACKTCP: a buddy passes on the UDP reask
-// a downloader at Endpoint sent it for the firewalled client.
+// a downloader at Endpoint sent it for the firewalled client. An IPv6
+// Endpoint follows wire.IPv6Sentinel in place of the IPv4 address
+// (ipv6-spec §3.5.1).
 type ReaskCallbackTCP struct {
 	Endpoint netip.AddrPort
 	Ping     ReaskFilePing
@@ -75,12 +77,20 @@ type ReaskCallbackTCP struct {
 
 func (p ReaskCallbackTCP) Build(b []byte) []byte {
 	b = append(b, wire.ProtocolEMule, opReaskCallbackTCP)
-	b = binary.LittleEndian.AppendUint32(b, wire.ToClientID(p.Endpoint.Addr()))
+	if addr := p.Endpoint.Addr(); addr.Is6() {
+		b = wire.BuildIPv6(binary.LittleEndian.AppendUint32(b, wire.IPv6Sentinel), addr)
+	} else {
+		b = binary.LittleEndian.AppendUint32(b, wire.ToClientID(addr))
+	}
 	return buildFileRequest(binary.LittleEndian.AppendUint16(b, p.Endpoint.Port()), FileRequest(p.Ping))
 }
 
 func parseReaskCallbackTCP(r *wire.Reader) ReaskCallbackTCP {
-	p := ReaskCallbackTCP{Endpoint: netip.AddrPortFrom(wire.ToAddr(r.Uint32()), r.Uint16())}
+	addr := wire.ToAddr(r.Uint32())
+	if addr == wire.ToAddr(wire.IPv6Sentinel) {
+		addr = r.IPv6()
+	}
+	p := ReaskCallbackTCP{Endpoint: netip.AddrPortFrom(addr, r.Uint16())}
 	p.Ping = parseReaskFilePing(r)
 	return p
 }

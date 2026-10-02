@@ -3,6 +3,7 @@ package peer
 import (
 	"bytes"
 	"net/netip"
+	"strings"
 
 	"github.com/XiaoYouChR/Kelpie/internal/identity"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -18,11 +19,10 @@ const (
 	emuleProtocol          = 1 // EMULE_PROTOCOL
 )
 
+// buildHello names our version in CT_MOD_VERSION as well, since we send
+// CT_MOD_MISCOPTIONS: eMuleAI bans a sender of that tag that carries no
+// readable mod version (aMule PeerCapabilities.h:216-236).
 func (s *Session) buildHello() client.Hello {
-	modMisc := client.ModMiscExtendedSources | client.ModMiscExtendedSourcesSkipTags
-	if s.cfg.IPv6.IsValid() {
-		modMisc |= client.ModMiscIPv6
-	}
 	return client.Hello{
 		UserHash: s.cfg.Self.UserHash,
 		ClientID: s.cfg.ClientID,
@@ -30,6 +30,7 @@ func (s *Session) buildHello() client.Hello {
 		Server:   s.cfg.Server,
 		Name:     clientName,
 		Version:  client.EDonkeyVersion,
+		ModName:  clientName + " " + strings.TrimPrefix(s.cfg.Version, "v"),
 		UDPPort:  s.cfg.UDPPort,
 		KadPort:  s.cfg.KadPort,
 		Buddy:    s.cfg.Buddy,
@@ -38,7 +39,7 @@ func (s *Session) buildHello() client.Hello {
 			IsUnicode:               true,
 			UDPVersion:              udpVersion,
 			DataCompressionVersion:  dataCompressionVersion,
-			SecureIdentVersion:      identity.Support,
+			SecureIdentVersion:      s.identSupport(),
 			ExtendedRequestsVersion: client.ExtendedRequestsVersion,
 			IsSharedFilesHidden:     true,
 			HasMultiPacket:          true,
@@ -54,10 +55,19 @@ func (s *Session) buildHello() client.Hello {
 			IsCryptRequested:     true,
 		},
 		EmuleVersion: wire.ToEmuleVersion(s.cfg.Version),
-		ModMisc:      modMisc,
+		ModMisc:      client.ModMiscExtendedSources | client.ModMiscExtendedSourcesSkipTags,
 		YourIP:       s.remote.Addr(),
-		IPv6:         s.cfg.IPv6,
 	}
+}
+
+// identSupport is SecIdent::SupportedVersions (aMule SecIdentPolicy.h): a
+// v2 signature covers an IPv4 address both ends must agree on, so a peer
+// reached over IPv6 is offered v1 only.
+func (s *Session) identSupport() byte {
+	if s.remote.Addr().Is4() {
+		return identity.Support
+	}
+	return identity.Support &^ 2
 }
 
 // greeting is how far the exchange of Hellos got.
@@ -118,16 +128,17 @@ func (s *Session) onGreeting(p wire.Packet, out *Output) {
 func (s *Session) setHello(h client.Hello) {
 	s.caps = Capabilities{
 		UserHash:           h.UserHash,
-		ClientID:           h.ClientID,
+		ClientID:           toLowID(h.ClientID, s.remote.Addr()),
 		Port:               h.Port,
 		Server:             h.Server,
 		UDPPort:            h.UDPPort,
 		KadPort:            h.KadPort,
 		UDPVersion:         h.Misc1.UDPVersion,
 		KadVersion:         h.Misc2.KadVersion,
-		IPv6:               h.IPv6,
+		IPv6:               toPublicIPv6(h.IPv6),
 		MuleVersion:        toMuleVersion(h.EmuleVersion),
 		HasSourceExchange2: h.Misc2.HasSourceExchange2,
+		HasDirectCallback:  h.Misc2.HasDirectUDPCallback,
 		CryptOptions:       toCryptOptions(h.Misc2),
 	}
 	s.features = features{
@@ -143,6 +154,27 @@ func (s *Session) setHello(h client.Hello) {
 		hasExtendedSourcesSkipTags: h.ModMisc&client.ModMiscExtendedSourcesSkipTags != 0,
 		hasAICH:                    h.Misc1.AICHVersion&aichVersion != 0,
 	}
+}
+
+// toLowID is the peer's LowID, or 0 when it is reached at the address it
+// connected from. Like aMule (BaseClient.cpp:772), an ID of 0 is a HighID
+// peer with no server, and an ID equal to that address is a HighID such as
+// a.b.c.0, whose ID looks like a LowID.
+func toLowID(id uint32, remote netip.Addr) uint32 {
+	if !wire.IsLowID(id) || id == wire.ToClientID(remote) {
+		return 0
+	}
+	return id
+}
+
+// toPublicIPv6 keeps an IPv6 address the peer announced for itself only
+// when others can reach it: it goes on to them in Source Exchange
+// (ipv6-spec §3.2; aMule IsUsableTagIdentity).
+func toPublicIPv6(addr netip.Addr) netip.Addr {
+	if !addr.Is6() || addr.Is4In6() || !wire.IsPublic(addr) {
+		return netip.Addr{}
+	}
+	return addr
 }
 
 func toMuleVersion(emuleVersion uint32) byte {
@@ -189,7 +221,7 @@ func (s *Session) sendEmuleInfoAnswer(out *Output) {
 			tag(client.InfoUDPPort, uint32(s.cfg.UDPPort)),
 			tag(client.InfoExtendedRequest, client.ExtendedRequestsVersion),
 			tag(client.InfoCompatibleClient, version>>24),
-			tag(client.InfoFeatures, identity.Support),
+			tag(client.InfoFeatures, uint32(s.identSupport())),
 		},
 	})
 }
@@ -242,8 +274,13 @@ func (s *Session) sendIdentState(out *Output) {
 	out.send(client.SecureIdentState{State: client.SecureIdentNeedsKeyAndSignature, Challenge: s.ident.challenge})
 }
 
+// onIdentState signs no v2 challenge over IPv6, where the two ends cannot
+// agree on the IPv4 address it covers (SecIdent::SignatureVersion).
 func (s *Session) onIdentState(p client.SecureIdentState, out *Output) {
 	reply := identity.BuildReply(identity.State(p.State), s.features.secureIdent, wire.IsLowID(s.cfg.ClientID))
+	if reply.IPKind != 0 && !s.remote.Addr().Is4() {
+		return
+	}
 	if reply.ShouldSendKey {
 		out.send(client.PublicKey{Key: s.cfg.Self.PublicKey()})
 	}

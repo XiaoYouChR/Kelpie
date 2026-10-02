@@ -69,6 +69,35 @@ const igdV2Description = `<?xml version="1.0"?>
  </device>
 </root>`
 
+// mixedDescription is an IGD:2 gateway whose WANDevice and WANIPConnection
+// say version 1, as some routers have them.
+const mixedDescription = `<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+ <device>
+  <deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:2</deviceType>
+  <deviceList>
+   <device>
+    <deviceType>urn:schemas-upnp-org:device:WANDevice:1</deviceType>
+    <deviceList>
+     <device>
+      <deviceType>urn:schemas-upnp-org:device:WANConnectionDevice:2</deviceType>
+      <serviceList>
+       <service>
+        <serviceType>urn:schemas-upnp-org:service:WANIPConnectionFoo:1</serviceType>
+        <controlURL>/ctl/Foo</controlURL>
+       </service>
+       <service>
+        <serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+        <controlURL>/ctl/IPConn</controlURL>
+       </service>
+      </serviceList>
+     </device>
+    </deviceList>
+   </device>
+  </deviceList>
+ </device>
+</root>`
+
 const notGatewayDescription = `<?xml version="1.0"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
  <device><deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType></device>
@@ -330,6 +359,21 @@ func TestOpenSupportsIGDv2WithForeignHostInControlURL(t *testing.T) {
 	}
 }
 
+// Routers mix IGD:1 and IGD:2 levels; each is matched whatever its version
+// (aMule UPnPBase.cpp TypeMatchesIgnoringVersion).
+func TestOpenSupportsMixedIGDVersions(t *testing.T) {
+	gateway := newFakeGateway(t, mixedDescription, "/ctl/IPConn")
+
+	_, _, err := openAt(context.Background(), []string{gateway.location()}, buildMappings(4661, 0), "Kelpie")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	calls := gateway.callsOf("AddPortMapping")
+	if len(calls) != 1 || calls[0].urn != "urn:schemas-upnp-org:service:WANIPConnection:1" {
+		t.Fatalf("calls = %+v", calls)
+	}
+}
+
 func TestOpenRejectsNonGatewayDevice(t *testing.T) {
 	gateway := newFakeGateway(t, notGatewayDescription, "/ctl/IPConn")
 
@@ -385,6 +429,21 @@ func TestToControlURL(t *testing.T) {
 		got, err := toControlURL(base, controlURL)
 		if err != nil || got != want {
 			t.Errorf("toControlURL(%q) = %q, %v; want %q", controlURL, got, err, want)
+		}
+	}
+}
+
+func TestMatchType(t *testing.T) {
+	for urn, want := range map[string]bool{
+		"urn:schemas-upnp-org:service:WANIPConnection:1":    true,
+		"urn:schemas-upnp-org:service:WANIPConnection:2":    true,
+		"URN:schemas-upnp-org:service:wanipconnection:1":    true,
+		"urn:schemas-upnp-org:service:WANIPConnectionFoo:1": false,
+		"urn:schemas-upnp-org:service:WANIPConnection:":     false,
+		"urn:schemas-upnp-org:service:WANPPPConnection:1":   false,
+	} {
+		if got := matchType(urn, "service:WANIPConnection"); got != want {
+			t.Errorf("matchType(%q) = %v", urn, got)
 		}
 	}
 }

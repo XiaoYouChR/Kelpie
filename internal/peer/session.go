@@ -30,12 +30,12 @@ type Config struct {
 	Self identity.Self
 	// Version is Kelpie's "major.minor.update".
 	Version string
-	// ClientID is the id the server gave us: HighID, LowID, or 0 when no
-	// server is connected.
+	// ClientID is the ID our Hello names, as aMule's GetID picks it: a
+	// HighID, a LowID, 1 while only a firewalled Kad is connected, 0 with
+	// neither server nor Kad.
 	ClientID uint32
 	// PublicIP is our IPv4 address as the world sees it, if known.
 	PublicIP   netip.Addr
-	IPv6       netip.Addr
 	Port       uint16
 	UDPPort    uint16
 	KadPort    uint16
@@ -60,7 +60,8 @@ type Config struct {
 
 // Capabilities is what the peer told us about itself in the handshake.
 type Capabilities struct {
-	UserHash   wire.Hash
+	UserHash wire.Hash
+	// ClientID is the peer's LowID, 0 when it is a HighID.
 	ClientID   uint32
 	Port       uint16
 	Server     netip.AddrPort
@@ -68,12 +69,16 @@ type Capabilities struct {
 	KadPort    uint16
 	UDPVersion byte
 	KadVersion byte
-	IPv6       netip.Addr
+	// IPv6 is the public IPv6 address the peer announced, if any.
+	IPv6 netip.Addr
 	// MuleVersion is aMule's m_byEmuleVersion: 0x99 when Hello carried
 	// CT_EMULE_VERSION, else the OP_EMULEINFO version byte, else 0
 	// (BaseClient.cpp:631,884).
 	MuleVersion        byte
 	HasSourceExchange2 bool
+	// HasDirectCallback: the peer takes callback requests over UDP at its
+	// Kad port.
+	HasDirectCallback bool
 	// CryptOptions is the peer's obfuscation setting from its Hello, in
 	// Source's layout.
 	CryptOptions byte
@@ -171,7 +176,13 @@ func (s *Session) OnPacket(p wire.Packet, now time.Time) Output {
 	case client.EmuleInfo:
 		s.onEmuleInfo(p, &out)
 	case client.IPv6Changed:
-		s.caps.IPv6 = p.Addr
+		s.caps.IPv6 = toPublicIPv6(p.Addr)
+	case client.PublicIPRequest:
+		// A peer we reach over IPv6 has no IPv4 address to be told
+		// (ClientTCPSocket.cpp:1739).
+		if s.remote.Addr().Is4() {
+			out.send(client.PublicIPAnswer{Addr: s.remote.Addr()})
+		}
 	case client.SecureIdentState:
 		s.onIdentState(p, &out)
 	case client.PublicKey:

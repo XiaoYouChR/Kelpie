@@ -42,6 +42,11 @@ const (
 	// corrupt data stays refused.
 	banTime = 2 * time.Hour
 
+	// minRequestTime is MIN_REQUESTTIME (Constants.h:67): aMule 3.1.0 counts
+	// an OP_AICHREQUEST sooner than this after the client's last request as
+	// aggressive (ClientTCPSocket.cpp:1761-1771).
+	minRequestTime = 590 * time.Second
+
 	exchangeReaskSlow = 40 * time.Minute // SOURCECLIENTREASKS
 	exchangeReaskFast = 5 * time.Minute  // SOURCECLIENTREASKF
 	commonPenalty     = 4                // MINCOMMONPENALTY
@@ -102,8 +107,8 @@ type Source struct {
 	// its UserHash. What its Hello says replaces what a channel said, as
 	// aMule takes it from the Hello (BaseClient.cpp:350, 590).
 	CanObfuscate bool
-	// IsDirectCallback: a firewalled Kad source that takes callback
-	// requests itself, at the UDP endpoint in Buddy.
+	// IsDirectCallback: a firewalled source that takes callback requests
+	// itself, at the UDP endpoint in Buddy, as Kad or its Hello said.
 	IsDirectCallback bool
 	// CanReaskUDP and CanExchange are known only from the Hello.
 	CanReaskUDP bool
@@ -152,6 +157,10 @@ type source struct {
 
 	lastAsked    time.Time
 	lastExchange time.Time
+	// lastRecovery is when we last asked the source for AICH recovery
+	// data: one bad part after another would otherwise ask it within
+	// minRequestTime.
+	lastRecovery time.Time
 
 	udpReasks int
 	udpFailed int
@@ -311,13 +320,15 @@ func (t *Transfer) isValid(s *source) bool {
 }
 
 // canReach mirrors requestConnect: callbacks need us reachable, and a server
-// callback needs the source on our server.
+// callback needs the source on our server. A LowID peer on no server, as a
+// firewalled Kad client names itself 1 in its Hello, has none to call
+// through.
 func (t *Transfer) canReach(s *source) bool {
 	switch {
 	case s.Buddy.IsValid():
 		return !t.tick.IsFirewalled
 	case s.ClientID != 0:
-		return !t.tick.IsFirewalled && s.Server == t.tick.Server
+		return !t.tick.IsFirewalled && s.Server.IsValid() && s.Server == t.tick.Server
 	default:
 		return true
 	}
@@ -367,15 +378,20 @@ func (t *Transfer) setFailed(s *source, wait time.Duration, reason string, now t
 // OnPeerConnected attaches a connection that is about this file, whether we
 // opened it, a callback made the source connect, or the peer came on its own.
 // hello is what the peer said about itself; its Endpoint has the peer's TCP
-// listen port.
+// listen port. A LowID peer that takes direct callbacks is called back that
+// way from now on, before its server or buddy, as aMule does for any LowID
+// client (BaseClient.cpp:1718-1747).
 func (t *Transfer) OnPeerConnected(peer uint64, hello Source, now time.Time) []Action {
 	if !t.isDownloading() {
 		return nil
 	}
 	found := Source{Endpoint: hello.Endpoint, UserHash: hello.UserHash, UDPPort: hello.UDPPort}
-	if wire.IsLowID(hello.ClientID) {
+	if hello.ClientID != 0 {
 		found.ClientID = hello.ClientID
 		found.Server = hello.Server
+	}
+	if hello.IsDirectCallback {
+		found.Buddy, found.IsDirectCallback = hello.Buddy, true
 	}
 	if t.isBanned(found, now) {
 		return []Action{Close{Peer: peer, Reason: "banned"}}
@@ -404,6 +420,9 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Source, now time.Time) []A
 	s.CanReaskUDP = hello.CanReaskUDP
 	s.CanExchange = hello.CanExchange
 	s.CanObfuscate = hello.CanObfuscate
+	if hello.IsDirectCallback {
+		s.Buddy, s.IsDirectCallback = hello.Buddy, true
+	}
 	s.state = stateAsking
 	s.a4afUntil = time.Time{}
 	s.lastAsked = now

@@ -41,6 +41,8 @@ const (
 	opSecureIdentState  byte = 0x87
 	opMultiPacket       byte = 0x92
 	opMultiPacketAnswer byte = 0x93
+	opPublicIPRequest   byte = 0x97
+	opPublicIPAnswer    byte = 0x98
 	opCompressedPart64  byte = 0xA1
 	opSendingPart64     byte = 0xA2
 	opRequestParts64    byte = 0xA3
@@ -204,6 +206,10 @@ func parseEMule(r *wire.Reader, opcode byte) wire.Packet {
 		return AICHRequest{Hash: r.Hash(), Part: r.Uint16(), Root: r.AICHHash()}
 	case opAICHAnswer:
 		return parseAICHAnswer(r)
+	case opPublicIPRequest:
+		return PublicIPRequest{}
+	case opPublicIPAnswer:
+		return PublicIPAnswer{Addr: wire.ToAddr(r.Uint32())}
 	case opIPv6Changed:
 		// emule-qt accepts it under either protocol byte; so do we.
 		return IPv6Changed{Addr: r.IPv6()}

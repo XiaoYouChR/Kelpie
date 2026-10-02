@@ -41,6 +41,8 @@ type scriptedConn struct {
 	// receivedAt is when each packet in received arrived, on the fake clock.
 	receivedAt []time.Time
 	events     []peer.Event
+	// isClosed: the engine closed the connection, or it failed.
+	isClosed bool
 }
 
 func (w *world) addScriptedPeer(ip string, f testFile) *scriptedPeer {
@@ -119,6 +121,11 @@ func (p *scriptedPeer) run(netConn net.Conn, session *peer.Session, first peer.O
 	p.perform(c, first)
 	p.mu.Unlock()
 	go func() {
+		defer func() {
+			p.mu.Lock()
+			c.isClosed = true
+			p.mu.Unlock()
+		}()
 		r := bufio.NewReader(netConn)
 		for {
 			frame, err := wire.ParseFrameFrom(r)

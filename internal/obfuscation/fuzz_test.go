@@ -51,7 +51,7 @@ func FuzzOpenIncoming(f *testing.F) {
 		if isEncrypted && len(head) >= 5 {
 			data = append(append([]byte(nil), head...), encrypt(rest, user[:], []byte{magicRequester}, head[1:5])...)
 		}
-		if conn, err := OpenIncoming(&peerConn{r: bytes.NewReader(data)}, user); err == nil {
+		if conn, err := OpenIncoming(&peerConn{r: bytes.NewReader(data)}, user, buildRandom()); err == nil {
 			readAll(conn)
 		}
 	})
@@ -72,7 +72,7 @@ func FuzzOpenOutgoing(f *testing.F) {
 		if isEncrypted {
 			data = encrypt(data, user[:], []byte{magicServer}, keyPart[:])
 		}
-		if conn, err := OpenOutgoing(&peerConn{r: bytes.NewReader(data)}, user, keyPart); err == nil {
+		if conn, err := OpenOutgoing(&peerConn{r: bytes.NewReader(data)}, user, keyPart, buildRandom()); err == nil {
 			readAll(conn)
 		}
 	})
@@ -96,7 +96,7 @@ func FuzzOpenServer(f *testing.F) {
 			shared := new(big.Int).Exp(new(big.Int).SetBytes(public), new(big.Int).SetBytes(secret[:]), dhPrime).FillBytes(make([]byte, primeSize))
 			data = append(append([]byte(nil), public...), encrypt(rest, shared, []byte{magicServer})...)
 		}
-		if conn, err := OpenServer(&peerConn{r: bytes.NewReader(data)}, secret, 0x10); err == nil {
+		if conn, err := OpenServer(&peerConn{r: bytes.NewReader(data)}, secret, 0x10, buildRandom()); err == nil {
 			readAll(conn)
 		}
 	})

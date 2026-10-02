@@ -343,10 +343,9 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 			e.requestServerCallback(a.ClientID)
 		case transfer.RequestKadCallback:
 			switch {
-			case e.kad == nil:
 			case a.IsDirect:
 				e.requestDirectCallback(a.Buddy, a.UserHash, a.CanObfuscate)
-			default:
+			case e.kad != nil:
 				e.kad.Post(toKadCallback(a, r.file.Hash))
 			}
 		case transfer.RequestSources:

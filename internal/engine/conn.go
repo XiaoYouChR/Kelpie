@@ -2,11 +2,13 @@ package engine
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"maps"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"slices"
@@ -79,6 +81,10 @@ type conn struct {
 	// is later than the session completes it: within the Output that carries
 	// HandshakeCompleted the transfers do not know the peer yet.
 	isHandshaken bool
+	// handshakenAt is when that was. Only its age tells a peer that dialled
+	// us while we dialled it from one that came back after losing an older
+	// connection; see closeDuplicate.
+	handshakenAt time.Time
 	isClosed     bool
 }
 
@@ -122,6 +128,7 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 	var secret [16]byte
 	binary.LittleEndian.PutUint64(secret[:8], e.ports.Rand.Uint64())
 	binary.LittleEndian.PutUint64(secret[8:], e.ports.Rand.Uint64())
+	random := e.buildLeafRandom()
 	dial := c.remote
 	if obfuscationPort != 0 {
 		dial = netip.AddrPortFrom(c.remote.Addr(), obfuscationPort)
@@ -137,11 +144,11 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 		case err != nil:
 		case obfuscationPort != 0:
 			netConn, err = openObfuscated(c.ctx, netConn, func(c net.Conn) (net.Conn, error) {
-				return obfuscation.OpenServer(c, secret, keyPart[0])
+				return obfuscation.OpenServer(c, secret, keyPart[0], random)
 			})
 		case obfuscateFor != wire.Hash{}:
 			netConn, err = openObfuscated(c.ctx, netConn, func(c net.Conn) (net.Conn, error) {
-				return obfuscation.OpenOutgoing(c, obfuscateFor, keyPart)
+				return obfuscation.OpenOutgoing(c, obfuscateFor, keyPart, random)
 			})
 		}
 		if !e.send(c.ctx, connOpened{c.id, netConn, err}) && netConn != nil {
@@ -199,7 +206,9 @@ func (e *Engine) refreshUploadEndpoints() {
 	})
 }
 
-func (e *Engine) runAcceptor() {
+// runAcceptor takes random from the hub, since it cannot share the hub's;
+// each connection's leaf gets one of its own from it.
+func (e *Engine) runAcceptor(random *rand.Rand) {
 	self := e.self.UserHash
 	handshakes := make(chan struct{}, maxIncomingHandshakes)
 	for {
@@ -212,8 +221,9 @@ func (e *Engine) runAcceptor() {
 		if err != nil {
 			return
 		}
+		connRandom := rand.New(rand.NewPCG(random.Uint64(), random.Uint64()))
 		e.startLeaf(func() {
-			e.runIncoming(netConn, remote, self)
+			e.runIncoming(netConn, remote, self, connRandom)
 			<-handshakes
 		})
 	}
@@ -221,9 +231,9 @@ func (e *Engine) runAcceptor() {
 
 // runIncoming waits for an accepted connection's first bytes, which tell
 // whether the peer obfuscates, before the hub sees the connection.
-func (e *Engine) runIncoming(netConn net.Conn, remote netip.AddrPort, self wire.Hash) {
+func (e *Engine) runIncoming(netConn net.Conn, remote netip.AddrPort, self wire.Hash, random *rand.Rand) {
 	conn, err := openObfuscated(e.ctx, netConn, func(c net.Conn) (net.Conn, error) {
-		return obfuscation.OpenIncoming(c, self)
+		return obfuscation.OpenIncoming(c, self, random)
 	})
 	if err == nil && !e.send(e.ctx, connAccepted{conn, remote}) {
 		netConn.Close()
@@ -282,11 +292,11 @@ func (e *Engine) startConnLeaves(c *conn) {
 }
 
 func (e *Engine) buildPeerConfig(c *conn) peer.Config {
-	server, clientID := e.server.Login()
+	server, serverID := e.server.Login()
 	cfg := peer.Config{
 		Self:        e.self,
 		Version:     e.config.Version,
-		ClientID:    clientID,
+		ClientID:    toHelloID(serverID, e.kadStatus),
 		PublicIP:    e.publicIP,
 		Port:        uint16(e.tcpPort),
 		UDPPort:     uint16(e.udpPort),
@@ -299,7 +309,7 @@ func (e *Engine) buildPeerConfig(c *conn) peer.Config {
 		CanAskSlot: e.canAskSlot,
 	}
 	if e.kad != nil {
-		cfg.KadPort = uint16(e.udpPort)
+		cfg.KadPort = e.kadStatus.UDPPort
 		cfg.KadVersion = kadVersion
 		if e.isFirewalled() {
 			cfg.Buddy = e.buddyAddr()
@@ -307,6 +317,23 @@ func (e *Engine) buildPeerConfig(c *conn) peer.Config {
 		cfg.HasDirectCallback = e.canDirectCallback()
 	}
 	return cfg
+}
+
+// toHelloID is the ID our Hello names, aMule's GetID (amule.cpp:3170-3187):
+// Kad's word that peers reach us beats a LowID from the server, and a
+// client that only a firewalled Kad connects is 1, which tells peers not to
+// connect to it.
+func toHelloID(serverID uint32, status kad.Status) uint32 {
+	isKadConnected := status.Nodes > 0
+	switch {
+	case isKadConnected && !status.IsFirewalled && status.PublicIP.Is4():
+		return wire.ToClientID(status.PublicIP)
+	case serverID != 0:
+		return serverID
+	case isKadConnected && status.IsFirewalled:
+		return 1
+	}
+	return 0
 }
 
 // countingReader counts the bytes of each frame for the rate limiter.
@@ -620,7 +647,10 @@ func (e *Engine) requestTree(file wire.Hash) {
 }
 
 func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
-	c.isHandshaken = true
+	c.isHandshaken, c.handshakenAt = true, e.now()
+	if !e.closeDuplicate(c) {
+		return
+	}
 	caps := c.session.Capabilities()
 	user := caps.UserHash
 	// A peer's view fills in an unknown address or replaces the gateway's,
@@ -657,6 +687,53 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	}
 }
 
+// closeDuplicate closes one of two connections to the same client, by user
+// hash and endpoint, and tells whether c stays. Like aMule's
+// AttachToAlreadyKnown (ClientList.cpp:372-445) the new one stays: a client
+// that comes back, say to give us a slot, may have lost the old one without
+// us knowing. When both ends dialled each other at once, each keeping its
+// newer connection could close both; so while the older one is younger than
+// CONNECTION_TIMEOUT, both ends keep the one the client with the smaller
+// user hash opened, aMule's rule for the same race over uTP (UtpDialPolicy.h
+// ShouldKeepFoundUtp). A closed c hands its downloads to the one kept. A
+// Kad check or the buddy link is tied to its connection; those are left
+// alone.
+func (e *Engine) closeDuplicate(c *conn) bool {
+	old := e.duplicateConn(c)
+	if old == nil || old.kadCheck != nil || c.kadCheck != nil || old == e.buddy.conn || c == e.buddy.conn {
+		return true
+	}
+	isOldKept := false
+	if old.isOutgoing != c.isOutgoing && e.now().Sub(old.handshakenAt) < connectTimeout {
+		user := c.session.Capabilities().UserHash
+		isOursKept := bytes.Compare(e.self.UserHash[:], user[:]) < 0
+		isOldKept = old.isOutgoing == isOursKept
+	}
+	if !isOldKept {
+		e.closeConn(old, "duplicate")
+		return true
+	}
+	files := c.session.Files()
+	e.closeConn(c, "duplicate")
+	for _, h := range files {
+		if r := e.downloadByHash(h); r != nil && !old.isClosed {
+			e.addFile(old, r)
+		}
+	}
+	return false
+}
+
+// duplicateConn is another handshaken connection to c's client.
+func (e *Engine) duplicateConn(c *conn) *conn {
+	user := c.session.Capabilities().UserHash
+	for _, other := range e.conns {
+		if other != c && other.isHandshaken && other.session.Capabilities().UserHash == user && other.endpoint() == c.endpoint() {
+			return other
+		}
+	}
+	return nil
+}
+
 // isReaskDue tells whether a connection the peer opened may carry our file
 // request for r. aMule sends it on an incoming connection only when it was
 // about to ask that source anyway (BaseClient.cpp:1688-1702); asking again
@@ -668,6 +745,8 @@ func (e *Engine) isReaskDue(r *run, user wire.Hash) bool {
 }
 
 // addTransferPeer tells a download that a handshaken connection serves it.
+// A LowID peer that takes direct callbacks gets them at its Kad port on the
+// IPv4 address it connected from (BaseClient.cpp:1718).
 func (e *Engine) addTransferPeer(c *conn, r *run) {
 	caps := c.session.Capabilities()
 	user := caps.UserHash
@@ -681,6 +760,9 @@ func (e *Engine) addTransferPeer(c *conn, r *run) {
 		CanReaskUDP:  caps.UDPVersion > 0 && caps.UDPPort != 0,
 		CanExchange:  caps.HasSourceExchange2,
 		CanObfuscate: wire.CanObfuscate(caps.CryptOptions, user),
+	}
+	if caps.ClientID != 0 && caps.HasDirectCallback && caps.KadPort != 0 && c.remote.Addr().Is4() {
+		hello.Buddy, hello.IsDirectCallback = netip.AddrPortFrom(c.remote.Addr(), caps.KadPort), true
 	}
 	e.runTransferActions(r, r.transfer.OnPeerConnected(c.id, hello, e.now()))
 }
@@ -793,7 +875,7 @@ func toUploadPeer(c *conn) upload.Peer {
 		User:        caps.UserHash,
 		IP:          c.remote.Addr(),
 		UDPPort:     caps.UDPPort,
-		IsLowID:     wire.IsLowID(caps.ClientID),
+		IsLowID:     caps.ClientID != 0,
 		MuleVersion: caps.MuleVersion,
 	}
 }
@@ -837,14 +919,13 @@ func (e *Engine) buildPeerSources(file wire.Hash, asking *conn, askerParts piece
 			continue
 		}
 		caps := c.session.Capabilities()
-		isLowID := caps.ClientID != 0 && wire.IsLowID(caps.ClientID)
-		if isSeed && (c.uploadFile != file || isLowID || !matchNeededSource(c.uploadParts, askerParts)) ||
+		if isSeed && (c.uploadFile != file || caps.ClientID != 0 || !matchNeededSource(c.uploadParts, askerParts)) ||
 			!isSeed && !slices.Contains(c.session.Files(), file) {
 			continue
 		}
 		src := peer.Source{Port: caps.Port, UserHash: caps.UserHash, IPv6: caps.IPv6, CryptOptions: caps.CryptOptions}
 		switch {
-		case !wire.IsLowID(caps.ClientID) && c.remote.Addr().Is4():
+		case caps.ClientID == 0 && c.remote.Addr().Is4():
 			src.IPv4 = c.remote.Addr()
 		case caps.ClientID != 0 && caps.Server.IsValid():
 			src.LowID, src.Server = caps.ClientID, caps.Server
