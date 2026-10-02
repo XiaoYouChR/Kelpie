@@ -120,6 +120,9 @@ type Engine struct {
 	buddy     buddy
 	listener  transport.Listener
 	udp       transport.PacketConn
+	// serverUDP is server UDP's own socket, as aMule 3.1.0 has: on the
+	// shared one Kad took a server's obfuscated answer, which can start
+	// with a Kad byte, for its own.
 	serverUDP transport.PacketConn
 	tcpPort   int
 	udpPort   int
@@ -521,7 +524,9 @@ type (
 		file    wire.Hash
 		payload int64
 	}
-	traceWritten     struct{}
+	traceWritten struct{}
+	// isServer: the datagram came on serverUDP, so it is the server's
+	// whatever its first byte.
 	datagramReceived struct {
 		from     netip.AddrPort
 		data     []byte
