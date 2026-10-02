@@ -38,7 +38,13 @@ async def start(link: Link, setup: Setup) -> AsyncIterator[Callable[[], Awaitabl
         nodeLists=(setup.nodesDat,),
         traceFile=setup.traceFile,
     )
-    engine = kelpie.Kelpie(lambda: executable, setup.stateFolder, lambda: settings)
+    network: kelpie.Network | None = None
+
+    def setNetwork(value: kelpie.Network | None) -> None:
+        nonlocal network
+        network = value
+
+    engine = kelpie.Kelpie(lambda: executable, setup.stateFolder, lambda: settings, setNetwork)
     latest = Sample(received=0, peers=0, activePeers=0, isComplete=False, network="starting")
     try:
         async with engine.runDownload(kelpie.Link.parse(link.text), setup.folder / link.name) as run:
@@ -54,7 +60,6 @@ async def start(link: Link, setup: Setup) -> AsyncIterator[Callable[[], Awaitabl
             async def probe() -> Sample:
                 if supervising.done():
                     supervising.result()
-                network = engine.network
                 return Sample(
                     latest.received, latest.peers, latest.activePeers, latest.isComplete,
                     network=("" if network is None else
