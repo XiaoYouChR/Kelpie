@@ -2,7 +2,6 @@ package engine
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net/netip"
 	"runtime"
@@ -11,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/XiaoYouChR/Kelpie/internal/kad"
 	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -64,38 +62,13 @@ func (w *world) joinKad(nodes ...*node) {
 	}
 }
 
-// startBareKad runs a Kad node without an engine at ip.
-func (w *world) startBareKad(ip string, id wire.Hash, known ...kadNode) kadNode {
-	addr := netip.MustParseAddr(ip)
-	state := store.Kad{ID: id, UDPKey: uint32(addr.As4()[3])}
-	for _, k := range known {
-		state.Nodes = append(state.Nodes, store.KadNode{ID: k.id, Addr: k.addr, Version: k.version})
-	}
-	k := kad.BuildKad(kad.Config{
-		Transport: w.network.AddHost(addr), Clock: w.clock, Port: kadPort, TCPPort: peerPort,
-		UserHash: wire.Hash{0xBA, addr.As4()[3]}, State: state,
-	})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		k.Run(ctx)
-	}()
-	w.t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-	return kadNode{id: id, addr: netip.AddrPortFrom(addr, kadPort), version: kadwire.Version}
-}
-
 // guideVersion keeps the guide's datagrams plain: nodes obfuscate only to
 // Kad 6 and up.
 const guideVersion = 5
 
 // startTesterGuide runs a scripted Kad node at ip that answers every
-// routing request with two clients the asker has not heard of yet, from
-// testers, the way the real network keeps naming strangers. Those clients
-// become the asker's UDP test clients.
+// routing request with all of testers. Those clients become the asker's UDP
+// test clients.
 func (w *world) startTesterGuide(ip string, id wire.Hash, testers []netip.Addr) kadNode {
 	addr := netip.MustParseAddr(ip)
 	conn, err := w.network.AddHost(addr).OpenUDP(kadPort)
@@ -106,7 +79,6 @@ func (w *world) startTesterGuide(ip string, id wire.Hash, testers []netip.Addr) 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		named := map[netip.Addr]int{}
 		buf := make([]byte, 65536)
 		for {
 			n, from, err := conn.ReadFrom(buf)
@@ -128,11 +100,9 @@ func (w *world) startTesterGuide(ip string, id wire.Hash, testers []netip.Addr) 
 				reply = kadwire.Pong{UDPPort: from.Port()}
 			case kadwire.Req:
 				res := kadwire.Res{Target: p.Target}
-				for range 2 {
-					i := named[from.Addr()] % len(testers)
-					named[from.Addr()]++
+				for i, tester := range testers {
 					res.Contacts = append(res.Contacts, kadwire.Contact{
-						ID: wire.Hash{0x7E, byte(i)}, Addr: testers[i], UDPPort: kadPort, TCPPort: peerPort, Version: kadwire.Version,
+						ID: wire.Hash{0x7E, byte(i)}, Addr: tester, UDPPort: kadPort, TCPPort: peerPort, Version: kadwire.Version,
 					})
 				}
 				reply = res
@@ -182,9 +152,23 @@ func invert(id wire.Hash) wire.Hash {
 }
 
 // kadWorld is a small Kad network around a LowID seeder: an open Kelpie
-// whose Kad ID makes it the seeder's buddy candidate,
-// a downloader, a bare Kad node near the file that stores sources, and a
-// guide that names six UDP test clients.
+// whose Kad ID makes it the seeder's buddy candidate, a downloader, a storer
+// near the file that stores sources, a checker, and a guide that names six
+// UDP test clients.
+//
+// In a network this small the open nodes ask each other for firewall
+// checks at once, and a node does not acknowledge over a connection the
+// asker opened. So that each open node still gets its two
+// acknowledgements, the storer and the checker are LowID, which nobody can
+// connect to first, and the testers are behind a UDP NAT that only the
+// guide gets through: nobody else hears back from them, so nobody verifies
+// them or asks them for a check.
+//
+// Each node has a /24 of its own, but the testers share one: Kad lets at
+// most two contacts of a /24 into a leaf of its routing table, so however
+// often the guide names them, most testers stay strangers, as a UDP test
+// needs. The testers know only the guide, so that they stay connected to Kad
+// rather than bootstrapping through the Kad port of an asker.
 type kadWorld struct {
 	seeder, buddy, downloader *node
 	seederID                  wire.Hash
@@ -198,26 +182,26 @@ func (w *world) buildKadWorld(f testFile, isSeederUDPFirewalled bool) kadWorld {
 	}
 	var testerIPs []netip.Addr
 	for i := range 6 {
-		testerIPs = append(testerIPs, netip.MustParseAddr(fmt.Sprintf("198.51.100.%d", 21+i)))
+		testerIPs = append(testerIPs, netip.MustParseAddr(fmt.Sprintf("198.51.106.%d", 21+i)))
 	}
-	guide := w.startTesterGuide("198.51.100.11", wire.Hash{0x60}, testerIPs)
-	// The testers know only the guide, so that they stay connected to Kad
-	// and strangers to the others, rather than bootstrapping through the
-	// Kad port of the seeder that asks them for a UDP test.
+	guide := w.startTesterGuide("198.51.105.11", wire.Hash{0x60}, testerIPs)
 	for i, ip := range testerIPs {
 		tester := w.addNode(ip.String())
+		tester.host.SetUDPFirewalled(true)
 		tester.setKad(wire.Hash{0x7E, byte(i)}, guide)
 		tester.start()
 	}
-	k := kadWorld{seeder: w.addNode("198.51.100.1"), buddy: w.addNode("198.51.100.2"), downloader: w.addNode("198.51.100.3"), seederID: wire.Hash{0x10, 0x01}}
-	k.seeder.host.SetLowID(true)
+	k := kadWorld{seeder: w.addNode("198.51.100.1"), buddy: w.addNode("198.51.101.2"), downloader: w.addNode("198.51.102.3"), seederID: wire.Hash{0x10, 0x01}}
+	storer, checker := w.addNode("198.51.103.10"), w.addNode("198.51.104.12")
+	for _, n := range []*node{k.seeder, storer, checker} {
+		n.host.SetLowID(true)
+	}
 	k.seeder.host.SetUDPFirewalled(isSeederUDPFirewalled)
 	buddyID := invert(k.seederID)
 	buddyID[15] ^= 1
-	ids := map[*node]wire.Hash{k.seeder: k.seederID, k.buddy: buddyID, k.downloader: nearFile(2)}
-	storer := w.startBareKad("198.51.100.10", nearFile(1), k.seeder.kadNode(k.seederID), k.buddy.kadNode(buddyID), k.downloader.kadNode(nearFile(2)))
-	for _, n := range []*node{k.buddy, k.downloader, k.seeder} {
-		known := []kadNode{storer, guide}
+	ids := map[*node]wire.Hash{k.seeder: k.seederID, k.buddy: buddyID, k.downloader: nearFile(2), storer: nearFile(1), checker: wire.Hash{0x30}}
+	for n := range ids {
+		known := []kadNode{guide}
 		for other, otherID := range ids {
 			if other != n {
 				known = append(known, other.kadNode(otherID))
@@ -226,6 +210,14 @@ func (w *world) buildKadWorld(f testFile, isSeederUDPFirewalled bool) kadWorld {
 		n.setKad(ids[n], known...)
 		n.start()
 	}
+	w.waitFor("the open nodes to pass the firewall check", func() bool {
+		for _, n := range []*node{k.buddy, k.downloader} {
+			if net := n.events.lastNetwork(); net.KadNodes == 0 || net.IsKadFirewalled {
+				return false
+			}
+		}
+		return true
+	})
 	return k
 }
 

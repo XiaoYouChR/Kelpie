@@ -3,11 +3,16 @@ package engine
 import (
 	"bytes"
 	"fmt"
+	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/identity"
 	"github.com/XiaoYouChR/Kelpie/internal/peer"
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
+	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
+	kadwire "github.com/XiaoYouChR/Kelpie/internal/wire/kad"
 )
 
 func isClosed(c *scriptedConn) bool { return c.isClosed }
@@ -89,5 +94,38 @@ func TestClientBackLaterKeepsNewConnection(t *testing.T) {
 	w.waitUntil(w.clock.Now().Add(5 * time.Second))
 	if p.matchConn(1, isClosed) {
 		t.Fatal("the new connection closed")
+	}
+}
+
+// Two nodes that check each other's TCP port at once each dial the other:
+// once B has acknowledged the peer's check over its connection, the peer's
+// connection for its own check comes in, and closing either as a duplicate
+// would lose an acknowledgement.
+func TestMutualFirewallChecksKeepBothConnections(t *testing.T) {
+	w := buildWorld(t)
+	b := w.addNode("198.51.100.2")
+	b.config.EnableKad = true
+	b.start()
+	p := w.addScriptedPeer("198.51.100.5", buildTestFile("check.bin", 100_000, 24))
+	p.cfg.KadPort, p.cfg.KadVersion = kadPort, kadwire.Version
+	asker, err := p.host.OpenUDP(kadPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer asker.Close()
+	asker.WriteTo(kadwire.FirewalledReq{TCPPort: peerPort, ID: p.cfg.Self.UserHash}.Build(nil), netip.AddrPortFrom(b.ip, kadPort))
+	w.waitFor("B to acknowledge the peer's check", func() bool {
+		return p.matchConn(0, func(c *scriptedConn) bool {
+			return slices.ContainsFunc(c.received, func(p wire.Packet) bool { return p == client.KadFirewallAck{} })
+		})
+	})
+
+	p.open(b)
+	w.waitFor("the peer's own check connection", func() bool {
+		return p.matchConn(1, func(c *scriptedConn) bool { return c.isClosed || hasEvent[peer.HandshakeCompleted](c) })
+	})
+	w.waitUntil(w.clock.Now().Add(5 * time.Second))
+	if p.matchConn(0, isClosed) || p.matchConn(1, isClosed) {
+		t.Fatal("B closed a firewall check connection as a duplicate")
 	}
 }
