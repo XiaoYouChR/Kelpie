@@ -66,9 +66,9 @@ type Server struct {
 	TCPObfuscationPort uint16
 	UDPObfuscationPort uint16
 	PingedAt           time.Time
-	// UDPKey is the server's UDP obfuscation key for UDPKeyIP, as aMule
-	// keeps ST_UDPKEY and ST_UDPKEYIP: it serves again while our public
-	// address is the same.
+	// UDPKey and UDPKeyIP are saved as aMule saves ST_UDPKEY and
+	// ST_UDPKEYIP: the key serves again while our public address is the
+	// same (server.Entry).
 	UDPKey   uint32
 	UDPKeyIP netip.Addr
 }

@@ -78,8 +78,8 @@ type uploadState struct {
 }
 
 // uploadSlot remembers the blocks requested and not yet sent, and the last
-// ones sent, oldest first, so a peer re-listing
-// blocks still in flight gets each only once.
+// ones sent, oldest first, so a peer re-listing blocks still in flight gets
+// each only once.
 type uploadSlot struct {
 	pending map[uploadBlock]pendingBlock
 	sent    []uploadBlock

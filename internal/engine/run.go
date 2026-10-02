@@ -301,8 +301,7 @@ func (e *Engine) runTransfers(now time.Time) {
 // asked as usual.
 func (e *Engine) isOffline() bool {
 	server, _ := e.server.Login()
-	isKadUp := e.kad != nil && e.kadStatus.Nodes > 0
-	return (e.kad != nil || len(e.server.Entries()) > 0) && !server.IsValid() && !isKadUp
+	return (e.kad != nil || len(e.server.Entries()) > 0) && !server.IsValid() && e.kadStatus.Nodes == 0
 }
 
 // connectBudget follows maxConnections and maxNewConnections.

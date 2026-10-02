@@ -260,7 +260,7 @@ func (e *Engine) start() error {
 		e.startLeaf(func() { e.runDiskWorker(e.disk.items) })
 	}
 	go e.runSaver()
-	acceptorRandom := e.buildLeafRandom()
+	acceptorRandom := buildLeafRandom(e.ports.Rand)
 	e.startLeaf(func() { e.runAcceptor(acceptorRandom) })
 	if udp := e.udp; udp != nil {
 		e.startLeaf(func() { e.runUDPReader(udp, false) })
@@ -396,7 +396,7 @@ func (e *Engine) startKad(nodes []kad.Node) {
 		UserHash:  e.self.UserHash,
 		State:     e.state.Kad,
 		Nodes:     nodes,
-		Rand:      e.buildLeafRandom(),
+		Rand:      buildLeafRandom(e.ports.Rand),
 	})
 	e.kad, e.kadStatus = k, kad.Status{IsFirewalled: true, UDPPort: uint16(e.udpPort)}
 	ctx, cancel := context.WithCancel(e.ctx)
@@ -467,9 +467,9 @@ func (e *Engine) update(s Settings) {
 }
 
 // buildLeafRandom seeds a source of randomness for one leaf, or Kad, from
-// the hub's, which only the hub goroutine may use.
-func (e *Engine) buildLeafRandom() *rand.Rand {
-	return rand.New(rand.NewPCG(e.ports.Rand.Uint64(), e.ports.Rand.Uint64()))
+// seed, which only the goroutine that owns it may use.
+func buildLeafRandom(seed *rand.Rand) *rand.Rand {
+	return rand.New(rand.NewPCG(seed.Uint64(), seed.Uint64()))
 }
 
 func (e *Engine) startLeaf(f func()) {
