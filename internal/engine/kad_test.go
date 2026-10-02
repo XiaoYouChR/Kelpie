@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/peer"
@@ -125,25 +126,28 @@ func (w *world) startTesterGuide(ip string, id wire.Hash, testers []netip.Addr) 
 // firewall checks by connecting to the asker, so open nodes see themselves
 // open and a LowID node stays firewalled.
 func TestKadFirewallChecksBetweenEngines(t *testing.T) {
-	w := buildWorld(t)
-	a, b, c := w.addNode("198.51.100.1"), w.addNode("198.51.100.2"), w.addNode("198.51.100.3")
-	low := w.addNode("198.51.100.4")
-	low.host.SetLowID(true)
-	w.joinKad(a, b, c, low)
-	for _, n := range []*node{a, b, c, low} {
-		n.start()
-	}
-	w.waitFor("open nodes to pass the firewall check", func() bool {
-		for _, n := range []*node{a, b, c} {
-			if net := n.events.lastNetwork(); net.KadNodes == 0 || net.IsKadFirewalled {
-				return false
-			}
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a, b, c := w.addNode("198.51.100.1"), w.addNode("198.51.100.2"), w.addNode("198.51.100.3")
+		low := w.addNode("198.51.100.4")
+		low.host.SetLowID(true)
+		w.joinKad(a, b, c, low)
+		for _, n := range []*node{a, b, c, low} {
+			n.start()
 		}
-		return true
+		w.waitFor("open nodes to pass the firewall check", func() bool {
+			for _, n := range []*node{a, b, c} {
+				if net := n.events.lastNetwork(); net.KadNodes == 0 || net.IsKadFirewalled {
+					return false
+				}
+			}
+			return true
+		})
+		if !low.events.lastNetwork().IsKadFirewalled {
+			t.Fatal("the LowID node passed the firewall check")
+		}
 	})
-	if !low.events.lastNetwork().IsKadFirewalled {
-		t.Fatal("the LowID node passed the firewall check")
-	}
 }
 
 // A node already connected to us that asks for a TCP firewall check gets
@@ -277,122 +281,133 @@ func (k kadWorld) downloadFromKad(f testFile) {
 // it; a downloader's callback request travels through the buddy, and the
 // seeder connects out to the downloader.
 func TestFirewalledSeederServesThroughBuddy(t *testing.T) {
-	w := buildWorld(t)
-	f := buildTestFile("buddy.bin", 900_000, 6)
-	k := w.buildKadWorld(f, true)
-	seeder, buddy := k.seeder, k.buddy
-	seederID := k.seederID
-	seeder.seed(1, f)
-	w.waitFor("the seeder to have looked for a buddy", func() bool {
-		return w.clock.Now().Sub(start) >= 8*time.Minute
-	})
-	if net := seeder.events.lastNetwork(); !net.IsKadFirewalled {
-		t.Fatalf("seeder network %+v, want Kad firewalled", net)
-	}
-	k.downloadFromKad(f)
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		f := buildTestFile("buddy.bin", 900_000, 6)
+		k := w.buildKadWorld(f, true)
+		seeder, buddy := k.seeder, k.buddy
+		seederID := k.seederID
+		seeder.seed(1, f)
+		w.waitFor("the seeder to have looked for a buddy", func() bool {
+			return w.clock.Now().Sub(start) >= 8*time.Minute
+		})
+		if net := seeder.events.lastNetwork(); !net.IsKadFirewalled {
+			t.Fatalf("seeder network %+v, want Kad firewalled", net)
+		}
+		k.downloadFromKad(f)
 
-	asker, err := w.network.AddHost(netip.MustParseAddr("198.51.100.40")).OpenUDP(kadPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer asker.Close()
-	answers := make(chan []byte, 1)
-	go func() {
-		buf := make([]byte, 1500)
-		if n, _, err := asker.ReadFrom(buf); err == nil {
-			answers <- buf[:n]
+		asker, err := w.network.AddHost(netip.MustParseAddr("198.51.100.40")).OpenUDP(kadPort)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}()
-	reask := client.ReaskCallbackUDP{BuddyID: invert(seederID), Ping: client.ReaskFilePing{Hash: wire.Hash{0xAB}}}
-	asker.WriteTo(reask.Build(nil), netip.AddrPortFrom(buddy.ip, kadPort))
-	var answer []byte
-	w.waitFor("the seeder to answer a reask passed on by its buddy", func() bool {
-		select {
-		case answer = <-answers:
-			return true
-		default:
-			return false
+		defer asker.Close()
+		answers := make(chan []byte, 1)
+		go func() {
+			buf := make([]byte, 1500)
+			if n, _, err := asker.ReadFrom(buf); err == nil {
+				answers <- buf[:n]
+			}
+		}()
+		reask := client.ReaskCallbackUDP{BuddyID: invert(seederID), Ping: client.ReaskFilePing{Hash: wire.Hash{0xAB}}}
+		asker.WriteTo(reask.Build(nil), netip.AddrPortFrom(buddy.ip, kadPort))
+		var answer []byte
+		w.waitFor("the seeder to answer a reask passed on by its buddy", func() bool {
+			select {
+			case answer = <-answers:
+				return true
+			default:
+				return false
+			}
+		})
+		if !bytes.Equal(answer, client.FileNotFound{}.Build(nil)) {
+			t.Fatalf("reask answer %x, want OP_FILENOTFOUND", answer)
 		}
 	})
-	if !bytes.Equal(answer, client.FileNotFound{}.Build(nil)) {
-		t.Fatalf("reask answer %x, want OP_FILENOTFOUND", answer)
-	}
 }
 
 // TestFirewalledSeederTakesDirectCallback: a seeder nobody reaches over
 // TCP but anybody over UDP publishes itself as a direct callback source,
 // and connects out when the downloader asks it over UDP.
 func TestFirewalledSeederTakesDirectCallback(t *testing.T) {
-	w := buildWorld(t)
-	f := buildTestFile("direct.bin", 700_000, 7)
-	k := w.buildKadWorld(f, false)
-	k.seeder.seed(1, f)
-	w.waitFor("the seeder to finish its UDP test and publish", func() bool {
-		return w.clock.Now().Sub(start) >= 3*time.Minute
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		f := buildTestFile("direct.bin", 700_000, 7)
+		k := w.buildKadWorld(f, false)
+		k.seeder.seed(1, f)
+		w.waitFor("the seeder to finish its UDP test and publish", func() bool {
+			return w.clock.Now().Sub(start) >= 3*time.Minute
+		})
+		k.downloadFromKad(f)
 	})
-	k.downloadFromKad(f)
 }
 
 // TestKadTurnsOffAndOnWhileRunning: turning Kad off ends its goroutines
 // and leaves the UDP port to the engine, which still answers eD2k UDP on
 // it; turning Kad on again bootstraps it from the nodes it knew.
 func TestKadTurnsOffAndOnWhileRunning(t *testing.T) {
-	w := buildWorld(t)
-	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
-	w.joinKad(a, b)
-	a.start()
-	b.start()
-	w.waitFor("b to know a Kad node", func() bool { return b.events.lastNetwork().KadNodes > 0 })
-	asker, err := w.network.AddHost(netip.MustParseAddr("198.51.100.40")).OpenUDP(kadPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer asker.Close()
-	kads := countKadGoroutines()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+		w.joinKad(a, b)
+		a.start()
+		b.start()
+		w.waitFor("b to know a Kad node", func() bool { return b.events.lastNetwork().KadNodes > 0 })
+		asker, err := w.network.AddHost(netip.MustParseAddr("198.51.100.40")).OpenUDP(kadPort)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer asker.Close()
+		kads := countKadGoroutines()
 
-	b.engine.Post(Settings{})
-	w.waitFor("b's Kad to stop", func() bool {
-		net := b.events.lastNetwork()
-		return net.KadNodes == 0 && !net.IsKadFirewalled
+		b.engine.Post(Settings{})
+		w.waitFor("b's Kad to stop", func() bool {
+			net := b.events.lastNetwork()
+			return net.KadNodes == 0 && !net.IsKadFirewalled
+		})
+		if got := countKadGoroutines(); got != kads-2 {
+			t.Fatalf("%d Kad goroutines after turning Kad off, want %d", got, kads-2)
+		}
+		w.requireReaskAnswered(asker, b)
+
+		b.engine.Post(Settings{EnableKad: true})
+		w.waitFor("b's Kad to bootstrap again", func() bool { return b.events.lastNetwork().KadNodes > 0 })
+		if got := countKadGoroutines(); got != kads {
+			t.Fatalf("%d Kad goroutines after turning Kad on, want %d", got, kads)
+		}
+		w.requireReaskAnswered(asker, b)
 	})
-	if got := countKadGoroutines(); got != kads-2 {
-		t.Fatalf("%d Kad goroutines after turning Kad off, want %d", got, kads-2)
-	}
-	w.requireReaskAnswered(asker, b)
-
-	b.engine.Post(Settings{EnableKad: true})
-	w.waitFor("b's Kad to bootstrap again", func() bool { return b.events.lastNetwork().KadNodes > 0 })
-	if got := countKadGoroutines(); got != kads {
-		t.Fatalf("%d Kad goroutines after turning Kad on, want %d", got, kads)
-	}
-	w.requireReaskAnswered(asker, b)
 }
 
 // TestKadTurnsOffWithABuddyLink: Kad turns off on both ends of a buddy
 // link, and later events on that link find no Kad to tell.
 func TestKadTurnsOffWithABuddyLink(t *testing.T) {
-	w := buildWorld(t)
-	f := buildTestFile("buddyoff.bin", 300_000, 11)
-	k := w.buildKadWorld(f, true)
-	k.seeder.seed(1, f)
-	w.waitFor("the seeder to have looked for a buddy", func() bool {
-		return w.clock.Now().Sub(start) >= 8*time.Minute
-	})
-	k.downloadFromKad(f)
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		f := buildTestFile("buddyoff.bin", 300_000, 11)
+		k := w.buildKadWorld(f, true)
+		k.seeder.seed(1, f)
+		w.waitFor("the seeder to have looked for a buddy", func() bool {
+			return w.clock.Now().Sub(start) >= 8*time.Minute
+		})
+		k.downloadFromKad(f)
 
-	k.seeder.engine.Post(Settings{})
-	k.buddy.engine.Post(Settings{})
-	turnedOff := w.clock.Now()
-	w.waitFor("the buddy links to be checked", func() bool {
-		return w.clock.Now().Sub(turnedOff) >= time.Minute
-	})
-	for _, n := range []*node{k.seeder, k.buddy} {
-		if net := n.events.lastNetwork(); net.KadNodes != 0 || net.IsKadFirewalled {
-			t.Fatalf("network %+v with Kad off", net)
+		k.seeder.engine.Post(Settings{})
+		k.buddy.engine.Post(Settings{})
+		turnedOff := w.clock.Now()
+		w.waitFor("the buddy links to be checked", func() bool {
+			return w.clock.Now().Sub(turnedOff) >= time.Minute
+		})
+		for _, n := range []*node{k.seeder, k.buddy} {
+			if net := n.events.lastNetwork(); net.KadNodes != 0 || net.IsKadFirewalled {
+				t.Fatalf("network %+v with Kad off", net)
+			}
 		}
-	}
-	k.seeder.engine.Post(Settings{EnableKad: true})
-	w.waitFor("the seeder's Kad to bootstrap again", func() bool { return k.seeder.events.lastNetwork().KadNodes > 0 })
+		k.seeder.engine.Post(Settings{EnableKad: true})
+		w.waitFor("the seeder's Kad to bootstrap again", func() bool { return k.seeder.events.lastNetwork().KadNodes > 0 })
+	})
 }
 
 // countKadGoroutines counts the goroutines in Kad.Run and its reader.
@@ -437,49 +452,54 @@ func (w *world) requireReaskAnswered(asker transport.PacketConn, n *node) {
 // While Kad has no node and no server is logged in, a source that failed is
 // not marked dead and not dialled again.
 func TestOfflineSourceWaitsForTheNetwork(t *testing.T) {
-	w := buildWorld(t)
-	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
-	b.config.EnableKad = true
-	a.start()
-	b.start()
-	f := buildTestFile("offline.bin", 500_000, 8)
-	a.seed(1, f)
-	a.host.SetUnreachable(true)
-	b.download(2, f, a.endpoint())
-	failures := func() int {
-		count := 0
-		for _, line := range b.loadTrace() {
-			if line["event"] == "failed" && line["source"] == a.endpoint().String() {
-				count++
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+		b.config.EnableKad = true
+		a.start()
+		b.start()
+		f := buildTestFile("offline.bin", 500_000, 8)
+		a.seed(1, f)
+		a.host.SetUnreachable(true)
+		b.download(2, f, a.endpoint())
+		failures := func() int {
+			count := 0
+			for _, line := range b.loadTrace() {
+				if line["event"] == "failed" && line["source"] == a.endpoint().String() {
+					count++
+				}
 			}
+			return count
 		}
-		return count
-	}
-	w.waitFor("the first dial to fail", func() bool { return failures() == 1 })
-	a.host.SetUnreachable(false)
-	for range 120 {
-		w.clock.Advance(time.Minute)
-		time.Sleep(stepPause)
-	}
-	if got := failures(); got != 1 || matchTrace(b.loadTrace(), "connected", a.endpoint().String()) {
-		t.Fatalf("source dialled again in two offline hours (%d failures)", got)
-	}
+		w.waitFor("the first dial to fail", func() bool { return failures() == 1 })
+		a.host.SetUnreachable(false)
+		for range 120 {
+			w.advance(time.Minute)
+		}
+		if got := failures(); got != 1 || matchTrace(b.loadTrace(), "connected", a.endpoint().String()) {
+			t.Fatalf("source dialled again in two offline hours (%d failures)", got)
+		}
+	})
 }
 
 // TestKadBootstrapsFromEd2kPeer: a node that knows no Kad node reaches Kad
 // through the Kad port an eD2k peer names in its hello.
 func TestKadBootstrapsFromEd2kPeer(t *testing.T) {
-	w := buildWorld(t)
-	f := buildTestFile("peer.bin", 300_000, 9)
-	seeder, other, lost := w.addNode("198.51.100.1"), w.addNode("198.51.100.2"), w.addNode("198.51.100.3")
-	w.joinKad(seeder, other)
-	lost.setKad(wire.Hash{0x33, 0x01})
-	for _, n := range []*node{seeder, other, lost} {
-		n.start()
-	}
-	seeder.seed(1, f)
-	lost.download(2, f, seeder.endpoint())
-	w.waitFor("the node to join Kad through the seeder", func() bool {
-		return lost.events.lastNetwork().KadNodes > 0
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		f := buildTestFile("peer.bin", 300_000, 9)
+		seeder, other, lost := w.addNode("198.51.100.1"), w.addNode("198.51.100.2"), w.addNode("198.51.100.3")
+		w.joinKad(seeder, other)
+		lost.setKad(wire.Hash{0x33, 0x01})
+		for _, n := range []*node{seeder, other, lost} {
+			n.start()
+		}
+		seeder.seed(1, f)
+		lost.download(2, f, seeder.endpoint())
+		w.waitFor("the node to join Kad through the seeder", func() bool {
+			return lost.events.lastNetwork().KadNodes > 0
+		})
 	})
 }

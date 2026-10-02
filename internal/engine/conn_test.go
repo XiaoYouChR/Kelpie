@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/identity"
@@ -205,57 +206,63 @@ func countFileRequests(c *scriptedConn) int {
 // of its own, does not get our file request and upload request again before
 // the reask is due.
 func TestIncomingSourceIsNotReasked(t *testing.T) {
-	w := buildWorld(t)
-	b := w.addNode("198.51.100.2")
-	b.start()
-	f := buildTestFile("queued.bin", 500_000, 12)
-	p := w.addScriptedPeer("198.51.100.5", f)
-	b.download(1, f, p.endpoint())
-	w.waitFor("B to queue on the peer", func() bool {
-		return p.matchConn(0, hasEvent[peer.UploadRequested])
-	})
-	p.closeConn(0)
-	w.waitFor("B to notice the close", func() bool {
-		return matchTrace(b.loadTrace(), "closed", p.endpoint().String())
-	})
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		b := w.addNode("198.51.100.2")
+		b.start()
+		f := buildTestFile("queued.bin", 500_000, 12)
+		p := w.addScriptedPeer("198.51.100.5", f)
+		b.download(1, f, p.endpoint())
+		w.waitFor("B to queue on the peer", func() bool {
+			return p.matchConn(0, hasEvent[peer.UploadRequested])
+		})
+		p.closeConn(0)
+		w.waitFor("B to notice the close", func() bool {
+			return matchTrace(b.loadTrace(), "closed", p.endpoint().String())
+		})
 
-	p.open(b)
-	w.waitFor("the peer's handshake", func() bool {
-		return p.matchConn(1, hasEvent[peer.HandshakeCompleted])
+		p.open(b)
+		w.waitFor("the peer's handshake", func() bool {
+			return p.matchConn(1, hasEvent[peer.HandshakeCompleted])
+		})
+		settle := w.clock.Now().Add(5 * time.Second)
+		w.waitFor("a few seconds", func() bool { return !w.clock.Now().Before(settle) })
+		if !p.matchConn(1, func(c *scriptedConn) bool { return countFileRequests(c) == 0 }) {
+			t.Fatal("B asked the queued source again on its incoming connection")
+		}
 	})
-	settle := w.clock.Now().Add(5 * time.Second)
-	w.waitFor("a few seconds", func() bool { return !w.clock.Now().Before(settle) })
-	if !p.matchConn(1, func(c *scriptedConn) bool { return countFileRequests(c) == 0 }) {
-		t.Fatal("B asked the queued source again on its incoming connection")
-	}
 }
 
 // A seed answers Source Exchange with the peers queued for the file on it
 // that have a part the asker lacks.
 func TestSeedAnswersSourceExchange(t *testing.T) {
-	w := buildWorld(t)
-	a, c := w.addNode("198.51.100.1"), w.addNode("198.51.100.3")
-	a.config.UploadLimit = 100_000
-	a.start()
-	c.start()
-	f := buildTestFile("sx.bin", 3*int(piece.PartSize), 13)
-	a.seed(1, f)
-	useful, useless := w.addScriptedPeer("198.51.100.5", f), w.addScriptedPeer("198.51.100.6", f)
-	useful.download(a, piece.Set{true, false, false})
-	useless.download(a, piece.Set{false, false, false})
-	for _, p := range []*scriptedPeer{useful, useless} {
-		w.waitFor("the peer to queue on the seed", func() bool {
-			return p.matchConn(0, func(c *scriptedConn) bool {
-				return hasEvent[peer.Queued](c) || hasEvent[peer.SlotGranted](c)
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a, c := w.addNode("198.51.100.1"), w.addNode("198.51.100.3")
+		a.config.UploadLimit = 100_000
+		a.start()
+		c.start()
+		f := buildTestFile("sx.bin", 3*int(piece.PartSize), 13)
+		a.seed(1, f)
+		useful, useless := w.addScriptedPeer("198.51.100.5", f), w.addScriptedPeer("198.51.100.6", f)
+		useful.download(a, piece.Set{true, false, false})
+		useless.download(a, piece.Set{false, false, false})
+		for _, p := range []*scriptedPeer{useful, useless} {
+			w.waitFor("the peer to queue on the seed", func() bool {
+				return p.matchConn(0, func(c *scriptedConn) bool {
+					return hasEvent[peer.Queued](c) || hasEvent[peer.SlotGranted](c)
+				})
 			})
-		})
-	}
+		}
 
-	c.download(2, f, a.endpoint())
-	w.waitFor("C to learn the useful peer from the seed", func() bool {
-		return matchTrace(c.loadTrace(), "found", useful.endpoint().String())
+		c.download(2, f, a.endpoint())
+		w.waitFor("C to learn the useful peer from the seed", func() bool {
+			return matchTrace(c.loadTrace(), "found", useful.endpoint().String())
+		})
+		if matchTrace(c.loadTrace(), "found", useless.endpoint().String()) {
+			t.Fatal("the seed named a peer with nothing C needs")
+		}
 	})
-	if matchTrace(c.loadTrace(), "found", useless.endpoint().String()) {
-		t.Fatal("the seed named a peer with nothing C needs")
-	}
 }

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/clock"
@@ -50,14 +51,17 @@ func requireClosed(t *testing.T, conn net.Conn) {
 }
 
 func TestOversizedFrameClosesConnection(t *testing.T) {
-	w := buildWorld(t)
-	b := w.addNode("198.51.100.2")
-	b.start()
-	conn := w.openRaw("198.51.100.9", b)
-	head := []byte{wire.ProtocolEDonkey, 0, 0, 0, 0, 0x01}
-	binary.LittleEndian.PutUint32(head[1:5], wire.MaxFrameSize+1)
-	conn.Write(head)
-	requireClosed(t, conn)
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		b := w.addNode("198.51.100.2")
+		b.start()
+		conn := w.openRaw("198.51.100.9", b)
+		head := []byte{wire.ProtocolEDonkey, 0, 0, 0, 0, 0x01}
+		binary.LittleEndian.PutUint32(head[1:5], wire.MaxFrameSize+1)
+		conn.Write(head)
+		requireClosed(t, conn)
+	})
 }
 
 // rawPeer is a client whose reads the test controls: it reads only while a
@@ -142,21 +146,24 @@ func isEvent[T peer.Event](ev peer.Event) bool {
 // A peer that keeps asking without reading the answers is dropped once its
 // writer backlog is full, instead of growing it without end.
 func TestFloodWithoutReadingCloses(t *testing.T) {
-	w := buildWorld(t)
-	a := w.addNode("198.51.100.1")
-	a.start()
-	f := buildTestFile("flood.bin", 100_000, 3)
-	a.seed(1, f)
-	p := w.openRawPeer("198.51.100.9", a)
-	p.readUntil("the handshake", isEvent[peer.HandshakeCompleted])
-	go func() {
-		for range 40_000 {
-			if _, err := p.conn.Write(wire.BuildPacket(nil, client.SetRequestFileID{Hash: f.hash})); err != nil {
-				return
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a := w.addNode("198.51.100.1")
+		a.start()
+		f := buildTestFile("flood.bin", 100_000, 3)
+		a.seed(1, f)
+		p := w.openRawPeer("198.51.100.9", a)
+		p.readUntil("the handshake", isEvent[peer.HandshakeCompleted])
+		go func() {
+			for range 40_000 {
+				if _, err := p.conn.Write(wire.BuildPacket(nil, client.SetRequestFileID{Hash: f.hash})); err != nil {
+					return
+				}
 			}
-		}
-	}()
-	requireClosed(t, p.conn)
+		}()
+		requireClosed(t, p.conn)
+	})
 }
 
 // countingDisk counts the bytes read from its files.
@@ -201,95 +208,110 @@ func (n *node) startOn(d disk.Disk) {
 // A downloader that requests many blocks and does not read gets only
 // uploadBufferSize read ahead, not every block it asked for.
 func TestUploadReadAheadIsBounded(t *testing.T) {
-	w := buildWorld(t)
-	a := w.addNode("198.51.100.1")
-	counting := &countingDisk{Disk: a.disk}
-	a.startOn(counting)
-	f := buildTestFile("big.bin", 34*int(piece.BlockSize), 4)
-	a.seed(1, f)
-	before := counting.read.Load()
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a := w.addNode("198.51.100.1")
+		counting := &countingDisk{Disk: a.disk}
+		a.startOn(counting)
+		f := buildTestFile("big.bin", 34*int(piece.BlockSize), 4)
+		a.seed(1, f)
+		before := counting.read.Load()
 
-	p := w.openRawPeer("198.51.100.9", a)
-	size := int64(len(f.data))
-	p.session.Add(f.hash, size, make(piece.Set, piece.PartCount(size)))
-	p.readUntil("a slot", isEvent[peer.SlotGranted])
-	for i := int64(0); i < 33; i += 3 {
-		request := client.RequestParts{Hash: f.hash}
-		for j := range int64(3) {
-			request.Starts[j] = uint64((i + j) * piece.BlockSize)
-			request.Ends[j] = uint64((i + j + 1) * piece.BlockSize)
+		p := w.openRawPeer("198.51.100.9", a)
+		size := int64(len(f.data))
+		p.session.Add(f.hash, size, make(piece.Set, piece.PartCount(size)))
+		p.readUntil("a slot", isEvent[peer.SlotGranted])
+		for i := int64(0); i < 33; i += 3 {
+			request := client.RequestParts{Hash: f.hash}
+			for j := range int64(3) {
+				request.Starts[j] = uint64((i + j) * piece.BlockSize)
+				request.Ends[j] = uint64((i + j + 1) * piece.BlockSize)
+			}
+			p.send(request)
 		}
-		p.send(request)
-	}
-	settle := w.clock.Now().Add(10 * time.Second)
-	w.waitFor("ten seconds", func() bool { return !w.clock.Now().Before(settle) })
+		settle := w.clock.Now().Add(10 * time.Second)
+		w.waitFor("ten seconds", func() bool { return !w.clock.Now().Before(settle) })
 
-	// The fake connection buffers 256 KiB before a write blocks.
-	limit := int64(uploadBufferSize + piece.BlockSize + 256<<10)
-	if read := counting.read.Load() - before; read == 0 || read > limit {
-		t.Fatalf("read %d bytes for a peer that stopped reading, want 1 to %d", read, limit)
-	}
+		// The fake connection buffers 256 KiB before a write blocks.
+		limit := int64(uploadBufferSize + piece.BlockSize + 256<<10)
+		if read := counting.read.Load() - before; read == 0 || read > limit {
+			t.Fatalf("read %d bytes for a peer that stopped reading, want 1 to %d", read, limit)
+		}
+	})
 }
 
 // Connections that never send their first bytes hold at most
 // maxIncomingHandshakes accepts; the rest wait in the listener's backlog or
 // are refused, and the listener serves again once they go.
 func TestSilentIncomingConnectionsAreBounded(t *testing.T) {
-	w := buildWorld(t)
-	a := w.addNode("198.51.100.1")
-	a.start()
-	silent := w.network.AddHost(netip.MustParseAddr("198.51.100.9"))
-	opened := 0
-	for range 300 {
-		if _, err := silent.OpenTCP(context.Background(), a.endpoint()); err == nil {
-			opened++
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a := w.addNode("198.51.100.1")
+		a.start()
+		silent := w.network.AddHost(netip.MustParseAddr("198.51.100.9"))
+		opened := 0
+		for range 300 {
+			if _, err := silent.OpenTCP(context.Background(), a.endpoint()); err == nil {
+				opened++
+			}
 		}
-	}
-	// The fake listener's backlog holds 128 connections.
-	if opened > maxIncomingHandshakes+128 || opened == 300 {
-		t.Fatalf("%d of 300 silent connections opened, want at most %d", opened, maxIncomingHandshakes+128)
-	}
-	silent.Close()
+		// The fake listener's backlog holds 128 connections.
+		if opened > maxIncomingHandshakes+128 || opened == 300 {
+			t.Fatalf("%d of 300 silent connections opened, want at most %d", opened, maxIncomingHandshakes+128)
+		}
+		silent.Close()
+		// Let the engine drain the closed connections from the backlog.
+		synctest.Wait()
 
-	p := w.openRawPeer("198.51.100.10", a)
-	p.readUntil("the handshake after the silent ones went", isEvent[peer.HandshakeCompleted])
+		p := w.openRawPeer("198.51.100.10", a)
+		p.readUntil("the handshake after the silent ones went", isEvent[peer.HandshakeCompleted])
+	})
 }
 
 // Closing the engine does not wait for an incoming connection's handshake
 // to time out.
 func TestCloseDoesNotWaitForHandshakes(t *testing.T) {
-	w := buildWorld(t)
-	a := w.addNode("198.51.100.1")
-	a.start()
-	w.openRaw("198.51.100.9", a)
-	time.Sleep(50 * time.Millisecond)
-	begin := time.Now()
-	a.close()
-	if took := time.Since(begin); took > 5*time.Second {
-		t.Fatalf("Close took %v", took)
-	}
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a := w.addNode("198.51.100.1")
+		a.start()
+		w.openRaw("198.51.100.9", a)
+		time.Sleep(50 * time.Millisecond)
+		begin := time.Now()
+		a.close()
+		if took := time.Since(begin); took > 5*time.Second {
+			t.Fatalf("Close took %v", took)
+		}
+	})
 }
 
 // Each connection runs a reader and a writer, and both end when it closes.
 func TestConnectionGoroutinesExit(t *testing.T) {
-	w := buildWorld(t)
-	a := w.addNode("198.51.100.1")
-	a.start()
-	baseline := runtime.NumGoroutine()
-	var peers []*rawPeer
-	for i := range 20 {
-		p := w.openRawPeer(fmt.Sprintf("198.51.100.%d", 100+i), a)
-		p.readUntil("the handshake", isEvent[peer.HandshakeCompleted])
-		peers = append(peers, p)
-	}
-	if extra := runtime.NumGoroutine() - baseline; extra > 2*len(peers) {
-		t.Fatalf("%d goroutines for %d connections", extra, len(peers))
-	}
-	for _, p := range peers {
-		p.conn.Close()
-	}
-	w.waitFor("the connection goroutines to end", func() bool {
-		return runtime.NumGoroutine() <= baseline
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a := w.addNode("198.51.100.1")
+		a.start()
+		// Count once the engine has started all of its own goroutines.
+		synctest.Wait()
+		baseline := runtime.NumGoroutine()
+		var peers []*rawPeer
+		for i := range 20 {
+			p := w.openRawPeer(fmt.Sprintf("198.51.100.%d", 100+i), a)
+			p.readUntil("the handshake", isEvent[peer.HandshakeCompleted])
+			peers = append(peers, p)
+		}
+		if extra := runtime.NumGoroutine() - baseline; extra > 2*len(peers) {
+			t.Fatalf("%d goroutines for %d connections", extra, len(peers))
+		}
+		for _, p := range peers {
+			p.conn.Close()
+		}
+		w.waitFor("the connection goroutines to end", func() bool {
+			return runtime.NumGoroutine() <= baseline
+		})
 	})
 }
 
@@ -356,30 +378,33 @@ func TestTraceBacklogIsBounded(t *testing.T) {
 // At most 50 connections start in 5 s, aMule 3.1.0's MaxConnectionsPerFiveSeconds
 // (Preferences.cpp:1104); each source is still dialled once.
 func TestNewConnectionsPerFiveSeconds(t *testing.T) {
-	w := buildWorld(t)
-	b := w.addNode("198.51.100.2")
-	b.start()
-	f := buildTestFile("many.bin", 1000, 9)
-	var sources []netip.AddrPort
-	for i := range 60 {
-		sources = append(sources, netip.AddrPortFrom(netip.AddrFrom4([4]byte{198, 51, 101, byte(i + 1)}), peerPort))
-	}
-	b.download(2, f, sources...)
-	failures := func() int {
-		count := 0
-		for _, line := range b.loadTrace() {
-			if line["event"] == "failed" {
-				count++
-			}
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		b := w.addNode("198.51.100.2")
+		b.start()
+		f := buildTestFile("many.bin", 1000, 9)
+		var sources []netip.AddrPort
+		for i := range 60 {
+			sources = append(sources, netip.AddrPortFrom(netip.AddrFrom4([4]byte{198, 51, 101, byte(i + 1)}), peerPort))
 		}
-		return count
-	}
-	w.waitFor("the first dials to fail", func() bool { return failures() >= 50 })
-	if got := failures(); got != 50 || w.clock.Now().Sub(start) >= newConnectionWindow {
-		t.Fatalf("%d dials by fake %v, want 50 within the first 5 s", got, w.clock.Now().Sub(start))
-	}
-	w.waitFor("the rest to be dialled", func() bool { return failures() >= 60 })
-	if got := failures(); got != 60 {
-		t.Fatalf("%d dials, want each of the 60 sources once", got)
-	}
+		b.download(2, f, sources...)
+		failures := func() int {
+			count := 0
+			for _, line := range b.loadTrace() {
+				if line["event"] == "failed" {
+					count++
+				}
+			}
+			return count
+		}
+		w.waitFor("the first dials to fail", func() bool { return failures() >= 50 })
+		if got := failures(); got != 50 || w.clock.Now().Sub(start) >= newConnectionWindow {
+			t.Fatalf("%d dials by fake %v, want 50 within the first 5 s", got, w.clock.Now().Sub(start))
+		}
+		w.waitFor("the rest to be dialled", func() bool { return failures() >= 60 })
+		if got := failures(); got != 60 {
+			t.Fatalf("%d dials, want each of the 60 sources once", got)
+		}
+	})
 }
