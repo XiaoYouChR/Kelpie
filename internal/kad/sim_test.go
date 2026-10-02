@@ -124,7 +124,7 @@ func (s *sim) record(n *simNode, out output) {
 			s.callbacks = append(s.callbacks, r)
 		case UDPCheck:
 			if tester := s.nodeByIP(r.Addr.Addr()); tester != nil {
-				s.record(tester, tester.c.onMessage(FirewallUDP{IP: n.addr.Addr(), InternPort: r.InternPort, ExternPort: r.ExternPort, Key: r.Key}))
+				s.record(tester, tester.c.onMessage(FirewallUDP{IP: n.addr.Addr(), InternPort: r.InternPort, ExternPort: r.ExternPort, Key: r.Key}, s.now))
 			}
 			s.ended = append(s.ended, simEnded{n, r.Addr.Addr()})
 		}
@@ -170,7 +170,7 @@ func (s *sim) run(d time.Duration) {
 		for len(s.ended) > 0 {
 			e := s.ended[0]
 			s.ended = s.ended[1:]
-			s.record(e.asker, e.asker.c.onMessage(UDPCheckEnded{IP: e.ip}))
+			s.record(e.asker, e.asker.c.onMessage(UDPCheckEnded{IP: e.ip}, s.now))
 			s.drain()
 		}
 	}
@@ -333,7 +333,7 @@ func TestSimulatedBuddy(t *testing.T) {
 	if len(got) != 1 || got[0].Type != sourceFirewalled || got[0].Buddy != buddy.addr || got[0].BuddyID != firewalled.c.buddyTarget() {
 		t.Fatalf("searcher found %+v, want the firewalled node behind its buddy", got)
 	}
-	s.record(searcher, searcher.c.onMessage(Callback{Buddy: got[0].Buddy, BuddyID: got[0].BuddyID, Hash: fileHash}))
+	s.record(searcher, searcher.c.onMessage(Callback{Buddy: got[0].Buddy, BuddyID: got[0].BuddyID, Hash: fileHash}, s.now))
 	s.drain()
 	want := CallbackRequested{BuddyID: firewalled.c.buddyTarget(), Hash: fileHash, Addr: netip.AddrPortFrom(searcher.addr.Addr(), 4662)}
 	if len(s.callbacks) != 1 || s.callbacks[0] != want {

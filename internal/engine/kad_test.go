@@ -303,3 +303,21 @@ func TestFirewalledSeederTakesDirectCallback(t *testing.T) {
 	})
 	k.downloadFromKad(f)
 }
+
+// TestKadBootstrapsFromEd2kPeer: a node that knows no Kad node reaches Kad
+// through the Kad port an eD2k peer names in its hello.
+func TestKadBootstrapsFromEd2kPeer(t *testing.T) {
+	w := buildWorld(t)
+	f := buildTestFile("peer.bin", 300_000, 9)
+	seeder, other, lost := w.addNode("198.51.100.1"), w.addNode("198.51.100.2"), w.addNode("198.51.100.3")
+	w.joinKad(seeder, other)
+	lost.setKad(wire.Hash{0x33, 0x01})
+	for _, n := range []*node{seeder, other, lost} {
+		n.start()
+	}
+	seeder.seed(1, f)
+	lost.download(2, f, seeder.endpoint())
+	w.waitFor("the node to join Kad through the seeder", func() bool {
+		return lost.events.lastNetwork().KadNodes > 0
+	})
+}

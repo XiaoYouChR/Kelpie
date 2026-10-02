@@ -354,7 +354,7 @@ func TestRequestCallbackReachesBuddy(t *testing.T) {
 	h := buildHarness(t)
 	buddyID := mustHash("0011223344556677889900AABBCCDDEE")
 	buddy := netip.MustParseAddrPort("9.8.7.6:4672")
-	out := h.c.onMessage(Callback{Buddy: buddy, BuddyID: buddyID, Hash: fileHash})
+	out := h.c.onMessage(Callback{Buddy: buddy, BuddyID: buddyID, Hash: fileHash}, h.now)
 	if len(out.datagrams) != 1 || out.datagrams[0].to != buddy {
 		t.Fatalf("callback datagrams %+v", out.datagrams)
 	}
@@ -696,5 +696,32 @@ func TestBootstrapAnswerSpreadsOverTable(t *testing.T) {
 	}
 	if len(boot[0].packet.Contacts) != bootstrapAnswer || farCount == 0 || farCount == bootstrapAnswer {
 		t.Fatalf("%d of %d contacts from the far half, want a mix", farCount, len(boot[0].packet.Contacts))
+	}
+}
+
+// An eD2k peer's Kad port is asked for contacts while Kad is not
+// connected, at most every 10 s together with the seeds, and never a Kad 1
+// node.
+func TestPeerNodeBootstraps(t *testing.T) {
+	h := buildHarness(t)
+	peer := Node{Addr: netip.MustParseAddrPort("198.51.100.5:4672"), TCPPort: 4662, Version: 8}
+	h.record(h.c.onMessage(peer, h.now))
+	if got := packetsOf[kadwire.BootstrapReq](h); len(got) != 1 || got[0].to != peer.Addr {
+		t.Fatalf("bootstrap requests %+v, want one to the peer", got)
+	}
+	h.now = h.now.Add(peerBootstrapGap)
+	h.record(h.c.onMessage(Node{Addr: netip.MustParseAddrPort("198.51.100.6:4672"), Version: 8}, h.now))
+	h.now = h.now.Add(time.Second)
+	h.record(h.c.onMessage(Node{Addr: netip.MustParseAddrPort("198.51.100.7:4672"), Version: 1}, h.now))
+	if got := len(packetsOf[kadwire.BootstrapReq](h)); got != 1 {
+		t.Fatalf("%d bootstrap requests, want none within 10 s or to a Kad 1 node", got)
+	}
+	h.receive(peer.Addr, kadwire.BootstrapRes{ID: buildNear(fileHash, 0).ID, TCPPort: 4662, Version: 8})
+	h.tick(time.Second)
+	h.clearSent()
+	h.now = h.now.Add(time.Minute)
+	h.record(h.c.onMessage(Node{Addr: netip.MustParseAddrPort("198.51.100.6:4672"), Version: 8}, h.now))
+	if len(packetsOf[kadwire.BootstrapReq](h)) != 0 || h.c.status().Nodes != 1 {
+		t.Fatal("bootstrapped from a peer while connected")
 	}
 }

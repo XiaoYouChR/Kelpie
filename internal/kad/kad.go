@@ -65,8 +65,9 @@ type Datagram struct {
 }
 
 // Message is what the engine posts to Kad: Wanted, Buddy, a Datagram to
-// send, Callback, FirewallAckReceived, FirewallAck, FirewallUDP and
-// UDPCheckEnded.
+// send, Callback, FirewallAckReceived, FirewallAck, FirewallUDP,
+// UDPCheckEnded, and the Node an eD2k peer's hello named, which Kad may
+// bootstrap from.
 type Message interface{ isMessage() }
 
 // Event is what Kad tells the engine: SourcesFound, the non-Kad Datagrams
@@ -80,6 +81,7 @@ type Event interface{ isEvent() }
 type State store.Kad
 
 func (Datagram) isMessage() {}
+func (Node) isMessage()     {}
 func (Datagram) isEvent()   {}
 func (State) isEvent()      {}
 
@@ -196,7 +198,7 @@ func (k *Kad) Run(ctx context.Context) (State, error) {
 			if d, ok := m.(Datagram); ok {
 				conn.WriteTo(d.Data, d.Addr)
 			} else {
-				out = c.onMessage(m)
+				out = c.onMessage(m, k.cfg.Clock.Now())
 			}
 		}
 		for _, d := range out.datagrams {

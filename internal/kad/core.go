@@ -22,6 +22,7 @@ const (
 	publishGap       = 2 * time.Second  // KADEMLIAPUBLISHTIME
 	maxPublishes     = 3                // KADEMLIATOTALSTORESRC
 	bootstrapGap     = 2 * time.Second  // CKademlia::Process, while it has no contacts
+	peerBootstrapGap = 10 * time.Second // CKademlia::Bootstrap: a peer's Kad port at most every 10 s
 	selfLookupGap    = 4 * time.Hour    // m_tNextSelfLookup
 	bucketRefreshGap = 10 * time.Second // m_bigTimer: one leaf lookup every 10 s...
 	bucketLookupGap  = time.Hour        // ...each leaf at most hourly (m_nextBigTimer)
@@ -158,7 +159,7 @@ type core struct {
 	finds       []*find
 	publishes   []*publish
 
-	nextBootstrap    time.Time
+	lastBootstrap    time.Time
 	nextSelfLookup   time.Time
 	nextRandomLookup time.Time
 	nextFileSearch   time.Time
@@ -258,8 +259,10 @@ func (c *core) onFirewallAck(from netip.Addr) {
 
 // onMessage reacts to what the engine posts besides wanted files, buddy
 // state and its own datagrams.
-func (c *core) onMessage(m Message) output {
+func (c *core) onMessage(m Message, now time.Time) output {
 	switch m := m.(type) {
+	case Node:
+		c.onPeerNode(m, now)
 	case Callback:
 		if m.Buddy.Addr().Is4() {
 			// Plain, as aMule sends it: we do not know the buddy's Kad version
@@ -607,7 +610,7 @@ func (c *core) onTick(now time.Time) output {
 }
 
 func (c *core) runBootstrap(now time.Time) {
-	if now.Before(c.nextBootstrap) {
+	if now.Sub(c.lastBootstrap) < bootstrapGap {
 		return
 	}
 	if len(c.seeds) == 0 {
@@ -620,7 +623,23 @@ func (c *core) runBootstrap(now time.Time) {
 	}
 	to := c.seeds[0]
 	c.seeds = c.seeds[1:]
-	c.nextBootstrap = now.Add(bootstrapGap)
+	c.sendBootstrap(to, now)
+}
+
+// onPeerNode is CKademlia::Bootstrap(ip, port), which aMule calls with the
+// Kad port an eD2k peer's hello names (BaseClient.cpp:846): while Kad is
+// not connected, the peer is asked for contacts, at most one every
+// peerBootstrapGap, sharing the clock of the seed bootstraps. Thus Kad
+// comes back through any eD2k peer when every known node is gone.
+func (c *core) onPeerNode(n Node, now time.Time) {
+	if c.isConnected || now.Sub(c.lastBootstrap) <= peerBootstrapGap || !matchGoodNode(n) {
+		return
+	}
+	c.sendBootstrap(n.Addr, now)
+}
+
+func (c *core) sendBootstrap(to netip.AddrPort, now time.Time) {
+	c.lastBootstrap = now
 	c.send(to, kadwire.BootstrapReq{})
 	c.rpcs.add(&rpc{kind: rpcBootstrap, node: Node{Addr: to}, sent: now})
 }
