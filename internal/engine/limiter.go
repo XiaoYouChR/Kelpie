@@ -31,11 +31,12 @@ type rateLimiter struct {
 	changed  chan struct{}
 }
 
-// buildRateLimiter builds a rateLimiter for rate bytes per second; 0 means unlimited.
-func buildRateLimiter(c clock.Clock, rate int64) *rateLimiter {
-	return &rateLimiter{clock: c, rate: float64(rate), last: c.Now(), changed: make(chan struct{})}
+// buildRateLimiter builds an unlimited rateLimiter.
+func buildRateLimiter(c clock.Clock) *rateLimiter {
+	return &rateLimiter{clock: c, last: c.Now(), changed: make(chan struct{})}
 }
 
+// setRate sets the rate in bytes per second; 0 means unlimited.
 func (l *rateLimiter) setRate(rate int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

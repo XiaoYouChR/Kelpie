@@ -56,7 +56,7 @@ func (e *Engine) onKadMessage(m kad.Event) {
 // would cost the asker an acknowledgement an aMule node gives.
 func (e *Engine) startFirewallCheck(r kad.FirewallCheck) {
 	if c := e.connByEndpoint(r.Addr); c != nil {
-		if c.isHandshaken {
+		if c.isHandshaken() {
 			e.sendFirewallAck(c, r.KadPort)
 		}
 		return

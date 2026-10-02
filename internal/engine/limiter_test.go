@@ -36,7 +36,7 @@ func runWithClock(c *clock.Fake, step time.Duration, work func()) {
 
 func TestLimiterUnlimitedNeverWaits(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := buildRateLimiter(c, 0)
+	l := buildRateLimiter(c)
 	for range 1000 {
 		l.waitN(context.Background(), 1<<20)
 	}
@@ -48,7 +48,8 @@ func TestLimiterUnlimitedNeverWaits(t *testing.T) {
 func TestLimiterHoldsRate(t *testing.T) {
 	for _, size := range []int{100, 1000, 5000} {
 		c := clock.BuildFake(start)
-		l := buildRateLimiter(c, 1000)
+		l := buildRateLimiter(c)
+		l.setRate(1000)
 		runWithClock(c, time.Millisecond, func() {
 			for range 20000 / size {
 				l.waitN(context.Background(), size)
@@ -65,7 +66,8 @@ func TestLimiterHoldsRate(t *testing.T) {
 // runnable, so only the lower bound is exact.
 func TestLimiterSharedByConnections(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := buildRateLimiter(c, 1000)
+	l := buildRateLimiter(c)
+	l.setRate(1000)
 	runWithClock(c, time.Millisecond, func() {
 		done := make(chan struct{})
 		for range 4 {
@@ -87,7 +89,8 @@ func TestLimiterSharedByConnections(t *testing.T) {
 
 func TestLimiterSetRateWakesWaiters(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := buildRateLimiter(c, 1)
+	l := buildRateLimiter(c)
+	l.setRate(1)
 	done := make(chan struct{})
 	go func() {
 		l.waitN(context.Background(), 1000)
@@ -102,7 +105,7 @@ func TestLimiterSetRateWakesWaiters(t *testing.T) {
 
 func TestLimiterSlowsDownLive(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := buildRateLimiter(c, 0)
+	l := buildRateLimiter(c)
 	l.waitN(context.Background(), 1<<20)
 	l.setRate(100)
 	runWithClock(c, time.Millisecond, func() {
@@ -115,7 +118,8 @@ func TestLimiterSlowsDownLive(t *testing.T) {
 
 func TestLimiterCancel(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := buildRateLimiter(c, 1)
+	l := buildRateLimiter(c)
+	l.setRate(1)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
 	go func() { done <- l.waitN(ctx, 1000) }()
@@ -133,7 +137,8 @@ func TestLimiterCancel(t *testing.T) {
 
 func TestLimiterControlGoesFirst(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := buildRateLimiter(c, 1000)
+	l := buildRateLimiter(c)
+	l.setRate(1000)
 	done := make(chan struct{})
 	go func() {
 		l.waitN(context.Background(), 1000)
@@ -151,7 +156,8 @@ func TestLimiterControlGoesFirst(t *testing.T) {
 
 func TestWriterSendsControlBeforeData(t *testing.T) {
 	c := clock.BuildFake(start)
-	l := buildRateLimiter(c, 1000)
+	l := buildRateLimiter(c)
+	l.setRate(1000)
 	go l.waitN(context.Background(), 1<<20)
 	for c.Waiters() == 0 {
 		time.Sleep(time.Microsecond)
