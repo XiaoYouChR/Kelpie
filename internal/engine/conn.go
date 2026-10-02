@@ -763,6 +763,7 @@ func (e *Engine) addTransferPeer(c *conn, r *run) {
 		CanReaskUDP:  caps.UDPVersion > 0 && caps.UDPPort != 0,
 		CanExchange:  caps.HasSourceExchange2,
 		CanObfuscate: wire.CanObfuscate(caps.CryptOptions, user),
+		Software:     caps.Software,
 	}
 	if caps.ClientID != 0 && caps.HasDirectCallback && caps.KadPort != 0 && c.remote.Addr().Is4() {
 		hello.Buddy, hello.IsDirectCallback = netip.AddrPortFrom(c.remote.Addr(), caps.KadPort), true

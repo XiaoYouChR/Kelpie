@@ -58,6 +58,18 @@ class Settings:
 
 
 @dataclass(frozen=True, slots=True)
+class Source:
+    """One source in Progress.sources; docs/protocol.md "progress" describes the fields."""
+
+    address: str
+    software: str
+    status: str
+    rank: int
+    downloadRate: int
+    channel: str
+
+
+@dataclass(frozen=True, slots=True)
 class Progress:
     hash: str
     size: int
@@ -69,6 +81,7 @@ class Progress:
     activePeers: int
     heldSources: int
     heldUntil: int
+    sources: tuple[Source, ...]
 
 
 @dataclass(frozen=True, slots=True)

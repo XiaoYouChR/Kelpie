@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from kelpie import Error, ErrorCode, Kelpie, Link, Network, Progress, Settings
+from kelpie import Error, ErrorCode, Kelpie, Link, Network, Progress, Settings, Source
 
 FAKE_ENGINE = Path(__file__).with_name("fake_engine.py")
 DEFAULT_SETTINGS = Settings()
@@ -65,7 +65,24 @@ def test_download_reports_progress_until_complete(engine: Engine) -> None:
             "runs": {
                 HASH_A: [
                     {"progress": {"received": 1024}},
-                    {"progress": {"received": 2048, "heldSources": 1, "heldUntil": 1767226320000}},
+                    {
+                        "progress": {
+                            "received": 2048,
+                            "heldSources": 1,
+                            "heldUntil": 1767226320000,
+                            "sources": [
+                                {
+                                    "address": "[2001:db8::1]:4662",
+                                    "software": "aMule 2.3.3",
+                                    "status": "queued",
+                                    "rank": 17,
+                                    "downloadRate": 0,
+                                    "channel": "kad",
+                                    "unknownField": True,
+                                }
+                            ],
+                        }
+                    },
                     {"ended": None},
                 ]
             }
@@ -85,6 +102,9 @@ def test_download_reports_progress_until_complete(engine: Engine) -> None:
         assert progress[-1].size == 2048
         assert progress[-1].heldSources == 1
         assert progress[-1].heldUntil == 1767226320000
+        assert progress[-1].sources == (
+            Source("[2001:db8::1]:4662", "aMule 2.3.3", "queued", 17, 0, "kad"),
+        )
 
     run(main())
     (hello,) = engine.loadMessages("hello")

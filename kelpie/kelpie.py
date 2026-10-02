@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import Error, ErrorCode
-from .models import Link, Network, Progress, Settings
+from .models import Link, Network, Progress, Settings, Source
 
 PROTOCOL = 1
 MIN_ENGINE_VERSION = (0, 1, 0)
@@ -344,6 +344,18 @@ def parseProgress(message: dict[str, Any]) -> Progress:
         activePeers=message["activePeers"],
         heldSources=message["heldSources"],
         heldUntil=message["heldUntil"],
+        sources=tuple(parseSource(source) for source in message["sources"]),
+    )
+
+
+def parseSource(message: dict[str, Any]) -> Source:
+    return Source(
+        address=message["address"],
+        software=message["software"],
+        status=message["status"],
+        rank=message["rank"],
+        downloadRate=message["downloadRate"],
+        channel=message["channel"],
     )
 
 

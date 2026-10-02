@@ -71,9 +71,20 @@ type Progress struct {
 	Uploaded     int64
 	Peers        int
 	ActivePeers  int
-	// HeldSources and HeldUntil follow docs/protocol.md "progress".
+	// HeldSources, HeldUntil and Sources follow docs/protocol.md "progress".
 	HeldSources int
 	HeldUntil   time.Time
+	Sources     []Source
+}
+
+// Source is one source in Progress.Sources.
+type Source struct {
+	Address      string
+	Software     string
+	Status       string
+	Rank         int
+	DownloadRate int64
+	Channel      string
 }
 
 type Network struct {

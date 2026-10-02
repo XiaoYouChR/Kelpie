@@ -111,3 +111,37 @@ func TestPublicIPRequestIsAnswered(t *testing.T) {
 		t.Fatalf("answered over IPv6: %#v", out.Send)
 	}
 }
+
+// A peer's client and version read as aMule's client list shows them.
+func TestPeerSoftware(t *testing.T) {
+	version := func(compatible, major, minor, update uint32) uint32 {
+		return compatible<<24 | major<<17 | minor<<10 | update<<7
+	}
+	for _, c := range []struct {
+		hello client.Hello
+		want  string
+	}{
+		{client.Hello{EmuleVersion: version(0, 0, 70, 1)}, "eMule 0.70b"},
+		{client.Hello{EmuleVersion: version(0, 0, 50, 0), ModName: "MorphXT v12.7"}, "eMule 0.50a [MorphXT v12.7]"},
+		{client.Hello{EmuleVersion: version(3, 2, 3, 3), ModName: "aMule SVN"}, "aMule 2.3.3"},
+		{client.Hello{EmuleVersion: wire.ToEmuleVersion("v0.4.2"), ModName: "Kelpie 0.4.2"}, "Kelpie 0.4.2"},
+		{client.Hello{EmuleVersion: version(0xF0, 1, 0, 0), ModName: "Leecher 1.0"}, "Leecher 1.0"},
+		{client.Hello{EmuleVersion: version(0xF0, 1, 0, 0)}, ""},
+		{client.Hello{}, ""},
+	} {
+		s, _ := greet(t, "1.2.3.4:4662", c.hello)
+		if got := s.Capabilities().Software; got != c.want {
+			t.Errorf("%#x %q: %q, want %q", c.hello.EmuleVersion, c.hello.ModName, got, c.want)
+		}
+	}
+}
+
+// A client older than CT_EMULE_VERSION tells its version in OP_EMULEINFO.
+func TestPeerSoftwareFromEmuleInfo(t *testing.T) {
+	s := BuildIncoming(buildConfig(t, 1), netip.MustParseAddrPort("1.2.3.4:4662"), start)
+	s.OnPacket(client.EmuleInfo{Version: 0x44, Tags: []wire.Tag{{Type: wire.TagUint32, ID: client.InfoCompatibleClient, Uint: 4}}}, start)
+	s.OnPacket(client.Hello{UserHash: hashOf(7)}, start)
+	if got := s.Capabilities().Software; got != "Shareaza 0.44a" {
+		t.Fatalf("software %q", got)
+	}
+}

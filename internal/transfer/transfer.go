@@ -7,6 +7,8 @@
 package transfer
 
 import (
+	"cmp"
+	"math"
 	"math/rand/v2"
 	"net/netip"
 	"slices"
@@ -54,7 +56,34 @@ type Progress struct {
 	// be asked, zero when none waits.
 	HeldSources int
 	HeldUntil   time.Time
+	// Sources are the sources sending to us, queued, connecting or held,
+	// in that order, at most maxProgressSources.
+	Sources []SourceProgress
 }
+
+// SourceProgress is one source in Progress.Sources; docs/protocol.md
+// "progress" describes the fields.
+type SourceProgress struct {
+	Address      string
+	Software     string
+	Status       string
+	Rank         int
+	DownloadRate int64
+	Channel      Channel
+}
+
+const (
+	statusTransferring = "transferring"
+	statusQueued       = "queued"
+	statusConnecting   = "connecting"
+	statusHeld         = "held"
+)
+
+// maxProgressSources bounds the line sent every second while a download
+// runs. The other sources are only known or waiting to be asked again: a
+// table of up to maxSources of them would not tell the caller more about
+// why a download is slow.
+const maxProgressSources = 50
 
 // State is the Transfer's Durable State, field for field store.Transfer
 // (which describes them), so the engine converts one to the other.
@@ -228,8 +257,60 @@ func (t *Transfer) Progress(now time.Time) Progress {
 				progress.HeldUntil = until
 			}
 		}
+		if status := t.toSourceStatus(s, now); status != "" {
+			progress.Sources = append(progress.Sources, t.toSourceProgress(s, status, now))
+		}
 	}
+	order := []string{statusTransferring, statusQueued, statusConnecting, statusHeld}
+	knownRankFirst := func(rank int) int {
+		if rank == 0 {
+			return math.MaxInt
+		}
+		return rank
+	}
+	slices.SortStableFunc(progress.Sources, func(a, b SourceProgress) int {
+		return cmp.Or(
+			cmp.Compare(slices.Index(order, a.Status), slices.Index(order, b.Status)),
+			cmp.Compare(knownRankFirst(a.Rank), knownRankFirst(b.Rank)),
+		)
+	})
+	progress.Sources = progress.Sources[:min(len(progress.Sources), maxProgressSources)]
 	return progress
+}
+
+// toSourceStatus is how Progress.Sources shows s, "" when it leaves it out.
+// A queued source with no part we need asks for no slot, so it waits in
+// no queue of ours.
+func (t *Transfer) toSourceStatus(s *source, now time.Time) string {
+	switch {
+	case s.state == stateDownloading:
+		return statusTransferring
+	case t.isHeld(s, now):
+		return statusHeld
+	case (s.state == stateQueued || s.state == stateReasking) && !s.isNoNeeded:
+		return statusQueued
+	case s.state == stateConnecting || s.state == stateAsking:
+		return statusConnecting
+	}
+	return ""
+}
+
+// toSourceProgress names a source not yet connected by callback as the
+// trace does, since its address is unknown until it connects.
+func (t *Transfer) toSourceProgress(s *source, status string, now time.Time) SourceProgress {
+	p := SourceProgress{Address: s.key, Software: s.Software, Status: status, DownloadRate: s.download.rate(now), Channel: s.channel}
+	if s.Endpoint.IsValid() {
+		p.Address = s.Endpoint.String()
+	}
+	if status == statusQueued {
+		p.Rank = s.rank
+	}
+	// The caller asks where sources come from, not which way a server was
+	// asked.
+	if p.Channel == ChannelGlobalServer {
+		p.Channel = ChannelServer
+	}
+	return p
 }
 
 func (t *Transfer) OnUploaded(bytes int64, now time.Time) {

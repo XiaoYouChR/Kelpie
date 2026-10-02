@@ -99,7 +99,11 @@ func TestSessionTranscript(t *testing.T) {
 				events.SendEnded(c.ID, &engine.Error{Code: engine.CodeInvalidLink, Message: "not an eD2k file link"})
 				return
 			}
-			events.SetProgress(c.ID, engine.Progress{Hash: emptyHash, Size: 2048, Received: 1024, DownloadRate: 512, Peers: 12, ActivePeers: 3, HeldSources: 1, HeldUntil: time.UnixMilli(1767226320000)})
+			events.SetProgress(c.ID, engine.Progress{Hash: emptyHash, Size: 2048, Received: 1024, DownloadRate: 512, Peers: 12, ActivePeers: 3, HeldSources: 1, HeldUntil: time.UnixMilli(1767226320000),
+				Sources: []engine.Source{
+					{Address: "1.2.3.4:4662", Software: "eMule 0.70b", Status: "transferring", DownloadRate: 512, Channel: "server"},
+					{Address: "[2001:db8::1]:4662", Software: "aMule 2.3.3", Status: "queued", Rank: 17, Channel: "kad"},
+				}})
 		case engine.StopCommand:
 			events.SendEnded(c.ID, nil)
 		}
@@ -343,6 +347,7 @@ func buildProgressMessage(run, received float64) map[string]any {
 		"type": "progress", "run": run, "hash": "31D6CFE0D16AE931B73C59D7E0C089C0", "size": 0.0,
 		"received": received, "downloadRate": 0.0, "uploadRate": 0.0, "uploaded": 0.0,
 		"peers": 0.0, "activePeers": 0.0, "heldSources": 0.0, "heldUntil": 0.0,
+		"sources": []any{},
 	}
 }
 
