@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"net/netip"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -144,6 +146,35 @@ func TestKadFirewallChecksBetweenEngines(t *testing.T) {
 	}
 }
 
+// A node already connected to us that asks for a TCP firewall check gets
+// its acknowledgement over that connection, as from aMule, and no second
+// connection.
+func TestFirewallCheckOverAskersConnection(t *testing.T) {
+	w := buildWorld(t)
+	b := w.addNode("198.51.100.2")
+	b.config.EnableKad = true
+	b.start()
+	p := w.addScriptedPeer("198.51.100.5", buildTestFile("check.bin", 100_000, 25))
+	p.cfg.KadPort, p.cfg.KadVersion = kadPort, kadwire.Version
+	p.open(b)
+	w.waitFor("the peer's connection to be handshaken", func() bool {
+		return p.matchConn(0, hasEvent[peer.HandshakeCompleted])
+	})
+	asker, err := p.host.OpenUDP(kadPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer asker.Close()
+	asker.WriteTo(kadwire.FirewalledReq{TCPPort: peerPort, ID: p.cfg.Self.UserHash}.Build(nil), netip.AddrPortFrom(b.ip, kadPort))
+	w.waitFor("B to acknowledge over the peer's connection", func() bool {
+		return p.matchConn(0, func(c *scriptedConn) bool { return slices.Contains(c.received, wire.Packet(client.KadFirewallAck{})) })
+	})
+	w.waitUntil(w.clock.Now().Add(5 * time.Second))
+	if n := p.connCount(); n != 1 {
+		t.Fatalf("%d connections, want only the peer's", n)
+	}
+}
+
 func invert(id wire.Hash) wire.Hash {
 	for i := range id {
 		id[i] = ^id[i]
@@ -157,8 +188,7 @@ func invert(id wire.Hash) wire.Hash {
 // UDP test clients.
 //
 // In a network this small the open nodes ask each other for firewall
-// checks at once, and a node does not acknowledge over a connection the
-// asker opened. So that each open node still gets its two
+// checks at once. So that each open node surely gets its two
 // acknowledgements, the storer and the checker are LowID, which nobody can
 // connect to first, and the testers are behind a UDP NAT that only the
 // guide gets through: nobody else hears back from them, so nobody verifies
