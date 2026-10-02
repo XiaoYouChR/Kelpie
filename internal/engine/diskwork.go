@@ -149,7 +149,7 @@ func (e *Engine) onDiskDone(d diskDone) {
 	case jobWrite:
 		e.runTransferActions(r, r.transfer.OnBlockWritten(d.job.block))
 	case jobHashPart:
-		e.runTransferActions(r, r.transfer.OnPartHashed(d.job.part, d.digest))
+		e.runTransferActions(r, r.transfer.OnPartHashed(d.job.part, d.digest, now))
 		e.refreshShare(r)
 	case jobHashBlocks:
 		e.runTransferActions(r, r.transfer.OnBlocksHashed(d.job.part, d.leaves, now))

@@ -393,7 +393,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Source, now time.Time) []A
 		found.Buddy, found.IsDirectCallback = hello.Buddy, true
 	}
 	if t.isBanned(found, now) {
-		return []Action{Close{Peer: peer, Reason: "banned"}}
+		return []Action{Close{Peer: peer, Reason: "banned", IsBanned: true}}
 	}
 	s := t.connectedSource(hello)
 	var actions []Action
@@ -557,7 +557,7 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 	if s == nil {
 		return nil
 	}
-	actions := append(t.removePeer(peer), t.sendReceived(s, now)...)
+	actions := append(t.removePeer(peer, now), t.sendReceived(s, now)...)
 	switch s.state {
 	case stateAsking:
 		return append(actions, t.setFailed(s, deadSourceTime, reason, now))
@@ -597,21 +597,21 @@ func (t *Transfer) removeCorrupt(peer uint64, now time.Time) []Action {
 	event.Reason = "banned"
 	actions := []Action{event}
 	if t.peers[peer] == s {
-		actions = append(actions, Close{Peer: peer, Reason: "corrupt data"})
-		actions = append(actions, t.removePeer(peer)...)
+		actions = append(actions, Close{Peer: peer, Reason: "corrupt data", IsBanned: true})
+		actions = append(actions, t.removePeer(peer, now)...)
 	}
 	return actions
 }
 
 // removePeer detaches a connection from its source and hands what was asked
 // of it to other peers.
-func (t *Transfer) removePeer(peer uint64) []Action {
+func (t *Transfer) removePeer(peer uint64, now time.Time) []Action {
 	delete(t.peers, peer)
 	t.picker.onPeerGone(peer)
 	if peer == t.hashSetPeer {
 		t.hashSetPeer = 0
 	}
-	return t.OnRecoveryFailed(peer)
+	return t.OnRecoveryFailed(peer, now)
 }
 
 // OnTick runs the timers: source reasks and connections within the budget,
@@ -629,7 +629,7 @@ func (t *Transfer) OnTick(tick Tick) []Action {
 	var actions []Action
 	budget := tick.ConnectBudget
 	for _, s := range slices.Clone(t.sources) {
-		actions = append(actions, t.runSource(s, &budget)...)
+		actions = append(actions, t.runSource(s, &budget, tick.Now)...)
 	}
 	return append(actions, t.requestHashSet()...)
 }
@@ -681,8 +681,7 @@ func (t *Transfer) removeNoNeeded(now time.Time) {
 	}
 }
 
-func (t *Transfer) runSource(s *source, budget *int) []Action {
-	now := t.tick.Now
+func (t *Transfer) runSource(s *source, budget *int, now time.Time) []Action {
 	switch s.state {
 	case stateFailed:
 		if now.Before(s.deadline) {
@@ -732,7 +731,7 @@ func (t *Transfer) runSource(s *source, budget *int) []Action {
 		s.state = stateQueued
 		s.udpFailed++
 	}
-	return t.requestConnect(s, budget)
+	return t.requestConnect(s, budget, now)
 }
 
 func (t *Transfer) canReaskUDP(s *source) bool {
@@ -741,7 +740,7 @@ func (t *Transfer) canReaskUDP(s *source) bool {
 		!t.tick.IsFirewalled && isReliable
 }
 
-func (t *Transfer) requestConnect(s *source, budget *int) []Action {
+func (t *Transfer) requestConnect(s *source, budget *int, now time.Time) []Action {
 	if !t.canReach(s) {
 		return nil
 	}
@@ -763,7 +762,7 @@ func (t *Transfer) requestConnect(s *source, budget *int) []Action {
 	_, isConnect := action.(Connect)
 	s.isDialledPlain = isConnect && !s.CanObfuscate
 	if !isConnect {
-		s.deadline = t.tick.Now.Add(callbackTimeout)
+		s.deadline = now.Add(callbackTimeout)
 	}
 	return []Action{action}
 }

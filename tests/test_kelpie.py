@@ -28,6 +28,8 @@ class Engine:
         self.log = folder / "log.jsonl"
         self.scriptFile = folder / "script.json"
         self.starts = 0
+        # Every Network Kelpie reported, None when the Engine Process went away.
+        self.networks: list[Network | None] = []
         monkeypatch.setenv("KELPIE_FAKE_SCRIPT", str(self.scriptFile))
         self.setScript({})
 
@@ -39,7 +41,7 @@ class Engine:
             self.starts += 1
             return FAKE_ENGINE
 
-        return Kelpie(executable, self.folder / "data", lambda: settings)
+        return Kelpie(executable, self.folder / "data", lambda: settings, self.networks.append)
 
     def loadMessages(self, type: str | None = None) -> list[dict]:
         if not self.log.exists():
@@ -211,7 +213,7 @@ def test_older_engine_ends_the_run_with_outdated(engine: Engine) -> None:
                 await collect(current)
         assert raised.value.code == ErrorCode.OUTDATED
         assert "v0.0.9" in raised.value.message
-        assert kelpie.network is None
+        assert engine.networks == []
         await kelpie.close()
 
     run(main())
@@ -281,7 +283,7 @@ def test_silent_handshake_kills_the_engine_and_ends_the_run_with_start_failed(
                 await collect(current)
         assert raised.value.code == ErrorCode.START_FAILED
         assert "did not answer hello within 0.5 s" in raised.value.message
-        assert kelpie.network is None
+        assert engine.networks == []
 
     run(main())
 
@@ -300,7 +302,7 @@ def test_engine_exit_ends_every_open_run_and_next_call_restarts(engine: Engine) 
                         await collect(current)
                     assert raised.value.code == ErrorCode.ENGINE_EXITED
                     assert raised.value.message == "panic: boom"
-                assert kelpie.network is None
+                assert engine.networks == [None]
         assert engine.starts == 1
 
         async with kelpie.runDownload(LINK_A, Path("/out/a.bin")) as current:
@@ -358,34 +360,24 @@ def test_update_during_startup_reaches_the_engine(engine: Engine) -> None:
     assert update["settings"]["enableKad"] is False
 
 
-def test_network_is_reported_while_the_engine_runs(engine: Engine) -> None:
-    engine.setScript(
-        {
-            "network": {
-                "isServerConnected": True,
-                "isHighId": False,
-                "isKadFirewalled": True,
-                "kadNodes": 812,
-                "isBehindCarrierNat": True,
-            }
-        }
+def test_network_is_reported_while_the_engine_runs_with_or_without_a_run(engine: Engine) -> None:
+    network = Network(
+        isServerConnected=True,
+        isHighId=False,
+        isKadFirewalled=True,
+        kadNodes=812,
+        isBehindCarrierNat=True,
     )
+    engine.setScript({"network": {field: getattr(network, field) for field in Network.__slots__}})
 
     async def main():
         kelpie = engine.buildKelpie()
-        assert kelpie.network is None
-        async with kelpie.runDownload(LINK_A, Path("/out/a.bin")) as current:
-            async for _ in current:
-                break
-            assert kelpie.network == Network(
-                isServerConnected=True,
-                isHighId=False,
-                isKadFirewalled=True,
-                kadNodes=812,
-                isBehindCarrierNat=True,
-            )
+        await kelpie.remove(HASH_B)
+        while not engine.networks:
+            await asyncio.sleep(0.01)
+        assert engine.networks == [network]
         await kelpie.close()
-        assert kelpie.network is None
+        assert engine.networks == [network, None]
 
     run(main())
 
@@ -414,7 +406,7 @@ def test_close_cancels_open_runs(engine: Engine) -> None:
                 async for _ in current:
                     await kelpie.close()
         assert not kelpie.isActive(HASH_A)
-        assert kelpie.network is None
+        assert engine.networks[-1] is None
         await kelpie.close()
 
     run(main())

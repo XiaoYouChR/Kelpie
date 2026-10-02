@@ -60,10 +60,13 @@ type Write struct {
 // answers with OnPartHashed or OnDiskFailed.
 type HashPart struct{ Part int }
 
-// Close ends a peer connection for this Transfer.
+// Close ends a peer connection for this Transfer. IsBanned closes the
+// connection itself: the peer is refused, so no other Transfer or upload
+// keeps it.
 type Close struct {
-	Peer   uint64
-	Reason string
+	Peer     uint64
+	Reason   string
+	IsBanned bool
 }
 
 // TraceEvent is one source lifecycle line for the trace file (docs/protocol.md

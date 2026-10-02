@@ -140,8 +140,7 @@ func toVotePrefix(addr netip.Addr) netip.Prefix {
 // thrown away whole and nobody is banned: MD4 cannot tell which sender was
 // corrupt, and banning all of them would let one bad source ban the good
 // ones (aMule PartFile.cpp:3719-3732).
-func (t *Transfer) requestRecovery(part int) []Action {
-	now := t.tick.Now
+func (t *Transfer) requestRecovery(part int, now time.Time) []Action {
 	root, isTrusted := t.aich.root()
 	if !isTrusted || piece.BlockCount(t.file.Size, part) == 1 {
 		t.picker.onPartFailed(part)
@@ -150,7 +149,7 @@ func (t *Transfer) requestRecovery(part int) []Action {
 	var highIDs, lowIDs []uint64
 	for _, peer := range slices.Sorted(maps.Keys(t.aich.roots)) {
 		s := t.peers[peer]
-		if s == nil || t.aich.roots[peer] != root || t.isAsked(peer) || (!s.lastRecovery.IsZero() && now.Sub(s.lastRecovery) < minRequestTime) {
+		if s == nil || t.aich.roots[peer] != root || t.isAsked(peer) || now.Sub(s.lastRecovery) < minRequestTime {
 			continue
 		}
 		if s.ClientID == 0 {
@@ -184,14 +183,14 @@ func (t *Transfer) isAsked(peer uint64) bool {
 
 // OnRecovery takes the recovery data a peer sent for part. Data that does
 // not lead to the trusted root counts as a failed answer.
-func (t *Transfer) OnRecovery(peer uint64, part int, root wire.AICHHash, entries []client.AICHEntry) []Action {
+func (t *Transfer) OnRecovery(peer uint64, part int, root wire.AICHHash, entries []client.AICHEntry, now time.Time) []Action {
 	if asked, ok := t.aich.asked[part]; !ok || asked != peer || !t.isDownloading() {
 		return nil
 	}
 	trusted, isTrusted := t.aich.root()
 	hashes, ok := aich.MatchRecovery(trusted, t.file.Size, part, entries)
 	if !ok || root != trusted || !isTrusted {
-		return t.OnRecoveryFailed(peer)
+		return t.OnRecoveryFailed(peer, now)
 	}
 	delete(t.aich.asked, part)
 	t.aich.verified[part] = hashes
@@ -201,13 +200,13 @@ func (t *Transfer) OnRecovery(peer uint64, part int, root wire.AICHHash, entries
 // OnRecoveryFailed: the peer could not give the recovery data it was asked
 // for, or is gone. Its root is forgotten and another source is asked
 // (ClientAICHRequestFailed, SHAHashSet.cpp:1014-1028).
-func (t *Transfer) OnRecoveryFailed(peer uint64) []Action {
+func (t *Transfer) OnRecoveryFailed(peer uint64, now time.Time) []Action {
 	delete(t.aich.roots, peer)
 	for part, asked := range t.aich.asked {
 		if asked == peer {
 			delete(t.aich.asked, part)
 			if t.isDownloading() {
-				return t.requestRecovery(part)
+				return t.requestRecovery(part, now)
 			}
 		}
 	}

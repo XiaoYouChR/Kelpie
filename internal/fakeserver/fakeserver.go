@@ -73,6 +73,8 @@ type Server struct {
 	// obfuscatedUDP is the UDP port plus 12, open with Config.UDPKey.
 	obfuscatedUDP transport.PacketConn
 
+	// mu guards the clients and their files: each connection runs on its
+	// own goroutine and reads the others' for sources and callbacks.
 	mu        sync.Mutex
 	clients   map[*client]struct{}
 	nextLowID uint32
@@ -90,6 +92,8 @@ type client struct {
 	cryptOptions byte
 	files        map[wire.Hash]struct{}
 
+	// writeMu keeps packets whole: another client's goroutine writes a
+	// callback request to this connection while its own writes answers.
 	writeMu sync.Mutex
 }
 

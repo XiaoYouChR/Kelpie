@@ -368,7 +368,7 @@ func (e *Engine) runTransferActions(r *run, actions []transfer.Action) {
 		case transfer.Close:
 			if c := e.conns[a.Peer]; c != nil {
 				e.removeFile(c, r.file.Hash, a.Reason)
-				if a.Reason == "corrupt data" || a.Reason == "banned" {
+				if a.IsBanned {
 					e.closeConn(c, a.Reason)
 				}
 			}

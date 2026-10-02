@@ -1,6 +1,9 @@
 // Package transfer is the state machine of one eD2k file: its sources, its
 // piece picker, verification, progress and Durable State. It performs no I/O;
 // every reaction returns the actions the engine must perform.
+//
+// A method that needs the time takes it as now, OnTick as Tick.Now; none
+// reads the time of the last Tick, which is up to a tick old.
 package transfer
 
 import (
@@ -329,7 +332,7 @@ func (t *Transfer) expectedHash(part int) (wire.Hash, bool) {
 
 // OnPartHashed verifies a part. A mismatch starts an AICH repair of the
 // part, or when none is possible discards it.
-func (t *Transfer) OnPartHashed(part int, hash wire.Hash) []Action {
+func (t *Transfer) OnPartHashed(part int, hash wire.Hash, now time.Time) []Action {
 	if !t.isDownloading() {
 		return nil
 	}
@@ -344,7 +347,7 @@ func (t *Transfer) OnPartHashed(part int, hash wire.Hash) []Action {
 		}
 		return nil
 	}
-	return t.requestRecovery(part)
+	return t.requestRecovery(part, now)
 }
 
 // OnHashSet accepts the part hashes a peer sent if they add up to the file

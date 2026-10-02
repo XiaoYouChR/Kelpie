@@ -169,6 +169,8 @@ type core struct {
 	finds            []*find
 	publishes        []*publish
 
+	// lastBootstrap paces seed and peer bootstraps alike, as aMule
+	// shares one clock between them (bootstrapGap, peerBootstrapGap).
 	lastBootstrap    time.Time
 	nextSelfLookup   time.Time
 	nextRandomLookup time.Time

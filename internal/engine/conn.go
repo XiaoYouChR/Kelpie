@@ -626,11 +626,11 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		}
 	case peer.RecoveryReceived:
 		if r := e.downloadByHash(ev.File); r != nil {
-			e.runTransferActions(r, r.transfer.OnRecovery(c.id, ev.Part, ev.Root, ev.Entries))
+			e.runTransferActions(r, r.transfer.OnRecovery(c.id, ev.Part, ev.Root, ev.Entries, now))
 		}
 	case peer.RecoveryFailed:
 		if r := e.downloadByHash(ev.File); r != nil {
-			e.runTransferActions(r, r.transfer.OnRecoveryFailed(c.id))
+			e.runTransferActions(r, r.transfer.OnRecoveryFailed(c.id, now))
 		}
 	case peer.TreeWanted:
 		e.requestTree(ev.File)

@@ -60,7 +60,9 @@ type table struct {
 	self    wire.Hash
 	buckets [128]bucket
 	byID    map[wire.Hash]*contact
-	byIP    map[netip.Addr]*contact
+	// byIP holds the one contact an IP may have; a second ID at the same
+	// IP replaces it only once verified.
+	byIP map[netip.Addr]*contact
 }
 
 // buildTable makes an empty table whose leaves are first looked up

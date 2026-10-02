@@ -20,10 +20,10 @@ func TestBanExpires(t *testing.T) {
 	h.connect(3, 3, nil)
 	h.transfer.OnRoot(3, tree.Root())
 	h.fillPart(1, 2, 4)
-	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0)))
+	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0), h.now))
 	isBanned := func(peer uint64) bool {
 		actions := h.transfer.OnPeerConnected(peer, transfer.Source{Endpoint: endpoint(2), UserHash: userHash(2)}, h.now)
-		return len(actions) == 1 && actions[0] == (transfer.Close{Peer: peer, Reason: "banned"})
+		return len(actions) == 1 && actions[0] == (transfer.Close{Peer: peer, Reason: "banned", IsBanned: true})
 	}
 	if !isBanned(4) {
 		t.Fatal("corrupt sender not banned")
