@@ -57,25 +57,6 @@ type Unknown struct {
 
 func (u Unknown) Build(b []byte) []byte { return append(append(b, u.Proto, u.Op), u.Body...) }
 
-// ParseFrame reads one TCP frame from the front of b and returns it with the
-// number of bytes consumed. n == 0 with a nil error means b does not yet hold
-// a whole frame. An unpacked Body aliases b.
-func ParseFrame(b []byte) (f Frame, n int, err error) {
-	if len(b) < HeaderSize {
-		return Frame{}, 0, nil
-	}
-	size, err := parseHeader(b[:HeaderSize])
-	if err != nil {
-		return Frame{}, 0, err
-	}
-	n = HeaderSize + size
-	if len(b) < n {
-		return Frame{}, 0, nil
-	}
-	f, err = toFrame(b[0], b[5], b[HeaderSize:n])
-	return f, n, err
-}
-
 // ParseFrameFrom reads exactly one TCP frame from r. The body grows as its
 // bytes arrive, so a peer that declares a large frame and trickles it holds
 // only what it sent.

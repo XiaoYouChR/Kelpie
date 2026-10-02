@@ -61,7 +61,7 @@ func samplePackets() []wire.Packet {
 
 func TestTCPRoundTrip(t *testing.T) {
 	for _, p := range samplePackets() {
-		frame, _, err := wire.ParseFrame(wire.BuildPacket(nil, p))
+		frame, err := wire.ParseFrameFrom(bytes.NewReader(wire.BuildPacket(nil, p)))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -6,17 +6,16 @@ import (
 	"testing"
 )
 
-func FuzzParseFrame(f *testing.F) {
+func FuzzParseFrameFrom(f *testing.F) {
 	f.Add(buildFrame(nil, ProtocolEDonkey, 0x5C, []byte{0x70, 0x11, 0x01, 0x00}))
 	f.Add(buildPackedFrame(nil, 0x84, bytes.Repeat([]byte("kelpie"), 100)))
 	f.Add(buildFrame(nil, ProtocolEMule, 0x60, make([]byte, 12)))
 	f.Add([]byte{0xE3, 0xFF, 0xFF, 0xFF, 0x7F, 1})
 	f.Fuzz(func(t *testing.T, b []byte) {
-		frame, n, err := ParseFrame(b)
-		if n > len(b) || (err == nil && n > 0 && len(frame.Body) > max(MaxFrameSize, maxInflatedSize)) {
-			t.Fatalf("n=%d body=%d", n, len(frame.Body))
+		frame, err := ParseFrameFrom(bytes.NewReader(b))
+		if err == nil && len(frame.Body) > max(MaxFrameSize, maxInflatedSize) {
+			t.Fatalf("body=%d", len(frame.Body))
 		}
-		ParseFrameFrom(bytes.NewReader(b))
 	})
 }
 

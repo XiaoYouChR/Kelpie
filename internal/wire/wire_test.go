@@ -26,20 +26,20 @@ func TestFrameGolden(t *testing.T) {
 	if !bytes.Equal(got, want) {
 		t.Fatalf("frame = %x, want %x", got, want)
 	}
-	f, n, err := ParseFrame(append(got, 0xE3))
-	if err != nil || n != len(want) {
-		t.Fatalf("ParseFrame n=%d err=%v", n, err)
+	f, err := ParseFrameFrom(bytes.NewReader(got))
+	if err != nil {
+		t.Fatal(err)
 	}
 	if f.Protocol != ProtocolEDonkey || f.Opcode != 0x5C || !bytes.Equal(f.Body, want[6:]) {
 		t.Fatalf("frame = %+v", f)
 	}
 }
 
-func TestParseFrameWaitsForWholeFrame(t *testing.T) {
+func TestParseFrameNeedsWholeFrame(t *testing.T) {
 	raw := buildFrame(nil, ProtocolEMule, 0x60, make([]byte, 12))
 	for cut := range len(raw) {
-		if _, n, err := ParseFrame(raw[:cut]); n != 0 || err != nil {
-			t.Fatalf("cut %d: n=%d err=%v", cut, n, err)
+		if _, err := ParseFrameFrom(bytes.NewReader(raw[:cut])); err == nil {
+			t.Fatalf("cut %d: want error", cut)
 		}
 	}
 }
@@ -51,7 +51,7 @@ func TestParseFrameRejects(t *testing.T) {
 		"too large":        {0xE3, 0xFF, 0xFF, 0xFF, 0x7F, 1},
 	}
 	for name, raw := range cases {
-		if _, _, err := ParseFrame(raw); err == nil {
+		if _, err := ParseFrameFrom(bytes.NewReader(raw)); err == nil {
 			t.Errorf("%s: want error", name)
 		}
 	}
@@ -89,7 +89,7 @@ func TestPackedKadDatagram(t *testing.T) {
 
 func TestPackedFrameRejectsGarbage(t *testing.T) {
 	raw := buildFrame(nil, ProtocolPacked, 0x84, []byte{1, 2, 3})
-	if _, _, err := ParseFrame(raw); err == nil {
+	if _, err := ParseFrameFrom(bytes.NewReader(raw)); err == nil {
 		t.Fatal("want inflate error")
 	}
 }

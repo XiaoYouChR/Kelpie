@@ -39,9 +39,9 @@ func parts(bits ...bool) wire.Bitfield { return wire.ToBitfield(bits) }
 
 func roundTrip(t *testing.T, p wire.Packet, parse func(byte, byte, []byte) (wire.Packet, error)) {
 	t.Helper()
-	frame, n, err := wire.ParseFrame(wire.BuildPacket(nil, p))
-	if err != nil || n == 0 {
-		t.Fatalf("%T: frame n=%d err=%v", p, n, err)
+	frame, err := wire.ParseFrameFrom(bytes.NewReader(wire.BuildPacket(nil, p)))
+	if err != nil {
+		t.Fatalf("%T: frame: %v", p, err)
 	}
 	got, err := parse(frame.Protocol, frame.Opcode, frame.Body)
 	if err != nil {
