@@ -366,17 +366,6 @@ def test_update_sends_the_settings_to_the_running_engine(engine: Engine) -> None
     assert update["rateLimits"] == {"download": 0, "upload": 512}
 
 
-@pytest.mark.parametrize("proxy", ["", "socks5://127.0.0.1:1080", "socks5h://u:p@proxy.example:7890", "socks5://[::1]"])
-def test_settings_accept_direct_or_a_socks5_proxy(proxy: str) -> None:
-    assert Settings(proxy=proxy).proxy == proxy
-
-
-@pytest.mark.parametrize("proxy", ["http://127.0.0.1:8080", "socks4://127.0.0.1:1080", "127.0.0.1:1080", "socks5://", "socks5://host:99999"])
-def test_settings_refuse_any_other_proxy(proxy: str) -> None:
-    with pytest.raises(ValueError):
-        Settings(proxy=proxy)
-
-
 def test_update_during_startup_reaches_the_engine(engine: Engine) -> None:
     reads = []
 

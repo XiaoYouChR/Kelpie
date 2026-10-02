@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote, unquote
 
 from .errors import Error, ErrorCode
 
@@ -10,6 +10,8 @@ SIZE_PATTERN = re.compile(r"[0-9]+")
 SCHEME = "ed2k://"
 # eMule's MAX_EMULE_FILE_SIZE
 MAX_SIZE = 256 << 30
+# The engine refuses any other Proxy; ADR-0006 says why.
+PROXY_SCHEMES = frozenset({"socks5", "socks5h"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,17 +57,8 @@ class Settings:
     traceFile: Path | None = None
     downloadRateLimit: int = 0
     uploadRateLimit: int = 0
-    # A socks5:// or socks5h:// URL, or "" to go direct; ADR-0006 says why
-    # nothing else is accepted.
+    # A URL with a scheme in PROXY_SCHEMES, or "" to go direct.
     proxy: str = ""
-
-    def __post_init__(self) -> None:
-        if not self.proxy:
-            return
-        parts = urlsplit(self.proxy)
-        # Reading parts.port raises ValueError for a port out of range.
-        if parts.scheme not in ("socks5", "socks5h") or not parts.hostname or parts.port == 0:
-            raise ValueError(f"proxy must be a socks5:// or socks5h:// URL: {self.proxy}")
 
 
 @dataclass(frozen=True, slots=True)
