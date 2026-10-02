@@ -3,6 +3,7 @@ package engine
 import (
 	"io"
 	"net/netip"
+	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 )
@@ -70,6 +71,9 @@ type Progress struct {
 	Uploaded     int64
 	Peers        int
 	ActivePeers  int
+	// HeldSources and HeldUntil follow docs/protocol.md "progress".
+	HeldSources int
+	HeldUntil   time.Time
 }
 
 type Network struct {

@@ -90,7 +90,7 @@ const (
 	EventConnected Event = "connected"
 	EventFailed    Event = "failed"
 	EventQueued    Event = "queued"
-	EventSlot      Event = "slot"
+	eventSlot      Event = "slot"
 	EventReceived  Event = "received"
 	EventClosed    Event = "closed"
 )

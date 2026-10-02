@@ -14,8 +14,7 @@ import (
 // Timing and limits follow eMule (Opcodes.h, Preferences.cpp, PartFile.cpp,
 // DownloadClient.cpp, DeadSourceList.cpp) so Kelpie never asks more often
 // than eMule does; the reask interval is aMule's, which is still well above
-// the MIN_REQUESTTIME (590 s) below which eMule and aMule count a client as
-// aggressive.
+// politeGap.
 const (
 	// fileReaskTime is aMule's FILEREASKTIME (include/protocol/ed2k/
 	// Constants.h:35), counted from when we last connected to the source or
@@ -42,11 +41,30 @@ const (
 	// corrupt data stays refused.
 	banTime = 2 * time.Hour
 
-	// minRequestTime is MIN_REQUESTTIME (Constants.h:67): aMule 3.1.0 counts
-	// an OP_AICHREQUEST, OP_STARTUPLOADREQ or OP_REASKFILEPING sooner than
-	// this after the client's last request as aggressive
-	// (ClientTCPSocket.cpp:1761-1771, UploadClient.cpp:655-680).
-	minRequestTime = 590 * time.Second
+	// A client counts our OP_STARTUPLOADREQ, OP_REASKFILEPING and
+	// OP_AICHREQUEST against us when one comes within MIN_REQUESTTIME of the
+	// one before: aMule 3.1.0 adds 3 to a score, takes 1 off for a later one
+	// and bans at 10 (CheckForAggressive, UploadClient.cpp:656-683, called at
+	// ClientTCPSocket.cpp:659, 1768 and ClientUDPSocket.cpp:441); eMule
+	// counts only OP_STARTUPLOADREQ, per file, adds 1 and bans at 4
+	// (AddRequestCount, UploadClient.cpp:664-688). Each source mirrors the
+	// aMule score so that asking it again at once, as aMule does after a
+	// pause, never gets us banned.
+	//
+	// politeGap is the longer MIN_REQUESTTIME, eMule's 10 minutes, and a
+	// minute more, so that latency cannot bring a request we count as polite
+	// to the client sooner than MIN_REQUESTTIME after the one before.
+	politeGap    = 11 * time.Minute
+	quickPenalty = 3
+	// holdAggressiveness: a request that would bring the score to it waits
+	// until it is polite, so the score stays at most 6. The source we know
+	// nothing of starts at unknownAggressiveness, for a request the client
+	// may have counted from an earlier Engine Process. Since we never count
+	// less than the client does (see addRequest), aMule's score stays at
+	// most 6+3, below its 10, and eMule's count, which grows by 1 where ours
+	// grows by 3, at most 3, below its 4.
+	holdAggressiveness    = 7
+	unknownAggressiveness = 3
 
 	exchangeReaskSlow = 40 * time.Minute // SOURCECLIENTREASKS
 	exchangeReaskFast = 5 * time.Minute  // SOURCECLIENTREASKF
@@ -159,10 +177,11 @@ type source struct {
 
 	lastAsked    time.Time
 	lastExchange time.Time
-	// lastRecovery is when we last asked the source for AICH recovery
-	// data: one bad part after another would otherwise ask it within
-	// minRequestTime.
-	lastRecovery time.Time
+	// lastRequest and aggressiveness mirror what the source's client keeps
+	// of our requests (see politeGap). They go with the source to the file's
+	// next Run, as the client keeps them across our Runs.
+	lastRequest    time.Time
+	aggressiveness int
 
 	udpReasks int
 	udpFailed int
@@ -292,7 +311,7 @@ func (t *Transfer) addNew(found Source) *source {
 		}
 		t.sources = slices.Delete(t.sources, i, i+1)
 	}
-	s := &source{key: buildKey(found), Source: found}
+	s := &source{key: buildKey(found), Source: found, aggressiveness: unknownAggressiveness}
 	t.sources = append(t.sources, s)
 	return s
 }
@@ -538,13 +557,51 @@ func (t *Transfer) reaskingSource(endpoint netip.AddrPort) *source {
 	return nil
 }
 
+// OnSlotAsked records that we sent the peer OP_STARTUPLOADREQ for the file.
+func (t *Transfer) OnSlotAsked(peer uint64, now time.Time) {
+	if s := t.peers[peer]; s != nil {
+		s.addRequest(now, true)
+	}
+}
+
+// addRequest counts a request as the source's client does. Only a slot ask
+// is forgiven: eMule forgives no other request, and to aMule forgiving less
+// only makes our score higher than its own. We measure from our last
+// request of any kind and the client from its last counted one, never
+// later, so a request quick to the client is quick to us.
+func (s *source) addRequest(now time.Time, isSlotAsk bool) {
+	switch {
+	case s.lastRequest.IsZero():
+	case now.Sub(s.lastRequest) < politeGap:
+		s.aggressiveness += quickPenalty
+	case isSlotAsk:
+		s.aggressiveness = max(0, s.aggressiveness-1)
+	}
+	s.lastRequest = now
+}
+
+// isHeld: the source is due to be asked and waits only for holdUntil.
+func (t *Transfer) isHeld(s *source, now time.Time) bool {
+	return (s.state == stateNew || s.state == stateQueued) && !t.isConnected(s) &&
+		!now.Before(s.reaskDue()) && now.Before(s.holdUntil())
+}
+
+// holdUntil is when the source may next be asked: at once, unless the
+// request would bring its score to holdAggressiveness.
+func (s *source) holdUntil() time.Time {
+	if s.aggressiveness+quickPenalty < holdAggressiveness {
+		return time.Time{}
+	}
+	return s.lastRequest.Add(politeGap)
+}
+
 func (t *Transfer) OnSlotGranted(peer uint64, now time.Time) []Action {
 	s := t.peers[peer]
 	if !t.isDownloading() || s == nil {
 		return nil
 	}
 	s.state = stateDownloading
-	return []Action{t.buildTrace(now, s, EventSlot)}
+	return []Action{t.buildTrace(now, s, eventSlot)}
 }
 
 // OnPeerGone detaches a closed connection. A source that answered our file
@@ -573,14 +630,12 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 
 // Stop detaches every peer when the Run ends and keeps the sources for
 // Options.Previous of the file's next Run, as aMule keeps a paused file's
-// sources (CPartFile::PauseFile, PartFile.cpp:2799-2846). A source that was
-// sending is asked again once MIN_REQUESTTIME has passed since we last asked
-// it: aMule asks it as soon as the file resumes (ResetLastAskedTime,
-// PartFile.cpp:2828-2830), but the peer counts an ask within MIN_REQUESTTIME
-// as aggressive (UploadClient.cpp:655-680), and over TCP, since a UDP reask
-// would come before that. Every other source keeps its reask time. A
-// Connect the engine was to answer is made again; a callback still times
-// out.
+// sources (CPartFile::PauseFile, PartFile.cpp:2799-2846). The engine sends
+// OP_CANCELTRANSFER to a source that was sending, which is asked again at
+// once, as aMule does (ResetLastAskedTime, PartFile.cpp:2828-2830), unless
+// that would count as aggressive (see holdUntil). Every other source keeps
+// its reask time. A Connect the engine was to answer is made again; a
+// callback still times out.
 func (t *Transfer) Stop(now time.Time) []Action {
 	var actions []Action
 	for _, s := range t.sources {
@@ -597,7 +652,7 @@ func (t *Transfer) Stop(now time.Time) []Action {
 			s.state = stateNew
 		case stateDownloading:
 			s.state = stateNew
-			s.lastAsked = s.lastAsked.Add(minRequestTime - fileReaskTime)
+			s.lastAsked = time.Time{}
 		}
 		event := t.buildTrace(now, s, EventClosed)
 		event.Reason = "run ended"
@@ -744,24 +799,17 @@ func (t *Transfer) runSource(s *source, budget *int, now time.Time) []Action {
 		return nil
 	}
 
-	// aMule doubles the reask of a source with nothing we need and never
-	// UDP-reasks it (PartFile.cpp:1574-1580).
-	reaskTime := fileReaskTime
-	if s.isNoNeeded {
-		reaskTime *= 2
-	}
-	untilReask := time.Duration(0)
-	if !s.lastAsked.IsZero() {
-		untilReask = max(0, reaskTime-now.Sub(s.lastAsked))
-	}
+	untilReask := max(0, s.reaskDue().Sub(now))
+	canAsk := !now.Before(s.holdUntil())
 	// A source due a Source Exchange is reasked over TCP, which can carry
 	// the exchange (aMule UDPReaskForDownload, DownloadClient.cpp:1275-1279).
-	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s) && !t.isExchangeAllowed(s, now) {
+	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && canAsk && t.canReaskUDP(s) && !t.isExchangeAllowed(s, now) {
 		s.state = stateReasking
 		s.udpReasks++
+		s.addRequest(now, false)
 		return []Action{ReaskUDP{Endpoint: netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort), UserHash: s.UserHash, CanObfuscate: s.CanObfuscate}}
 	}
-	if untilReask > 0 {
+	if untilReask > 0 || !canAsk {
 		return nil
 	}
 	if s.state == stateReasking {
@@ -769,6 +817,20 @@ func (t *Transfer) runSource(s *source, budget *int, now time.Time) []Action {
 		s.udpFailed++
 	}
 	return t.requestConnect(s, budget, now)
+}
+
+// reaskDue is when the source's reask comes; zero for one never asked.
+// aMule doubles the reask of a source with nothing we need and never
+// UDP-reasks it (PartFile.cpp:1574-1580).
+func (s *source) reaskDue() time.Time {
+	if s.lastAsked.IsZero() {
+		return time.Time{}
+	}
+	reaskTime := fileReaskTime
+	if s.isNoNeeded {
+		reaskTime *= 2
+	}
+	return s.lastAsked.Add(reaskTime)
 }
 
 func (t *Transfer) canReaskUDP(s *source) bool {

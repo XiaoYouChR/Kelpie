@@ -281,12 +281,13 @@ func TestRootIsTrustedByVotes(t *testing.T) {
 	}
 }
 
-// One bad part after another asks a source for recovery data at most once
-// per MIN_REQUESTTIME: aMule 3.1.0 counts a sooner OP_AICHREQUEST as
-// aggressive and bans at the fourth.
-func TestRecoveryAsksASourceOncePerMinRequestTime(t *testing.T) {
-	const minRequestTime = 590 * time.Second
-	for _, wait := range []time.Duration{minRequestTime - time.Second, minRequestTime} {
+// One bad part after another asks a source that was just asked for a slot
+// for recovery data once more only after eleven minutes: aMule 3.1.0
+// counts an OP_AICHREQUEST within MIN_REQUESTTIME of the last request as
+// aggressive, and recovery requests go by the same score as slot asks.
+func TestRecoveryAsksASourceOnlyWhileNotAggressive(t *testing.T) {
+	const politeGap = 11 * time.Minute
+	for _, wait := range []time.Duration{politeGap - time.Second, politeGap} {
 		data := buildData(2*piece.PartSize + 5000)
 		tree := buildTree(data)
 		file := buildFile(data)
@@ -309,7 +310,7 @@ func TestRecoveryAsksASourceOncePerMinRequestTime(t *testing.T) {
 			h.deliver(4, 1, index == 0)
 		}
 		isAsked := countActions[transfer.RequestRecovery](h.actions[before:]) == 1
-		if isAsked != (wait >= minRequestTime) {
+		if isAsked != (wait >= politeGap) {
 			t.Fatalf("after %v asked again: %v", wait, isAsked)
 		}
 	}
