@@ -96,7 +96,8 @@ func (u *udpCheck) setExternPort(port uint16, from netip.Addr) {
 }
 
 // recheckUDP is ReCheckFirewallUDP(false), run with every TCP firewall
-// recheck: a new lookup for test clients and a new extern port.
+// recheck: a new lookup for test clients, which runUDPCheck starts, and a
+// new extern port.
 func (c *core) recheckUDP(now time.Time) {
 	u := &c.udp
 	u.running, u.finished = 0, 0
@@ -106,7 +107,7 @@ func (c *core) recheckUDP(now time.Time) {
 	u.externIPs, u.externPorts = nil, nil
 	u.possible = nil
 	c.cancelLookup(u.lookup)
-	u.lookup = c.startLookup(udpCheckLookup, buildRandomID(c.id, 0, 0, c.rng), 0, now)
+	u.lookup = nil
 }
 
 // runUDPCheck runs once a second while Kad is connected.
@@ -115,6 +116,12 @@ func (c *core) runUDPCheck(now time.Time) {
 	if !u.isTimedOut && u.isRunning() && !u.isFirewalled && !u.isVerified && c.firewall.isFirewalled() &&
 		!u.started.IsZero() && now.Sub(u.started) > udpCheckTimeout {
 		u.isTimedOut = true
+	}
+	// The lookup for test clients is made once, so it waits for the self
+	// lookup to fill the table with verified contacts to start from; aMule
+	// starts it at once, from a table its nodes.dat filled.
+	if u.isRunning() && u.lookup == nil && c.isSelfLookupDone {
+		u.lookup = c.startLookup(udpCheckLookup, buildRandomID(c.id, 0, 0, c.rng), 0, now)
 	}
 	if !u.isRunning() || !u.isFindingExternPort() || now.Before(u.nextExternPing) {
 		return

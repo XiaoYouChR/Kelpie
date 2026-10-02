@@ -64,15 +64,17 @@ func TestFirewallUDPIsAnswered(t *testing.T) {
 	}
 }
 
-// startUDPCheck connects the harness, hands the test-client lookup three
-// fresh clients and learns the extern port from the pongs of two nodes;
-// the first UDPCheck goes out once the port is known.
+// startUDPCheck connects the harness as after its first self lookup, hands
+// the test-client lookup three fresh clients and learns the extern port
+// from the pongs of two nodes; the first UDPCheck goes out once the port is
+// known.
 func startUDPCheck(t *testing.T, h *harness) UDPCheck {
 	t.Helper()
 	nodes := h.connect(fileHash, 4)
 	for _, n := range nodes {
 		delete(h.answering, n.Addr)
 	}
+	h.c.isSelfLookupDone = true
 	h.tick(time.Second)
 	l := h.c.udp.lookup
 	if l == nil || l.kind != udpCheckLookup {
@@ -227,5 +229,22 @@ func TestAckedNodeIsNotAskedAgain(t *testing.T) {
 		if r.to == first[0].to {
 			t.Fatal("asked a node that acknowledged again")
 		}
+	}
+}
+
+// The lookup for test clients waits for the first self lookup: it is made
+// once per check, from verified contacts only.
+func TestUDPCheckLookupWaitsForSelfLookup(t *testing.T) {
+	h := buildHarness(t)
+	h.connect(fileHash, 4)
+	h.tick(time.Second)
+	if h.c.udp.lookup != nil {
+		t.Fatal("looked for test clients before the self lookup ended")
+	}
+	for range 60 {
+		h.tick(time.Second)
+	}
+	if !h.c.isSelfLookupDone || h.c.udp.lookup == nil {
+		t.Fatal("no test-client lookup after the self lookup")
 	}
 }

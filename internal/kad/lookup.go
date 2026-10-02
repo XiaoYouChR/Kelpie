@@ -468,7 +468,7 @@ func (c *core) runLookups(now time.Time) {
 		if !now.Before(l.deadline) || isComplete {
 			l.isDone = true
 			if l.kind == nodeLookup && l.target == c.id {
-				c.canPublish = true
+				c.isSelfLookupDone = true
 			}
 			return true
 		}

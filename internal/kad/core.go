@@ -162,9 +162,12 @@ type core struct {
 	publicIP    netip.Addr
 	seeds       []netip.AddrPort
 	isConnected bool
-	canPublish  bool
-	finds       []*find
-	publishes   []*publish
+	// isSelfLookupDone: the first lookup of our own ID ended, so the table
+	// holds the verified contacts that publishing and the UDP test's
+	// lookup start from.
+	isSelfLookupDone bool
+	finds            []*find
+	publishes        []*publish
 
 	lastBootstrap    time.Time
 	nextSelfLookup   time.Time
@@ -785,7 +788,7 @@ func (c *core) runWanted(now time.Time) {
 			break
 		}
 	}
-	if !c.canPublish || !c.isReachable() || now.Before(c.nextPublish) || c.lookupCount(sourcePublish) >= maxPublishes {
+	if !c.isSelfLookupDone || !c.isReachable() || now.Before(c.nextPublish) || c.lookupCount(sourcePublish) >= maxPublishes {
 		return
 	}
 	c.nextPublish = now.Add(publishGap)
