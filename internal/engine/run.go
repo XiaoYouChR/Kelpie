@@ -293,7 +293,7 @@ func (e *Engine) runTransfers(now time.Time) {
 	}
 }
 
-// connectBudget follows eMule's MaxConnections and MaxConperFive.
+// connectBudget follows maxConnections and maxNewConnections.
 func (e *Engine) connectBudget(now time.Time) int {
 	e.recentConnects = slices.DeleteFunc(e.recentConnects, func(at time.Time) bool {
 		return now.Sub(at) >= newConnectionWindow

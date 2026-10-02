@@ -49,9 +49,12 @@ const (
 	tickInterval   = 100 * time.Millisecond
 	secondInterval = time.Second
 	saveInterval   = time.Minute
-	// eMule's MaxConnections and MaxConperFive defaults.
+	// maxConnections is eMule's MaxConnections default. maxNewConnections is
+	// aMule 3.1.0's MaxConnectionsPerFiveSeconds (Preferences.cpp:1104),
+	// up from eMule's 20: it only paces how fast we dial the sources we
+	// have, each of which is still asked once per reask interval.
 	maxConnections      = 500
-	maxNewConnections   = 20
+	maxNewConnections   = 50
 	newConnectionWindow = 5 * time.Second
 	connectTimeout      = 40 * time.Second // CONNECTION_TIMEOUT
 	diskWorkers         = 4
