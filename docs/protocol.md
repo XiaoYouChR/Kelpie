@@ -68,7 +68,9 @@ After `failed` the Engine Process exits with a non-zero status. Kelpie waits
 ```json
 {"type": "progress", "run": 1, "hash": "31D6CFE0D16AE931B73C59D7E0C089C0", "size": 2048,
  "received": 1024, "downloadRate": 512, "uploadRate": 0, "uploaded": 0,
- "peers": 12, "activePeers": 3, "heldSources": 1, "heldUntil": 1767226320000}
+ "peers": 12, "activePeers": 3, "heldSources": 1, "heldUntil": 1767226320000,
+ "sources": [{"address": "1.2.3.4:4662", "software": "eMule 0.70b", "status": "transferring",
+              "rank": 0, "downloadRate": 512, "channel": "server"}]}
 {"type": "ended", "run": 1, "error": null}
 {"type": "network", "isServerConnected": true, "isHighId": false,
  "isKadFirewalled": true, "kadNodes": 812, "isBehindCarrierNat": false}
@@ -85,6 +87,22 @@ After `failed` the Engine Process exits with a non-zero status. Kelpie waits
   them may be asked, in Unix milliseconds, and 0 when none is held. It is a
   time and not a countdown, so it changes only when the Held Sources do; the
   caller counts down itself.
+- `sources` lists at most 50 sources: those sending to us (`status`
+  `transferring`), those whose queue we wait in (`queued`), those we are
+  connecting to or waiting on to answer our file request (`connecting`), and
+  the Held Sources (`held`), in that order; queued ones by `rank`, unknown
+  last. Sources only known, waiting to be asked again, or failed are left
+  out; `peers` still counts them. A seed run lists none.
+- `address` is `address:port`, IPv6 in brackets; a LowID or firewalled
+  source not yet connected is named as in Trace. `software` is the client
+  and version its Hello named, such as `eMule 0.70b` or `aMule 2.3.3`, and
+  empty when it named none or has not connected yet. `rank` is the queue rank it
+  last told, 0 when unknown or not `queued`. `downloadRate` is bytes per
+  second from that source. `channel` is where it was first found: `link`,
+  `server`, `kad`, `exchange` (another peer's Source Exchange) or `incoming`
+  (it connected to us).
+- A source has a `downloadRate` only while the run's `downloadRate` is not
+  0, so the rates in `sources` seldom add a line of their own.
 - Each run gets exactly one `ended`, and no `progress` after it. A run that is
   not admitted gets `ended` with its error and no `progress`. A download run
   ends with `error: null` when the file is complete and flushed to the device

@@ -46,7 +46,9 @@ _Avoid_: session, job, watch
 
 The latest observable facts about a running Transfer. Progress is not a
 history: a slow consumer only sees the newest value. The end of a Run is never
-coalesced away.
+coalesced away. Besides counts and rates, it lists the sources that tell why a
+download is as fast as it is: each with its address, Software, Source Status,
+queue rank, rate, and Channel.
 
 ## Error
 
@@ -61,6 +63,26 @@ Sources are not Durable State. When a download Run ends, the Engine Process
 keeps its sources for an hour, for the next Run of the file, which goes on
 asking each when it is due instead of waiting for a server or Kad to find
 them again; `remove` drops them. This keeps no Transfer running.
+
+## Channel
+
+Where a source was first found: the link, a server, Kad, another peer's
+Source Exchange, or the source itself connecting to us (incoming).
+
+## Software
+
+The client and version a peer names in its Hello, such as "eMule 0.70b" or
+"aMule 2.3.3"; empty when it names none.
+
+_Avoid_: client (a client is the peer itself), agent
+
+## Source Status
+
+What a listed source is doing for a download now: transferring (sending to
+us), queued (we wait in its upload queue, at the rank it last told),
+connecting (being reached, or connected and not yet answering our file
+request), or held (a Held Source). A source in none of these is only known
+and is not listed.
 
 ## Held Source
 

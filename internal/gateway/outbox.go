@@ -141,6 +141,16 @@ type progressLine struct {
 	ActivePeers  int          `json:"activePeers"`
 	HeldSources  int          `json:"heldSources"`
 	HeldUntil    int64        `json:"heldUntil"`
+	Sources      []sourceJSON `json:"sources"`
+}
+
+type sourceJSON struct {
+	Address      string `json:"address"`
+	Software     string `json:"software"`
+	Status       string `json:"status"`
+	Rank         int    `json:"rank"`
+	DownloadRate int64  `json:"downloadRate"`
+	Channel      string `json:"channel"`
 }
 
 type endedLine struct {
@@ -163,6 +173,10 @@ func toProgressLine(id engine.RunID, p engine.Progress) progressLine {
 	if !p.HeldUntil.IsZero() {
 		heldUntil = p.HeldUntil.UnixMilli()
 	}
+	sources := make([]sourceJSON, 0, len(p.Sources))
+	for _, s := range p.Sources {
+		sources = append(sources, sourceJSON(s))
+	}
 	return progressLine{
 		Type:         "progress",
 		Run:          id,
@@ -176,6 +190,7 @@ func toProgressLine(id engine.RunID, p engine.Progress) progressLine {
 		ActivePeers:  p.ActivePeers,
 		HeldSources:  p.HeldSources,
 		HeldUntil:    heldUntil,
+		Sources:      sources,
 	}
 }
 
