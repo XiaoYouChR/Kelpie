@@ -342,6 +342,8 @@ def parseProgress(message: dict[str, Any]) -> Progress:
         uploaded=message["uploaded"],
         peers=message["peers"],
         activePeers=message["activePeers"],
+        heldSources=message["heldSources"],
+        heldUntil=message["heldUntil"],
     )
 
 

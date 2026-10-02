@@ -42,6 +42,8 @@ def buildProgress(runId, hash, size, fields):
         "uploaded": 0,
         "peers": 0,
         "activePeers": 0,
+        "heldSources": 0,
+        "heldUntil": 0,
         "unknownField": True,
         **fields,
     }

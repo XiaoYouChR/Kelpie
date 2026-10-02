@@ -68,7 +68,7 @@ After `failed` the Engine Process exits with a non-zero status. Kelpie waits
 ```json
 {"type": "progress", "run": 1, "hash": "31D6CFE0D16AE931B73C59D7E0C089C0", "size": 2048,
  "received": 1024, "downloadRate": 512, "uploadRate": 0, "uploaded": 0,
- "peers": 12, "activePeers": 3}
+ "peers": 12, "activePeers": 3, "heldSources": 1, "heldUntil": 1767226320000}
 {"type": "ended", "run": 1, "error": null}
 {"type": "network", "isServerConnected": true, "isHighId": false,
  "isKadFirewalled": true, "kadNodes": 812, "isBehindCarrierNat": false}
@@ -81,6 +81,10 @@ After `failed` the Engine Process exits with a non-zero status. Kelpie waits
   second. `uploaded` is the Transfer's total across all runs. `peers` counts
   the sources not known to have failed; `activePeers` those of them sending
   to us now, so it never exceeds `peers`.
+- `heldSources` counts the Held Sources; `heldUntil` is when the first of
+  them may be asked, in Unix milliseconds, and 0 when none is held. It is a
+  time and not a countdown, so it changes only when the Held Sources do; the
+  caller counts down itself.
 - Each run gets exactly one `ended`, and no `progress` after it. A run that is
   not admitted gets `ended` with its error and no `progress`. A download run
   ends with `error: null` when the file is complete and flushed to the device

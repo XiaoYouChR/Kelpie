@@ -65,7 +65,7 @@ def test_download_reports_progress_until_complete(engine: Engine) -> None:
             "runs": {
                 HASH_A: [
                     {"progress": {"received": 1024}},
-                    {"progress": {"received": 2048}},
+                    {"progress": {"received": 2048, "heldSources": 1, "heldUntil": 1767226320000}},
                     {"ended": None},
                 ]
             }
@@ -83,6 +83,8 @@ def test_download_reports_progress_until_complete(engine: Engine) -> None:
         await kelpie.close()
         assert progress[-1].received == 2048
         assert progress[-1].size == 2048
+        assert progress[-1].heldSources == 1
+        assert progress[-1].heldUntil == 1767226320000
 
     run(main())
     (hello,) = engine.loadMessages("hello")

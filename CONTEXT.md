@@ -62,6 +62,17 @@ keeps its sources for an hour, for the next Run of the file, which goes on
 asking each when it is due instead of waiting for a server or Kad to find
 them again; `remove` drops them. This keeps no Transfer running.
 
+## Held Source
+
+A source that is due to be asked again but waits, because asking it now
+could get us banned for asking too often. A peer counts a request that comes
+within about ten minutes of the one before against us and refuses us once
+there are too many; the Engine Process keeps its own count for each source,
+asks a source that was sending at once when its download is resumed, and
+holds it only when that count is near the limit, until the request would no
+longer count. Progress tells how many sources are held and when the first
+may be asked.
+
 ## Settings
 
 What the caller chooses: port, Kad, port mapping on the home gateway, the

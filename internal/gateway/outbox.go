@@ -139,6 +139,8 @@ type progressLine struct {
 	Uploaded     int64        `json:"uploaded"`
 	Peers        int          `json:"peers"`
 	ActivePeers  int          `json:"activePeers"`
+	HeldSources  int          `json:"heldSources"`
+	HeldUntil    int64        `json:"heldUntil"`
 }
 
 type endedLine struct {
@@ -157,6 +159,10 @@ type networkLine struct {
 }
 
 func toProgressLine(id engine.RunID, p engine.Progress) progressLine {
+	var heldUntil int64
+	if !p.HeldUntil.IsZero() {
+		heldUntil = p.HeldUntil.UnixMilli()
+	}
 	return progressLine{
 		Type:         "progress",
 		Run:          id,
@@ -168,6 +174,8 @@ func toProgressLine(id engine.RunID, p engine.Progress) progressLine {
 		Uploaded:     p.Uploaded,
 		Peers:        p.Peers,
 		ActivePeers:  p.ActivePeers,
+		HeldSources:  p.HeldSources,
+		HeldUntil:    heldUntil,
 	}
 }
 
