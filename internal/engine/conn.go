@@ -79,13 +79,11 @@ type conn struct {
 	// counts against a server (server.OnDisconnected). It is kept because
 	// closeConn, which reports the close, sees only the reason text.
 	isRefused bool
-	// isHandshaken is set once the engine has acted on the handshake, which
-	// is later than the session completes it: within the Output that carries
-	// HandshakeCompleted the transfers do not know the peer yet.
-	isHandshaken bool
-	// handshakenAt is when that was. Only its age tells a peer that dialled
-	// us while we dialled it from one that came back after losing an older
-	// connection; see closeDuplicate.
+	// handshakenAt is when the engine acted on the handshake, which is
+	// later than the session completes it: within the Output that carries
+	// HandshakeCompleted the transfers do not know the peer yet. Its age
+	// tells a peer that dialled us while we dialled it from one that came
+	// back after losing an older connection; see closeDuplicate.
 	handshakenAt time.Time
 	isClosed     bool
 }
@@ -199,7 +197,7 @@ type uploadTarget struct {
 func (e *Engine) refreshUploadEndpoints() {
 	connected := map[uploadKey]bool{}
 	for _, c := range e.conns {
-		if c.isHandshaken {
+		if c.isHandshaken() {
 			connected[uploadKey{c.session.Capabilities().UserHash, c.remote.Addr()}] = true
 		}
 	}
@@ -497,7 +495,7 @@ func (e *Engine) closeConn(c *conn, reason string) {
 // removeTransferPeer tells r that c no longer serves it: as a peer gone once
 // the transfer knows c from its handshake, as a failed connect before.
 func (e *Engine) removeTransferPeer(c *conn, r *run, reason string, now time.Time) {
-	if c.isHandshaken {
+	if c.isHandshaken() {
 		e.runTransferActions(r, r.transfer.OnPeerGone(c.id, reason, now))
 	} else if c.isOutgoing {
 		e.runTransferActions(r, r.transfer.OnConnectFailed(c.remote, reason, now))
@@ -516,7 +514,7 @@ func (e *Engine) sortedConns() []*conn {
 func (e *Engine) connByEndpoint(endpoint netip.AddrPort) *conn {
 	var found *conn
 	for _, c := range e.conns {
-		isMatch := !c.isServer && (c.isOutgoing && c.remote == endpoint || c.isHandshaken && c.endpoint() == endpoint)
+		isMatch := !c.isServer && (c.isOutgoing && c.remote == endpoint || c.isHandshaken() && c.endpoint() == endpoint)
 		if isMatch && (found == nil || c.id < found.id) {
 			found = c
 		}
@@ -525,6 +523,8 @@ func (e *Engine) connByEndpoint(endpoint netip.AddrPort) *conn {
 }
 
 // endpoint is the peer's address with its listening port, as its hello said.
+func (c *conn) isHandshaken() bool { return !c.handshakenAt.IsZero() }
+
 func (c *conn) endpoint() netip.AddrPort {
 	return netip.AddrPortFrom(c.remote.Addr(), c.session.Capabilities().Port)
 }
@@ -649,7 +649,7 @@ func (e *Engine) requestTree(file wire.Hash) {
 }
 
 func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
-	c.isHandshaken, c.handshakenAt = true, e.now()
+	c.handshakenAt = e.now()
 	if !e.closeDuplicate(c) {
 		return
 	}
@@ -707,13 +707,19 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 // Kad check or the buddy link is tied to its connection; those are left
 // alone.
 func (e *Engine) closeDuplicate(c *conn) bool {
-	old := e.duplicateConn(c)
+	user := c.session.Capabilities().UserHash
+	var old *conn
+	for _, other := range e.conns {
+		if other != c && other.isHandshaken() && other.session.Capabilities().UserHash == user && other.endpoint() == c.endpoint() {
+			old = other
+			break
+		}
+	}
 	if old == nil || old.kadCheck != nil || c.kadCheck != nil || old == e.buddy.conn || c == e.buddy.conn {
 		return true
 	}
 	isOldKept := false
 	if old.isOutgoing != c.isOutgoing && e.now().Sub(old.handshakenAt) < connectTimeout {
-		user := c.session.Capabilities().UserHash
 		isOursKept := bytes.Compare(e.self.UserHash[:], user[:]) < 0
 		isOldKept = old.isOutgoing == isOursKept
 	}
@@ -729,17 +735,6 @@ func (e *Engine) closeDuplicate(c *conn) bool {
 		}
 	}
 	return false
-}
-
-// duplicateConn is another handshaken connection to c's client.
-func (e *Engine) duplicateConn(c *conn) *conn {
-	user := c.session.Capabilities().UserHash
-	for _, other := range e.conns {
-		if other != c && other.isHandshaken && other.session.Capabilities().UserHash == user && other.endpoint() == c.endpoint() {
-			return other
-		}
-	}
-	return nil
 }
 
 // isReaskDue tells whether a connection the peer opened may carry our file
@@ -782,7 +777,7 @@ func (e *Engine) addFile(c *conn, r *run) {
 		return
 	}
 	e.runSession(c, c.session.Add(r.file.Hash, r.file.Size, r.share.Parts))
-	if c.isHandshaken && !c.isClosed {
+	if c.isHandshaken() && !c.isClosed {
 		e.addTransferPeer(c, r)
 	}
 }
@@ -793,7 +788,7 @@ func (e *Engine) removeFile(c *conn, h wire.Hash, reason string) {
 		return
 	}
 	e.runSession(c, c.session.Remove(h))
-	if r := e.downloadByHash(h); r != nil && c.isHandshaken {
+	if r := e.downloadByHash(h); r != nil && c.isHandshaken() {
 		e.runTransferActions(r, r.transfer.OnPeerGone(c.id, reason, e.now()))
 	}
 }
@@ -923,7 +918,7 @@ func (e *Engine) buildPeerSources(file wire.Hash, asking *conn, askerParts piece
 	isSeed := r != nil && r.mode == ModeSeed
 	var sources []peer.Source
 	for _, c := range e.sortedConns() {
-		if c == asking || !c.isHandshaken {
+		if c == asking || !c.isHandshaken() {
 			continue
 		}
 		caps := c.session.Capabilities()

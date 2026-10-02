@@ -30,7 +30,7 @@ func TestBuddyPassesIPv6ReaskOnlyToIPv6Client(t *testing.T) {
 			hello.IPv6 = netip.MustParseAddr(c.clientIPv6)
 		}
 		session.OnPacket(hello, time.Time{})
-		link := &conn{session: session, isHandshaken: true, control: buildLeafQueue[outItem](1), data: buildLeafQueue[outItem](1)}
+		link := &conn{session: session, handshakenAt: start, control: buildLeafQueue[outItem](1), data: buildLeafQueue[outItem](1)}
 		e := &Engine{buddy: buddy{conn: link, isServing: true, id: served}}
 
 		from := netip.MustParseAddrPort(c.from)

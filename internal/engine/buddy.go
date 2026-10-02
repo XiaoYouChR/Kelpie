@@ -74,7 +74,7 @@ func (e *Engine) startBuddyLink() {
 		}
 		e.buddy.conn, e.buddy.isServing = c, false
 		e.kad.Post(kad.Buddy{IsConnecting: true})
-		if c.isHandshaken {
+		if c.isHandshaken() {
 			e.onBuddyHandshake(c)
 		}
 	}
@@ -124,7 +124,7 @@ func (e *Engine) removeBuddyLink() {
 // hello and the Kad source we publish tell downloaders.
 func (e *Engine) buddyAddr() netip.AddrPort {
 	c := e.buddy.conn
-	if c == nil || e.buddy.isServing || !c.isHandshaken {
+	if c == nil || e.buddy.isServing || !c.isHandshaken() {
 		return netip.AddrPort{}
 	}
 	return netip.AddrPortFrom(c.remote.Addr(), c.session.Capabilities().UDPPort)
@@ -140,7 +140,7 @@ func (e *Engine) runBuddy(now time.Time) {
 		}
 	}
 	c := b.conn
-	if c == nil || !c.isHandshaken {
+	if c == nil || !c.isHandshaken() {
 		return
 	}
 	status := e.kadStatus
@@ -177,7 +177,7 @@ func (e *Engine) onBuddyPong(c *conn) {
 // onCallbackRequested passes a downloader's Kad callback request to the
 // client we serve.
 func (e *Engine) onCallbackRequested(r kad.CallbackRequested) {
-	if c := e.buddy.conn; c != nil && e.buddy.isServing && c.isHandshaken {
+	if c := e.buddy.conn; c != nil && e.buddy.isServing && c.isHandshaken() {
 		e.sendPacket(c, client.Callback{BuddyID: r.BuddyID, File: r.Hash, Endpoint: r.Addr}, wire.Hash{}, 0)
 	}
 }
@@ -213,7 +213,7 @@ func (e *Engine) onCallback(p client.Callback) {
 // (ClientTCPSocket.cpp:1891).
 func (e *Engine) onReaskCallbackUDP(from netip.AddrPort, p client.ReaskCallbackUDP) {
 	b := &e.buddy
-	if b.conn == nil || !b.isServing || !b.conn.isHandshaken || p.BuddyID != b.id {
+	if b.conn == nil || !b.isServing || !b.conn.isHandshaken() || p.BuddyID != b.id {
 		return
 	}
 	if from.Addr().Is6() && !b.conn.session.Capabilities().IPv6.IsValid() {
