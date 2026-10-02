@@ -177,6 +177,7 @@ func (s *sim) run(d time.Duration) {
 }
 
 func TestSimulatedNetwork(t *testing.T) {
+	t.Parallel()
 	s := buildSim(t, buildIDs(12, true))
 	s.run(10 * time.Minute)
 	if !s.isObfuscated {
@@ -236,6 +237,7 @@ func TestSimulatedNetwork(t *testing.T) {
 // eMule, the newcomer keeps looking up sparse leaves every 10 s, and its
 // table grows past one bucket of K per level.
 func TestNewcomerFillsItsTable(t *testing.T) {
+	t.Parallel()
 	ids := buildIDs(400, false)
 	s := buildSim(t, ids[:len(ids)-1])
 	s.run(15 * time.Minute)
@@ -266,6 +268,7 @@ func TestNewcomerFillsItsTable(t *testing.T) {
 // first nodes, whose seed knew nobody yet, are left out. The running
 // network is large enough that those contacts know strangers.
 func TestSimulatedUDPCheck(t *testing.T) {
+	t.Parallel()
 	ids := buildIDs(220, false)
 	s := buildSim(t, ids[:100])
 	s.run(2 * time.Minute)
@@ -296,6 +299,7 @@ func TestSimulatedUDPCheck(t *testing.T) {
 // inverted ID as buddy, publishes itself through it, and a downloader's
 // callback request reaches the buddy.
 func TestSimulatedBuddy(t *testing.T) {
+	t.Parallel()
 	ids := buildIDs(80, false)
 	for i := range 10 {
 		copy(ids[i][:2], fileHash[:2])
@@ -350,6 +354,7 @@ func (s *sim) isVerifiedBy(n, by *simNode) bool {
 // seed's, so the seed asks for a HELLO_RES_ACK and verifies the newcomer at
 // once, before greeting it itself; the newcomers then verify each other.
 func TestSimulatedHelloResAck(t *testing.T) {
+	t.Parallel()
 	s := buildSim(t, buildIDs(3, false))
 	seed, a, b := s.nodes[0], s.nodes[1], s.nodes[2]
 	s.run(time.Second)
@@ -372,6 +377,7 @@ func TestSimulatedHelloResAck(t *testing.T) {
 // its own request for one is ignored (KademliaUDPListener.cpp:406); it is
 // verified by the hellos of the others, and verifies them.
 func TestSimulatedVersion7Node(t *testing.T) {
+	t.Parallel()
 	s := buildSim(t, buildIDs(3, false))
 	legacy := s.nodes[2]
 	legacy.c.version = 7
