@@ -60,10 +60,15 @@ type uploadSlot struct {
 	sent    []uploadBlock
 }
 
-// StartUpload gives the peer an upload slot.
+// StartUpload gives the peer an upload slot. A peer that already holds one
+// gets OP_ACCEPTUPLOADREQ again and keeps the blocks it has requested, as
+// aMule answers a downloading client (UploadQueue.cpp:520-528): it would not
+// ask for them again.
 func (s *Session) StartUpload() Output {
 	var out Output
-	s.up.slot = &uploadSlot{pending: map[uploadBlock]int64{}}
+	if s.up.slot == nil {
+		s.up.slot = &uploadSlot{pending: map[uploadBlock]int64{}}
+	}
 	out.send(client.AcceptUploadRequest{})
 	return out
 }

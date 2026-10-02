@@ -1042,3 +1042,21 @@ func TestCompressedPartLargerThanBlockCloses(t *testing.T) {
 		t.Fatalf("closed = %q, want protocol", l.a.closed)
 	}
 }
+
+func TestRepeatedSlotKeepsRequestedBlocks(t *testing.T) {
+	l := buildLink(t)
+	size := piece.BlockSize
+	file, data := addShare(l.b, 1, size, false)
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
+	l.run(l.b, l.b.s.StartUpload())
+	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: size}}))
+	l.sent = nil
+	l.run(l.b, l.b.s.StartUpload())
+	if sentCount[client.AcceptUploadRequest](l) != 1 {
+		t.Fatal("repeated request not accepted again")
+	}
+	l.sendRequestedBlocks(l.b, file, data)
+	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) {
+		t.Fatal("block requested before the repeated grant was dropped")
+	}
+}
