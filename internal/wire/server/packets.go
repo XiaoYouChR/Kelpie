@@ -27,7 +27,6 @@ const (
 	FlagUnicode        uint32 = 0x0010
 	FlagLargeFiles     uint32 = 0x0100
 	FlagTCPObfuscation uint32 = 0x0400
-	FlagIPv6           uint32 = 0x4000
 )
 
 const (

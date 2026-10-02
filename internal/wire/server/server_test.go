@@ -37,7 +37,7 @@ func unhex(t *testing.T, s string) []byte {
 func samplePackets() []wire.Packet {
 	return []wire.Packet{
 		Login{UserHash: userHash, Port: 4662, Name: "Kelpie", Version: 0x3C, Flags: CapZlib | CapNewTags | CapUnicode | CapLargeFiles | 0x1000, EmuleVersion: 0x2000, IPv6: v6, Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x0F, Uint: 4662}}},
-		IDChange{ClientID: 0x04030201, Flags: FlagCompression | FlagLargeFiles | FlagIPv6, Reserved: 4661, ReportedIP: netip.MustParseAddr("1.2.3.4")},
+		IDChange{ClientID: 0x04030201, Flags: FlagCompression | FlagLargeFiles | 0x4000, Reserved: 4661, ReportedIP: netip.MustParseAddr("1.2.3.4")},
 		IDChange{ClientID: 0x04030201, Flags: FlagTCPObfuscation, ReportedIP: netip.MustParseAddr("1.2.3.4"), ObfuscationPort: 4665},
 		ServerMessage{Text: "server version 17.15\nwelcome"},
 		ServerStatus{Users: 1000, Files: 200000},
