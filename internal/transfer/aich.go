@@ -219,7 +219,9 @@ func (t *Transfer) OnRecoveryFailed(peer uint64) []Action {
 // a sender of a bad block is banned once its share of corrupt data is above
 // maxCorruptPercent (AICHRecoveryDataAvailable, PartFile.cpp:3895-4010;
 // CCorruptionBlackBox::EvaluateData). A bad block counts whole for every
-// peer that sent any of it.
+// peer that sent any of it, and as a full BlockSize even when it is the
+// short last block of a part, as aMule counts corrupt data as at least
+// EMBLOCKSIZE (CorruptionBlackBox.cpp:166-169).
 func (t *Transfer) OnBlocksHashed(part int, hashes []wire.AICHHash, now time.Time) []Action {
 	verified, ok := t.aich.verified[part]
 	delete(t.aich.verified, part)

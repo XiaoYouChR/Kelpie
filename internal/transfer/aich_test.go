@@ -116,6 +116,38 @@ func TestRepairKeepsASenderMostlyGood(t *testing.T) {
 	}
 }
 
+// The short last block of a part counts whole when it is bad, as aMule
+// counts corrupt data as at least EMBLOCKSIZE
+// (CorruptionBlackBox.cpp:166-169): two good blocks and a bad short one
+// are 33% corrupt and banned, where its 143,360 actual bytes would be 28%.
+func TestRepairCountsAShortBadBlockWhole(t *testing.T) {
+	data := buildData(piece.PartSize + 5000)
+	tree := buildTree(data)
+	file := buildFile(data)
+	file.AICHHash = tree.Root()
+	h := buildHarness(t, data, transfer.Options{File: file})
+	h.connect(1, 1, nil)
+	h.connect(2, 2, nil)
+	h.connect(3, 3, nil)
+	h.transfer.OnRoot(3, tree.Root())
+	last := piece.BlockCount(file.Size, 0) - 1
+	for index := range last + 1 {
+		peer := uint64(1)
+		if index < 2 || index == last {
+			peer = 2
+		}
+		h.transfer.OnPeerParts(peer, piece.Set{true, false})
+		h.deliver(peer, 1, index == last)
+		h.transfer.OnPeerParts(peer, piece.Set{false, false})
+	}
+
+	before := len(h.actions)
+	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0)))
+	if closed := closedPeers(h.actions[before:]); !slices.Equal(closed, []uint64{2}) {
+		t.Fatalf("closed %v, want the sender of the short bad block", closed)
+	}
+}
+
 func TestRepairAsksAnotherSourceThenGivesUp(t *testing.T) {
 	data := buildData(piece.PartSize + 5000)
 	tree := buildTree(data)
