@@ -18,12 +18,21 @@ import (
 // bury the server and peer lines.
 const kadLogTime = time.Minute
 
-// udpLogTransport writes every UDP datagram to the packet log, whichever
-// actor owns the socket: the engine, or Kad.
+// buildUDPTransport is what UDP sockets open through, whichever actor owns
+// them: the engine, or Kad. With a packet log, it logs every datagram;
+// isServer marks the server socket.
+func (e *Engine) buildUDPTransport(isServer bool) transport.Transport {
+	if e.packetLog == nil {
+		return e.ports.Transport
+	}
+	return udpLogTransport{Transport: e.ports.Transport, log: e.packetLog, clock: e.ports.Clock, isServer: isServer}
+}
+
 type udpLogTransport struct {
 	transport.Transport
-	log   *log.Logger
-	clock clock.Clock
+	log      *log.Logger
+	clock    clock.Clock
+	isServer bool
 }
 
 func (t udpLogTransport) OpenUDP(port int) (transport.PacketConn, error) {
@@ -32,7 +41,7 @@ func (t udpLogTransport) OpenUDP(port int) (transport.PacketConn, error) {
 		return nil, err
 	}
 	now := t.clock.Now()
-	return &udpLogConn{PacketConn: conn, log: t.log, clock: t.clock, kadIn: kadCount{since: now}, kadOut: kadCount{since: now}}, nil
+	return &udpLogConn{PacketConn: conn, log: t.log, clock: t.clock, kadIn: kadCount{since: now}, kadOut: kadCount{since: now}, isServer: t.isServer}, nil
 }
 
 // udpLogConn counts Kad datagrams per direction: only the socket's reader
