@@ -128,7 +128,7 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 	var secret [16]byte
 	binary.LittleEndian.PutUint64(secret[:8], e.ports.Rand.Uint64())
 	binary.LittleEndian.PutUint64(secret[8:], e.ports.Rand.Uint64())
-	random := e.buildLeafRandom()
+	random := buildLeafRandom(e.ports.Rand)
 	dial := c.remote
 	if obfuscationPort != 0 {
 		dial = netip.AddrPortFrom(c.remote.Addr(), obfuscationPort)
@@ -221,7 +221,7 @@ func (e *Engine) runAcceptor(random *rand.Rand) {
 		if err != nil {
 			return
 		}
-		connRandom := rand.New(rand.NewPCG(random.Uint64(), random.Uint64()))
+		connRandom := buildLeafRandom(random)
 		e.startLeaf(func() {
 			e.runIncoming(netConn, remote, self, connRandom)
 			<-handshakes
