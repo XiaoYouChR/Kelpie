@@ -37,11 +37,14 @@ func (t udpLogTransport) OpenUDP(port int) (transport.PacketConn, error) {
 
 // udpLogConn counts Kad datagrams per direction: only the socket's reader
 // leaf reads and only its owning hub writes, so neither count is shared.
+// On the server socket, isServer, a datagram is obfuscated unless it starts
+// with 0xE3, so it is named by that rule and never counted as Kad.
 type udpLogConn struct {
 	transport.PacketConn
 	log           *log.Logger
 	clock         clock.Clock
 	kadIn, kadOut kadCount
+	isServer      bool
 }
 
 type kadCount struct {
@@ -66,7 +69,11 @@ func (c *udpLogConn) WriteTo(b []byte, addr netip.AddrPort) (int, error) {
 }
 
 func (c *udpLogConn) send(kad *kadCount, direction string, addr netip.AddrPort, data []byte) {
-	if !kadwire.IsDatagram(data) {
+	switch {
+	case c.isServer && len(data) > 0 && data[0] != wire.ProtocolEDonkey:
+		c.log.Printf("udp %s %s obfuscated %d", direction, addr, len(data))
+		return
+	case c.isServer || !kadwire.IsDatagram(data):
 		c.log.Printf("udp %s %s %s %d", direction, addr, toDatagramName(data), len(data))
 		return
 	}
