@@ -90,7 +90,8 @@ type inFlight struct {
 	prefix int64
 	ranges []piece.Block
 	packed []byte
-	// payload counts the packet data that arrived for the block.
+	// payload counts the packet data that arrived for the block, which
+	// credits count rather than the block's size (BlockReceived.Payload).
 	payload int64
 }
 

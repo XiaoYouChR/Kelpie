@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math/rand/v2"
 	"net/netip"
@@ -180,7 +181,7 @@ func (r *recorder) add(kind byte, payload []byte) {
 
 func (r *recorder) toPeer(sent []wire.Packet) {
 	for _, p := range sent {
-		frame, _, _ := wire.ParseFrame(wire.BuildPacket(nil, p))
+		frame, _ := wire.ParseFrameFrom(bytes.NewReader(wire.BuildPacket(nil, p)))
 		parsed, err := client.Parse(frame.Protocol, frame.Opcode, frame.Body)
 		if err != nil {
 			panic(err)
@@ -193,7 +194,7 @@ func (r *recorder) toPeer(sent []wire.Packet) {
 func (r *recorder) fromPeer(out Output) {
 	r.peer.events = append(r.peer.events, out.Events...)
 	for _, p := range out.Send {
-		frame, _, _ := wire.ParseFrame(wire.BuildPacket(nil, p))
+		frame, _ := wire.ParseFrameFrom(bytes.NewReader(wire.BuildPacket(nil, p)))
 		payload := append([]byte{frame.Protocol, frame.Opcode}, frame.Body...)
 		r.add(stepPacket, payload)
 		r.toPeer(r.f.run(stepPacket, payload))

@@ -39,9 +39,9 @@ func parts(bits ...bool) wire.Bitfield { return wire.ToBitfield(bits) }
 
 func roundTrip(t *testing.T, p wire.Packet, parse func(byte, byte, []byte) (wire.Packet, error)) {
 	t.Helper()
-	frame, n, err := wire.ParseFrame(wire.BuildPacket(nil, p))
-	if err != nil || n == 0 {
-		t.Fatalf("%T: frame n=%d err=%v", p, n, err)
+	frame, err := wire.ParseFrameFrom(bytes.NewReader(wire.BuildPacket(nil, p)))
+	if err != nil {
+		t.Fatalf("%T: frame: %v", p, err)
 	}
 	got, err := parse(frame.Protocol, frame.Opcode, frame.Body)
 	if err != nil {
@@ -101,7 +101,7 @@ func samplePackets() []wire.Packet {
 		SendingPart{Hash: fileHash, Start: 1 << 33, End: 1<<33 + 2, Data: []byte{1, 2}, IsLarge: true},
 		CompressedPart{Hash: fileHash, Start: 100, PackedSize: 50, Data: []byte{9, 9}},
 		CompressedPart{Hash: fileHash, Start: 1 << 33, PackedSize: 50, Data: []byte{9, 9}, IsLarge: true},
-		RequestSources{Hash: fileHash},
+		requestSources{Hash: fileHash},
 		RequestSources2{Version: SourceExchange2Version, Hash: fileHash},
 		AnswerSources2{Version: 4, Hash: fileHash, Sources: []Source{{ClientID: 0x0100000A, Port: 4662, Server: netip.MustParseAddrPort("1.2.3.4:4661"), UserHash: userHash, CryptOptions: 0x81}}},
 		AnswerSources2{Version: 2, Hash: fileHash, Sources: []Source{{ClientID: 3, Port: 4, UserHash: userHash}}},
@@ -117,7 +117,7 @@ func samplePackets() []wire.Packet {
 			FileRequest{Hash: fileHash, HasParts: true, Parts: parts(true), HasCompleteSources: true, CompleteSources: 3},
 			SetRequestFileID{Hash: fileHash},
 			RequestSources2{Version: SourceExchange2Version, Hash: fileHash},
-			RequestSources{Hash: fileHash},
+			requestSources{Hash: fileHash},
 			AICHFileHashRequest{Hash: fileHash},
 			wire.Unknown{Proto: wire.ProtocolEMule, Op: 0xFE, Body: []byte{7, 7}},
 		}},

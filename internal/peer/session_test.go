@@ -145,8 +145,8 @@ func (l *link) run(from *side, out Output) {
 
 func (l *link) toParsed(p wire.Packet) wire.Packet {
 	l.t.Helper()
-	frame, n, err := wire.ParseFrame(wire.BuildPacket(nil, p))
-	if err != nil || n == 0 {
+	frame, err := wire.ParseFrameFrom(bytes.NewReader(wire.BuildPacket(nil, p)))
+	if err != nil {
 		l.t.Fatalf("frame %T: %v", p, err)
 	}
 	parsed, err := client.Parse(frame.Protocol, frame.Opcode, frame.Body)

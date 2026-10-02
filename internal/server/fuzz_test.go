@@ -55,7 +55,7 @@ func buildServerScript(packets ...wire.Packet) []byte {
 func FuzzOnPacket(f *testing.F) {
 	v6 := netip.MustParseAddr("2a01:4f8::1")
 	f.Add(buildServerScript(
-		serverwire.IDChange{ClientID: highID, Flags: serverwire.FlagCompression | serverwire.FlagTCPObfuscation | serverwire.FlagIPv6, ObfuscationPort: 4665},
+		serverwire.IDChange{ClientID: highID, Flags: serverwire.FlagCompression | serverwire.FlagTCPObfuscation | 0x4000, ObfuscationPort: 4665},
 		serverwire.ServerStatus{Users: 10, Files: 20},
 		serverwire.ServerMessage{Text: "welcome"},
 		serverwire.ServerIdent{Hash: fileHash(9), Addr: first, Name: "s", Description: "d", Tags: []wire.Tag{{Type: wire.TagUint32, ID: 0x87, Uint: 9}}},

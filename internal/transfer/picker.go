@@ -359,16 +359,11 @@ func (p *picker) onPartFailed(part int) {
 func (p *picker) senders() []uint64 {
 	var senders []uint64
 	for _, part := range p.parts {
-		senders = addSenders(senders, part.blocks)
-	}
-	return senders
-}
-
-func addSenders(senders []uint64, blocks []blockState) []uint64 {
-	for _, block := range blocks {
-		for _, sender := range block.senders {
-			if !slices.Contains(senders, sender) {
-				senders = append(senders, sender)
+		for _, block := range part.blocks {
+			for _, sender := range block.senders {
+				if !slices.Contains(senders, sender) {
+					senders = append(senders, sender)
+				}
 			}
 		}
 	}

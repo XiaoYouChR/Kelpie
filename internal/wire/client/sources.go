@@ -21,10 +21,12 @@ type Source struct {
 	IPv6         netip.Addr
 }
 
-// RequestSources is OP_REQUESTSOURCES (Source Exchange v1).
-type RequestSources struct{ Hash wire.Hash }
+// requestSources is OP_REQUESTSOURCES (Source Exchange v1), which Kelpie
+// neither sends nor answers. It is parsed so that the requests after it in
+// a MultiPacket are not lost to a trailing wire.Unknown.
+type requestSources struct{ Hash wire.Hash }
 
-func (s RequestSources) Build(b []byte) []byte {
+func (s requestSources) Build(b []byte) []byte {
 	b = append(b, wire.ProtocolEMule, opRequestSources)
 	return append(b, s.Hash[:]...)
 }
