@@ -81,20 +81,7 @@ func TestRequestBreaksTiesWithInjectedRandom(t *testing.T) {
 	}
 }
 
-func TestRequestDuplicatesOnlyInEndgame(t *testing.T) {
-	picker := buildEmptyPicker(t, 2*piece.PartSize, 1)
-	picker.onPeerParts(peerA, piece.Set{true, false})
-	picker.onPeerParts(peerB, piece.Set{false, true})
-
-	if got := picker.request(peerA, 100); len(got) != 53 {
-		t.Fatalf("a got %d blocks, want all 53 of part 0", len(got))
-	}
-	if got := picker.request(peerA, 10); len(got) != 0 {
-		t.Fatalf("a got %v while part 1 is still unrequested", got)
-	}
-}
-
-func TestEndgameAllowsTwoRequestersPerBlock(t *testing.T) {
+func TestRequestNeverHandsOutARequestedBlock(t *testing.T) {
 	size := piece.PartSize
 	picker := buildEmptyPicker(t, size, 1)
 	for _, peer := range []uint64{peerA, peerB, peerC} {
@@ -103,29 +90,27 @@ func TestEndgameAllowsTwoRequestersPerBlock(t *testing.T) {
 	fromA := picker.request(peerA, 50)
 	fromB := picker.request(peerB, 10)
 
-	for _, b := range fromB[:3] {
+	if len(fromB) != 3 {
+		t.Fatalf("b got %d blocks, want the 3 a was not asked for", len(fromB))
+	}
+	for _, b := range fromB {
 		if slices.Contains(fromA, b) {
-			t.Fatalf("b got %v already requested from a while unrequested blocks remained", b)
+			t.Fatalf("b got %v, already asked of a", b)
 		}
 	}
-	for _, b := range fromB[3:] {
-		if !slices.Contains(fromA, b) {
-			t.Fatalf("b got endgame block %v that a was not asked for", b)
-		}
-	}
-	if got := picker.request(peerC, 100); len(got) != 53-7 {
-		t.Fatalf("c got %d endgame blocks, want %d (blocks with fewer than two requesters)", len(got), 53-7)
-	}
-	if got := picker.request(peerA, 100); len(got) != 0 {
-		t.Fatalf("a got %v, but every block already has two requesters or is a's", got)
+	if got := picker.request(peerC, 100); len(got) != 0 {
+		t.Fatalf("c got %v, but every block is asked of a or b", got)
 	}
 }
 
+// A block handed over from a cancelled peer may still arrive from it; only
+// the first delivery is written.
 func TestReceivedBlockIsWrittenOnce(t *testing.T) {
 	picker := buildEmptyPicker(t, piece.PartSize, 1)
 	picker.onPeerParts(peerA, piece.Set{true})
 	picker.onPeerParts(peerB, piece.Set{true})
 	picker.request(peerA, 53)
+	picker.cancel(peerA)
 	b := picker.request(peerB, 1)[0]
 
 	if written, ok := picker.onBlockReceived(peerB, b); !ok || written != b {

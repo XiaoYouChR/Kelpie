@@ -79,7 +79,7 @@ func TestRepairRedownloadsOnlyTheBadBlock(t *testing.T) {
 	}
 	h.transfer.OnPeerParts(1, piece.Set{true, false})
 	bad := piece.Block{Begin: 4 * piece.BlockSize, End: 5 * piece.BlockSize}
-	if got := h.transfer.Request(1, 10); !slices.Equal(got, []piece.Block{bad}) {
+	if got := h.request(1, 10); !slices.Equal(got, []piece.Block{bad}) {
 		t.Fatalf("asked again for %v, want only %v", got, bad)
 	}
 	h.run(h.transfer.OnBlockReceived(1, bad, data[bad.Begin:bad.End], h.now))

@@ -566,7 +566,9 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		e.onNoNeededParts(c, ev.File)
 	case peer.BlocksWanted:
 		if r := e.downloadByHash(ev.File); r != nil {
-			e.runSession(c, c.session.Request(ev.File, r.transfer.Request(c.id, ev.Count)))
+			blocks, actions := r.transfer.Request(c.id, ev.Count, now)
+			e.runSession(c, c.session.Request(ev.File, blocks))
+			e.runTransferActions(r, actions)
 		}
 	case peer.BlockReceived:
 		e.ledger.OnTransferred(c.session.Capabilities().UserHash, c.remote.Addr(), 0, ev.Payload)

@@ -214,13 +214,50 @@ func (t *Transfer) OnUploaded(bytes int64, now time.Time) {
 }
 
 // Request picks up to n more blocks to ask a downloading peer for, keeping its
-// request pipeline full.
-func (t *Transfer) Request(peer uint64, n int) []piece.Block {
+// request pipeline full. Near completion, a peer left with nothing to ask
+// for takes over the blocks of a source sending at less than half its rate,
+// whose slot is given up with a Close (aMule 3.1.0 endgame,
+// DownloadClient.cpp:624-697, PartFile.cpp:4709-4734): a block is never
+// asked of two peers, whose duplicate data would waste the uploader's
+// bandwidth.
+func (t *Transfer) Request(peer uint64, n int, now time.Time) ([]piece.Block, []Action) {
 	s := t.peers[peer]
 	if !t.isDownloading() || s == nil || s.state != stateDownloading {
-		return nil
+		return nil, nil
 	}
-	return t.picker.request(peer, n)
+	blocks := t.picker.request(peer, n)
+	if len(blocks) > 0 || t.picker.isRequesting(peer) || !t.isNearCompletion() {
+		return blocks, nil
+	}
+	slow := t.slowerSource(s, now)
+	if slow == nil {
+		return nil, nil
+	}
+	// aMule leaves the cancelled source DS_NONEEDEDPARTS, so it is reasked
+	// at twice the interval.
+	slow.isNoNeeded = true
+	t.picker.cancel(slow.peer)
+	return t.picker.request(peer, n), []Action{Close{Peer: slow.peer, Reason: "slower source"}}
+}
+
+// isNearCompletion is aMule's endgame: a file of more than four parts with
+// at most four parts' worth of data missing.
+func (t *Transfer) isNearCompletion() bool {
+	return piece.PartCount(t.file.Size) > 4 && t.file.Size-t.picker.writtenSize() <= 4*piece.PartSize
+}
+
+// slowerSource is a downloading source sending at less than half the rate
+// of fast and asked for a block in a part fast has (aMule
+// GetSlowerDownloadingClient, DROP_FACTOR 2).
+func (t *Transfer) slowerSource(fast *source, now time.Time) *source {
+	rate := fast.download.rate(now)
+	for _, s := range t.sources {
+		if s != fast && s.state == stateDownloading && t.isConnected(s) &&
+			2*s.download.rate(now) < rate && t.picker.hasBlocksFor(s.peer, fast.peer) {
+			return s
+		}
+	}
+	return nil
 }
 
 func (t *Transfer) OnPeerParts(peer uint64, parts piece.Set) {
@@ -242,6 +279,7 @@ func (t *Transfer) OnBlockReceived(peer uint64, block piece.Block, data []byte, 
 		return nil
 	}
 	t.download.add(now, int64(len(data)))
+	s.download.add(now, int64(len(data)))
 	s.receivedBytes += int64(len(data))
 	fresh, ok := t.picker.onBlockReceived(peer, block)
 	if !ok {

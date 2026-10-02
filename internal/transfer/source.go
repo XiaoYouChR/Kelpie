@@ -146,6 +146,9 @@ type source struct {
 	udpFailed int
 
 	receivedBytes int64
+	// download is the source's own rate, which the endgame compares to
+	// find a source slow enough to hand its blocks over.
+	download meter
 }
 
 func buildKey(s Source) string {
@@ -583,11 +586,18 @@ func (t *Transfer) SetA4AF(found Source, until time.Time) {
 }
 
 // OnNoNeededParts records that a connected source has no part we still
-// need, or gave a slot with nothing left to request.
-func (t *Transfer) OnNoNeededParts(peer uint64) {
-	if s := t.peers[peer]; t.isDownloading() && s != nil {
-		s.isNoNeeded = true
+// need, or gave a slot with nothing left to request, and reports whether it
+// now counts as such. Near completion a source that has a part we need only
+// found every block of it asked of other peers, so it stays queued (aMule
+// 3.1.0 "requeue instead of self-banishing at endgame",
+// DownloadClient.cpp:647-652).
+func (t *Transfer) OnNoNeededParts(peer uint64) bool {
+	s := t.peers[peer]
+	if !t.isDownloading() || s == nil || t.isNearCompletion() && t.picker.hasNeededPart(peer) {
+		return false
 	}
+	s.isNoNeeded = true
+	return true
 }
 
 func (t *Transfer) removeNoNeeded(now time.Time) {

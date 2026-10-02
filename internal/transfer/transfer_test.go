@@ -108,10 +108,18 @@ func (h *harness) connect(peer uint64, i int, parts piece.Set) {
 	h.run(h.transfer.OnSlotGranted(peer, h.now))
 }
 
+// request asks the transfer for up to n blocks for peer and runs the
+// actions that come with them.
+func (h *harness) request(peer uint64, n int) []piece.Block {
+	blocks, actions := h.transfer.Request(peer, n, h.now)
+	h.run(actions)
+	return blocks
+}
+
 // deliver requests up to n blocks for peer and answers each with data,
 // corrupted when isCorrupt is set. It reports how many blocks were sent.
 func (h *harness) deliver(peer uint64, n int, isCorrupt bool) int {
-	blocks := h.transfer.Request(peer, n)
+	blocks := h.request(peer, n)
 	for _, block := range blocks {
 		data := append([]byte(nil), h.data[block.Begin:block.End]...)
 		if isCorrupt {
@@ -302,7 +310,7 @@ func TestDiskFailure(t *testing.T) {
 		data := buildData(1000)
 		h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
 		h.connect(1, 1, piece.Set{true})
-		blocks := h.transfer.Request(1, 1)
+		blocks := h.request(1, 1)
 		actions := h.transfer.OnBlockReceived(1, blocks[0], data, h.now)
 		if countActions[transfer.Write](actions) != 1 {
 			t.Fatalf("no Write for a received block: %+v", actions)
@@ -312,7 +320,7 @@ func TestDiskFailure(t *testing.T) {
 		if got.Status != want {
 			t.Fatalf("isDiskFull=%v: outcome = %+v", isDiskFull, got)
 		}
-		if h.transfer.Request(1, 1) != nil {
+		if h.request(1, 1) != nil {
 			t.Fatal("failed transfer still hands out requests")
 		}
 	}
@@ -732,7 +740,7 @@ func TestSlotEndKeepsPartOfBlock(t *testing.T) {
 	data := buildData(piece.BlockSize + 1000)
 	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
 	h.connect(1, 1, piece.Set{true})
-	block := h.transfer.Request(1, 1)[0]
+	block := h.request(1, 1)[0]
 	head := piece.Block{Begin: block.Begin, End: block.Begin + 400}
 	h.run(h.transfer.OnBlockReceived(1, head, data[head.Begin:head.End], h.now))
 	h.run(h.transfer.OnQueued(1, 0, h.now))
@@ -740,7 +748,7 @@ func TestSlotEndKeepsPartOfBlock(t *testing.T) {
 	h.connect(2, 2, piece.Set{true})
 	var rest []piece.Block
 	for {
-		blocks := h.transfer.Request(2, 3)
+		blocks := h.request(2, 3)
 		if len(blocks) == 0 {
 			break
 		}
@@ -764,7 +772,7 @@ func TestResumeKeepsPartOfBlock(t *testing.T) {
 	file := buildFile(data)
 	h := buildHarness(t, data, transfer.Options{File: file})
 	h.connect(1, 1, piece.Set{true})
-	block := h.transfer.Request(1, 1)[0]
+	block := h.request(1, 1)[0]
 	head := piece.Block{Begin: block.Begin, End: block.Begin + 400}
 	h.run(h.transfer.OnBlockReceived(1, head, data[head.Begin:head.End], h.now))
 
@@ -777,7 +785,7 @@ func TestResumeKeepsPartOfBlock(t *testing.T) {
 		t.Fatalf("resumed received = %d, want 400", got)
 	}
 	resumed.connect(1, 1, piece.Set{true})
-	if got := resumed.transfer.Request(1, 3); len(got) == 0 || got[0] != (piece.Block{Begin: head.End, End: block.End}) {
+	if got := resumed.request(1, 3); len(got) == 0 || got[0] != (piece.Block{Begin: head.End, End: block.End}) {
 		t.Fatalf("resumed transfer asked for %v, want the tail after the head first", got)
 	}
 }
@@ -800,7 +808,7 @@ func TestLateReaskAnswerKeepsSlot(t *testing.T) {
 	h.transfer.OnPeerParts(2, piece.Set{true})
 	h.run(h.transfer.OnSlotGranted(2, reaskAt))
 	h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, reaskAt.Add(time.Second)))
-	if got := h.transfer.Request(2, 1); len(got) != 1 {
+	if got := h.request(2, 1); len(got) != 1 {
 		t.Fatalf("late UDP answer took the slot away: requested %v", got)
 	}
 }
