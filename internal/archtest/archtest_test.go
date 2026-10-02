@@ -112,23 +112,25 @@ type listed struct {
 	XTestImports []string
 }
 
-// platforms are the release targets plus Android. go list resolves build tags
-// for one GOOS at a time, so each is listed and the imports are merged.
-var platforms = []string{"linux", "darwin", "windows", "android"}
+// platforms are the release targets plus Android, as GOOS/GOARCH. go list
+// resolves build tags for one platform at a time, so each is listed and the
+// imports are merged. Android is arm64 because android/amd64 needs cgo.
+var platforms = []string{"linux/amd64", "darwin/arm64", "windows/amd64", "android/arm64"}
 
 func loadPackages(t *testing.T) []listed {
 	t.Helper()
 	readTree(t)
 	var packages []*listed
 	byPath := map[string]*listed{}
-	for _, goos := range platforms {
+	for _, platform := range platforms {
+		goos, goarch, _ := strings.Cut(platform, "/")
 		cmd := exec.Command("go", "list", "-json", module+"...")
-		cmd.Env = append(os.Environ(), "GOOS="+goos, "CGO_ENABLED=0")
+		cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
 		if err != nil {
-			t.Fatalf("go list for %s: %v\n%s", goos, err, stderr.String())
+			t.Fatalf("go list for %s: %v\n%s", platform, err, stderr.String())
 		}
 		decoder := json.NewDecoder(bytes.NewReader(out))
 		for {
