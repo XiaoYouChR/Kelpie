@@ -73,7 +73,7 @@ func TestRepairRedownloadsOnlyTheBadBlock(t *testing.T) {
 	}
 
 	before = len(h.actions)
-	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0), h.now))
+	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0)))
 	if closed := closedPeers(h.actions[before:]); !slices.Equal(closed, []uint64{2}) {
 		t.Fatalf("closed %v, want only the sender of the bad block", closed)
 	}
@@ -85,6 +85,33 @@ func TestRepairRedownloadsOnlyTheBadBlock(t *testing.T) {
 	h.run(h.transfer.OnBlockReceived(1, bad, data[bad.Begin:bad.End], h.now))
 	if !h.transfer.ToState().VerifiedParts[0] {
 		t.Fatal("repaired part not verified")
+	}
+}
+
+// A sender of a bad block that sent enough good data stays: aMule bans only
+// above 32% corrupt (CorruptionBlackBox.cpp:39).
+func TestRepairKeepsASenderMostlyGood(t *testing.T) {
+	data := buildData(2*piece.PartSize + 5000)
+	tree := buildTree(data)
+	file := buildFile(data)
+	file.AICHHash = tree.Root()
+	h := buildHarness(t, data, transfer.Options{File: file})
+	h.connect(1, 1, nil)
+	h.connect(2, 2, nil)
+	h.connect(3, 3, nil)
+	h.transfer.OnRoot(3, tree.Root())
+	h.transfer.OnPeerParts(2, piece.Set{false, true, false})
+	for h.deliver(2, 10, false) > 0 {
+	}
+	if !h.transfer.ToState().VerifiedParts[1] {
+		t.Fatal("part 1 not verified")
+	}
+
+	h.fillPart(1, 2, 4)
+	before := len(h.actions)
+	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0)))
+	if closed := closedPeers(h.actions[before:]); len(closed) != 0 {
+		t.Fatalf("closed %v, but the bad block is under 32%% of what 2 sent", closed)
 	}
 }
 
@@ -106,7 +133,7 @@ func TestRepairAsksAnotherSourceThenGivesUp(t *testing.T) {
 	first := lastRecovery(t, h.actions[before:]).Peer
 
 	before = len(h.actions)
-	h.run(h.transfer.OnRecoveryFailed(first, h.now))
+	h.run(h.transfer.OnRecoveryFailed(first))
 	second := lastRecovery(t, h.actions[before:]).Peer
 	if second == first || second != 3 && second != 4 {
 		t.Fatalf("asked %d after %d failed", second, first)
@@ -114,10 +141,12 @@ func TestRepairAsksAnotherSourceThenGivesUp(t *testing.T) {
 
 	before = len(h.actions)
 	h.run(h.transfer.OnPeerGone(second, "closed", h.now))
-	closed := closedPeers(h.actions[before:])
-	slices.Sort(closed)
-	if !slices.Equal(closed, []uint64{1, 2}) {
-		t.Fatalf("closed %v, want every sender once no source can repair", closed)
+	if closed := closedPeers(h.actions[before:]); len(closed) != 0 {
+		t.Fatalf("closed %v once no source can repair, want nobody banned", closed)
+	}
+	h.transfer.OnPeerParts(1, piece.Set{true, false})
+	if got := h.request(1, 100); len(got) != piece.BlockCount(file.Size, 0) {
+		t.Fatalf("asked again for %d blocks, want the whole part", len(got))
 	}
 }
 
@@ -136,8 +165,8 @@ func TestRecoveryFromAnotherRootIsRefused(t *testing.T) {
 	wrong := append([]byte(nil), data...)
 	wrong[0] ^= 1
 	before := len(h.actions)
-	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), buildTree(wrong).BuildRecovery(0), h.now))
-	if countActions[transfer.HashBlocks](h.actions[before:]) != 0 || len(closedPeers(h.actions[before:])) != 2 {
+	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), buildTree(wrong).BuildRecovery(0)))
+	if countActions[transfer.HashBlocks](h.actions[before:]) != 0 || len(closedPeers(h.actions[before:])) != 0 {
 		t.Fatalf("recovery data of other content: %+v", h.actions[before:])
 	}
 }
@@ -158,9 +187,9 @@ func TestRepairThatFindsNoBadBlockDropsTheRoot(t *testing.T) {
 	h.fillPart(1, 2, 0)
 
 	before := len(h.actions)
-	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0), h.now))
-	if closed := closedPeers(h.actions[before:]); len(closed) != 2 {
-		t.Fatalf("closed %v, want both senders", closed)
+	h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0)))
+	if closed := closedPeers(h.actions[before:]); len(closed) != 0 {
+		t.Fatalf("closed %v, want nobody banned by a wrong root", closed)
 	}
 	h.connect(4, 4, nil)
 	h.transfer.OnRoot(4, tree.Root())

@@ -21,6 +21,11 @@ const (
 	minTrustPercent  = 92
 )
 
+// maxCorruptPercent is CBB_BANTHRESHOLD (CorruptionBlackBox.cpp:39): a
+// source is banned once more than this share of what it sent and a hash
+// checked was corrupt.
+const maxCorruptPercent = 32
+
 // RequestRecovery asks a peer for the AICH recovery data of a part that
 // failed its MD4 check; the engine answers with OnRecovery or
 // OnRecoveryFailed.
@@ -131,11 +136,14 @@ func toVotePrefix(addr netip.Addr) netip.Prefix {
 // requestRecovery asks a source for the recovery data of a part that failed its
 // MD4 check (aMule RequestAICHRecovery, PartFile.cpp:3813-3891): one that
 // reported the trusted root and has no request pending, HighID first, at
-// random. Without one the part is thrown away whole.
-func (t *Transfer) requestRecovery(part int, now time.Time) []Action {
+// random. Without one the part is thrown away whole and nobody is banned:
+// MD4 cannot tell which sender was corrupt, and banning all of them would
+// let one bad source ban the good ones (aMule PartFile.cpp:3719-3732).
+func (t *Transfer) requestRecovery(part int) []Action {
 	root, isTrusted := t.aich.root()
 	if !isTrusted || piece.BlockCount(t.file.Size, part) == 1 {
-		return t.removePart(part, now)
+		t.picker.onPartFailed(part)
+		return nil
 	}
 	var highIDs, lowIDs []uint64
 	for _, peer := range slices.Sorted(maps.Keys(t.aich.roots)) {
@@ -154,7 +162,8 @@ func (t *Transfer) requestRecovery(part int, now time.Time) []Action {
 		candidates = lowIDs
 	}
 	if len(candidates) == 0 {
-		return t.removePart(part, now)
+		t.picker.onPartFailed(part)
+		return nil
 	}
 	peer := candidates[t.aich.random.IntN(len(candidates))]
 	t.aich.asked[part] = peer
@@ -170,26 +179,16 @@ func (t *Transfer) isAsked(peer uint64) bool {
 	return false
 }
 
-// removePart throws away a part that failed its MD4 check and bans every
-// peer that sent a block of it.
-func (t *Transfer) removePart(part int, now time.Time) []Action {
-	var actions []Action
-	for _, peer := range t.picker.onPartFailed(part) {
-		actions = append(actions, t.removeCorrupt(peer, now)...)
-	}
-	return actions
-}
-
 // OnRecovery takes the recovery data a peer sent for part. Data that does
 // not lead to the trusted root counts as a failed answer.
-func (t *Transfer) OnRecovery(peer uint64, part int, root wire.AICHHash, entries []client.AICHEntry, now time.Time) []Action {
+func (t *Transfer) OnRecovery(peer uint64, part int, root wire.AICHHash, entries []client.AICHEntry) []Action {
 	if asked, ok := t.aich.asked[part]; !ok || asked != peer || !t.isDownloading() {
 		return nil
 	}
 	trusted, isTrusted := t.aich.root()
 	hashes, ok := aich.MatchRecovery(trusted, t.file.Size, part, entries)
 	if !ok || root != trusted || !isTrusted {
-		return t.OnRecoveryFailed(peer, now)
+		return t.OnRecoveryFailed(peer)
 	}
 	delete(t.aich.asked, part)
 	t.aich.verified[part] = hashes
@@ -199,13 +198,13 @@ func (t *Transfer) OnRecovery(peer uint64, part int, root wire.AICHHash, entries
 // OnRecoveryFailed: the peer could not give the recovery data it was asked
 // for, or is gone. Its root is forgotten and another source is asked
 // (ClientAICHRequestFailed, SHAHashSet.cpp:1014-1028).
-func (t *Transfer) OnRecoveryFailed(peer uint64, now time.Time) []Action {
+func (t *Transfer) OnRecoveryFailed(peer uint64) []Action {
 	delete(t.aich.roots, peer)
 	for part, asked := range t.aich.asked {
 		if asked == peer {
 			delete(t.aich.asked, part)
 			if t.isDownloading() {
-				return t.requestRecovery(part, now)
+				return t.requestRecovery(part)
 			}
 		}
 	}
@@ -213,36 +212,52 @@ func (t *Transfer) OnRecoveryFailed(peer uint64, now time.Time) []Action {
 }
 
 // OnBlocksHashed compares our blocks of a part under repair with the
-// checked ones: the good blocks stay, the bad ones are downloaded again and
-// their senders banned (AICHRecoveryDataAvailable, PartFile.cpp:3895-4010).
+// checked ones: the good blocks stay, the bad ones are downloaded again, and
+// a sender of a bad block is banned once its share of corrupt data is above
+// maxCorruptPercent (AICHRecoveryDataAvailable, PartFile.cpp:3895-4010;
+// CCorruptionBlackBox::EvaluateData). A bad block counts whole for every
+// peer that sent any of it.
 func (t *Transfer) OnBlocksHashed(part int, hashes []wire.AICHHash, now time.Time) []Action {
 	verified, ok := t.aich.verified[part]
 	delete(t.aich.verified, part)
 	if !ok || !t.isDownloading() {
 		return nil
 	}
-	// A block written before a restart has no known sender, so a bad block
-	// is noted apart from who sent it.
+	isGood := func(i int) bool { return i < len(hashes) && hashes[i] == verified[i] }
 	isCorrupt := false
-	var senders []uint64
-	for i, hash := range verified {
-		if i < len(hashes) && hashes[i] == hash {
-			continue
-		}
-		isCorrupt = true
-		for _, sender := range t.picker.onBlockFailed(piece.BlockOf(t.file.Size, part, i)) {
-			if !slices.Contains(senders, sender) {
-				senders = append(senders, sender)
-			}
-		}
+	for i := range verified {
+		isCorrupt = isCorrupt || !isGood(i)
 	}
 	if !isCorrupt {
 		t.aich.isBroken = true
-		return t.removePart(part, now)
+		t.picker.onPartFailed(part)
+		return nil
+	}
+	var suspects []uint64
+	for i := range verified {
+		b := piece.BlockOf(t.file.Size, part, i)
+		if isGood(i) {
+			for _, peer := range t.picker.onBlockVerified(b) {
+				if s := t.senders[peer]; s != nil {
+					s.goodBytes += b.End - b.Begin
+				}
+			}
+			continue
+		}
+		for _, peer := range t.picker.onBlockFailed(b) {
+			if s := t.senders[peer]; s != nil {
+				s.badBytes += piece.BlockSize
+			}
+			if !slices.Contains(suspects, peer) {
+				suspects = append(suspects, peer)
+			}
+		}
 	}
 	var actions []Action
-	for _, peer := range senders {
-		actions = append(actions, t.removeCorrupt(peer, now)...)
+	for _, peer := range suspects {
+		if s := t.senders[peer]; s != nil && s.badBytes*100 > maxCorruptPercent*(s.badBytes+s.goodBytes) {
+			actions = append(actions, t.removeCorrupt(peer, now)...)
+		}
 	}
 	return actions
 }

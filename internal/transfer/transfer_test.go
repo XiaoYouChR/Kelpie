@@ -83,7 +83,7 @@ func (h *harness) run(actions []transfer.Action) {
 			var hasher piece.MD4
 			r := piece.PartRange(int64(len(h.disk)), a.Part)
 			hasher.Write(h.disk[r.Begin:r.End])
-			actions = append(actions, h.transfer.OnPartHashed(a.Part, hasher.Digest(), h.now)...)
+			actions = append(actions, h.transfer.OnPartHashed(a.Part, hasher.Digest())...)
 		case transfer.HashBlocks:
 			var hasher aich.Hasher
 			r := piece.PartRange(int64(len(h.disk)), a.Part)
@@ -262,7 +262,10 @@ func TestHashSetRequestedWhenMissing(t *testing.T) {
 	}
 }
 
-func TestCorruptPartBansSenderAndIsDownloadedAgain(t *testing.T) {
+// Without AICH a corrupt part is downloaded again whole and nobody is
+// banned: MD4 cannot tell which sender was corrupt (aMule
+// PartFile.cpp:3719-3732).
+func TestCorruptPartWithoutAICHIsDownloadedAgain(t *testing.T) {
 	data := buildData(2*piece.PartSize + 5000)
 	file := buildFile(data)
 	h := buildHarness(t, data, transfer.Options{File: file})
@@ -270,28 +273,17 @@ func TestCorruptPartBansSenderAndIsDownloadedAgain(t *testing.T) {
 	h.connect(2, 2, piece.Set{false, true, true})
 
 	before := len(h.actions)
-	for h.deliver(1, 10, true) > 0 {
+	if got := h.deliver(1, 100, true); got != piece.BlockCount(file.Size, 0) {
+		t.Fatalf("delivered %d blocks, want all of part 0", got)
 	}
-	actions := h.actions[before:]
-	closes := 0
-	for _, action := range actions {
-		if c, ok := action.(transfer.Close); ok {
-			closes++
-			if c.Peer != 1 {
-				t.Fatalf("closed peer %d, want 1", c.Peer)
-			}
-		}
+	if countActions[transfer.HashPart](h.actions[before:]) != 1 || h.transfer.ToState().VerifiedParts[0] {
+		t.Fatalf("corrupt part not hashed once and refused: %+v", h.actions[before:])
 	}
-	if closes != 1 || len(traces(actions, transfer.EventClosed)) != 1 {
-		t.Fatalf("closes = %d, closed traces = %d; want 1 each", closes, len(traces(actions, transfer.EventClosed)))
+	if closed := closedPeers(h.actions[before:]); len(closed) != 0 {
+		t.Fatalf("closed %v without AICH to tell the corrupt sender", closed)
 	}
-	if h.transfer.ToState().VerifiedParts[0] {
-		t.Fatal("corrupt part verified")
-	}
-
-	reconnect := h.transfer.OnPeerConnected(3, transfer.Source{Endpoint: endpoint(9), UserHash: userHash(1)}, h.now)
-	if len(reconnect) != 1 || reconnect[0] != (transfer.Close{Peer: 3, Reason: "banned"}) {
-		t.Fatalf("banned peer reconnecting: %+v", reconnect)
+	if !h.transfer.MatchSource(transfer.Source{UserHash: userHash(1)}) {
+		t.Fatal("sender of the corrupt part dropped")
 	}
 
 	h.transfer.OnPeerParts(2, piece.BuildFullSet(3))
@@ -426,7 +418,7 @@ func TestSourceCap(t *testing.T) {
 }
 
 // A peer is a known source by user hash or LowID while the transfer keeps
-// it, and no longer once a banned or refused source is gone.
+// it.
 func TestMatchSource(t *testing.T) {
 	data := buildData(1000)
 	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
@@ -459,11 +451,6 @@ func TestMatchSource(t *testing.T) {
 	h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(3), UserHash: userHash(3)}, start)
 	if !h.transfer.MatchSource(transfer.Source{UserHash: userHash(3)}) {
 		t.Fatal("user hash from the Hello not matched")
-	}
-	h.connect(2, 1, piece.BuildFullSet(1))
-	h.deliver(2, 1, true)
-	if h.transfer.MatchSource(transfer.Source{UserHash: userHash(1)}) {
-		t.Fatal("banned source still matched")
 	}
 }
 

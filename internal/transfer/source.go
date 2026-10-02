@@ -146,6 +146,11 @@ type source struct {
 	udpFailed int
 
 	receivedBytes int64
+	// goodBytes and badBytes are what the source sent that a part or AICH
+	// hash proved good or corrupt, for aMule's corruption black box: a
+	// source is banned only when its share of corrupt data is too high.
+	goodBytes int64
+	badBytes  int64
 	// download is the source's own rate, which the endgame compares to
 	// find a source slow enough to hand its blocks over.
 	download meter
@@ -486,7 +491,7 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 	if s == nil {
 		return nil
 	}
-	actions := append(t.removePeer(peer, now), t.sendReceived(s, now)...)
+	actions := append(t.removePeer(peer), t.sendReceived(s, now)...)
 	switch s.state {
 	case stateAsking:
 		return append(actions, t.setFailed(s, reason, now))
@@ -528,20 +533,20 @@ func (t *Transfer) removeCorrupt(peer uint64, now time.Time) []Action {
 	actions := []Action{event}
 	if t.peers[peer] == s {
 		actions = append(actions, Close{Peer: peer, Reason: "corrupt data"})
-		actions = append(actions, t.removePeer(peer, now)...)
+		actions = append(actions, t.removePeer(peer)...)
 	}
 	return actions
 }
 
 // removePeer detaches a connection from its source and hands what was asked
 // of it to other peers.
-func (t *Transfer) removePeer(peer uint64, now time.Time) []Action {
+func (t *Transfer) removePeer(peer uint64) []Action {
 	delete(t.peers, peer)
 	t.picker.onPeerGone(peer)
 	if peer == t.hashSetPeer {
 		t.hashSetPeer = 0
 	}
-	return t.OnRecoveryFailed(peer, now)
+	return t.OnRecoveryFailed(peer)
 }
 
 // OnTick runs the timers: source reasks and connections within the budget,

@@ -328,20 +328,23 @@ func (t *Transfer) expectedHash(part int) (wire.Hash, bool) {
 }
 
 // OnPartHashed verifies a part. A mismatch starts an AICH repair of the
-// part, or when none is possible discards it and bans every peer that sent
-// a block of it.
-func (t *Transfer) OnPartHashed(part int, hash wire.Hash, now time.Time) []Action {
+// part, or when none is possible discards it.
+func (t *Transfer) OnPartHashed(part int, hash wire.Hash) []Action {
 	if !t.isDownloading() {
 		return nil
 	}
 	if expected, _ := t.expectedHash(part); hash == expected {
-		t.picker.onPartVerified(part)
+		for peer, bytes := range t.picker.onPartVerified(part) {
+			if s := t.senders[peer]; s != nil {
+				s.goodBytes += bytes
+			}
+		}
 		if t.isComplete() {
 			t.outcome = Outcome{Status: StatusComplete}
 		}
 		return nil
 	}
-	return t.requestRecovery(part, now)
+	return t.requestRecovery(part)
 }
 
 // OnHashSet accepts the part hashes a peer sent if they add up to the file

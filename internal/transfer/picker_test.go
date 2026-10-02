@@ -199,7 +199,7 @@ func TestOnPeerPartsReplacesAvailability(t *testing.T) {
 	}
 }
 
-func TestFailedPartReportsSendersAndStartsOver(t *testing.T) {
+func TestFailedPartStartsOver(t *testing.T) {
 	size := 2*piece.BlockSize + 10
 	picker := buildEmptyPicker(t, size, 1)
 	picker.onPeerParts(peerA, piece.Set{true})
@@ -223,11 +223,12 @@ func TestFailedPartReportsSendersAndStartsOver(t *testing.T) {
 		t.Fatalf("WrittenSize = %d, want %d", got, size)
 	}
 
-	senders := picker.onPartFailed(0)
+	senders := picker.senders()
 	slices.Sort(senders)
 	if !slices.Equal(senders, []uint64{peerA, peerB}) {
 		t.Fatalf("senders = %v, want [a b]", senders)
 	}
+	picker.onPartFailed(0)
 	if got := picker.writtenSize(); got != 0 {
 		t.Fatalf("WrittenSize after failure = %d, want 0", got)
 	}
@@ -343,8 +344,8 @@ func TestPartlyReceivedBlockKeepsItsBytes(t *testing.T) {
 	if !picker.onBlockWritten(rest) {
 		t.Fatal("part not reported written once every byte is on disk")
 	}
-	if senders := picker.onPartFailed(0); !slices.Equal(senders, []uint64{peerA, peerB}) {
-		t.Fatalf("senders of a failed part = %v, want both peers", senders)
+	if senders := picker.senders(); !slices.Equal(senders, []uint64{peerA, peerB}) {
+		t.Fatalf("senders of the part = %v, want both peers", senders)
 	}
 }
 

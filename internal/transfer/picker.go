@@ -336,16 +336,23 @@ func (p *picker) onBlockWritten(b piece.Block) bool {
 	return p.isWritten(b.Part())
 }
 
-func (p *picker) onPartVerified(part int) {
+// onPartVerified marks a part verified and returns how many of its bytes
+// each peer sent, a block counting whole for every peer that sent any of it.
+func (p *picker) onPartVerified(part int) map[uint64]int64 {
+	sent := map[uint64]int64{}
+	for i, block := range p.parts[part].blocks {
+		b := piece.BlockOf(p.size, part, i)
+		for _, sender := range block.senders {
+			sent[sender] += b.End - b.Begin
+		}
+	}
 	p.parts[part] = partState{isVerified: true}
+	return sent
 }
 
-// onPartFailed discards a part whose hash did not match and returns the peers
-// that sent any of its blocks, so the caller can ban the corrupt sender.
-func (p *picker) onPartFailed(part int) []uint64 {
-	senders := addSenders(nil, p.parts[part].blocks)
+// onPartFailed discards a part whose hash did not match.
+func (p *picker) onPartFailed(part int) {
 	p.parts[part] = partState{}
-	return senders
 }
 
 // senders lists the peers that sent any block of a part not yet verified.
@@ -374,5 +381,15 @@ func (p *picker) onBlockFailed(b piece.Block) []uint64 {
 	state := p.blockState(b)
 	senders := state.senders
 	*state = blockState{}
+	return senders
+}
+
+// onBlockVerified returns the senders of a block that AICH found good and
+// forgets them, so the block counts for them once, not again when its part
+// is verified.
+func (p *picker) onBlockVerified(b piece.Block) []uint64 {
+	state := p.blockState(b)
+	senders := state.senders
+	state.senders = nil
 	return senders
 }
