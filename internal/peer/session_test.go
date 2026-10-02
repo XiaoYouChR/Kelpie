@@ -521,8 +521,18 @@ func TestCompressedPartReassembly(t *testing.T) {
 	if sentCount[client.SendingPart](l) != 0 {
 		t.Fatal("compressible block sent plain")
 	}
-	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) {
+	r := lastOf[BlockReceived](t, l.a)
+	if !bytes.Equal(r.Data, data) {
 		t.Fatal("inflated block differs")
+	}
+	var packed int64
+	for _, p := range l.sent {
+		if part, ok := p.(client.CompressedPart); ok {
+			packed += int64(len(part.Data))
+		}
+	}
+	if r.Payload != packed {
+		t.Fatalf("payload %d, want the %d packed bytes on the wire", r.Payload, packed)
 	}
 }
 
@@ -538,8 +548,8 @@ func TestIncompressibleBlockSentPlain(t *testing.T) {
 	if sentCount[client.CompressedPart](l) != 0 || sentCount[client.SendingPart](l) != 18 {
 		t.Fatalf("sent %d plain packets", sentCount[client.SendingPart](l))
 	}
-	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) {
-		t.Fatal("block differs")
+	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) || r.Payload != size {
+		t.Fatalf("block differs or payload %d", r.Payload)
 	}
 }
 
