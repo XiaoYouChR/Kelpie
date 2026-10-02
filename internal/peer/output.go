@@ -79,10 +79,14 @@ type BlocksWanted struct {
 	Count int
 }
 
+// BlockReceived hands over the Data of Block. Payload is the packet data
+// that carried it, compressed or not, which credits count as aMule does
+// (DownloadClient.cpp:865) and as our uploads are counted.
 type BlockReceived struct {
-	File  wire.Hash
-	Block piece.Block
-	Data  []byte
+	File    wire.Hash
+	Block   piece.Block
+	Data    []byte
+	Payload int64
 }
 
 // UploadRequested: the peer wants to join our upload queue for File. Parts

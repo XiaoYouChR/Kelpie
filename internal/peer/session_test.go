@@ -2,6 +2,7 @@ package peer
 
 import (
 	"bytes"
+	"compress/zlib"
 	"math/rand/v2"
 	"net/netip"
 	"slices"
@@ -520,8 +521,18 @@ func TestCompressedPartReassembly(t *testing.T) {
 	if sentCount[client.SendingPart](l) != 0 {
 		t.Fatal("compressible block sent plain")
 	}
-	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) {
+	r := lastOf[BlockReceived](t, l.a)
+	if !bytes.Equal(r.Data, data) {
 		t.Fatal("inflated block differs")
+	}
+	var packed int64
+	for _, p := range l.sent {
+		if part, ok := p.(client.CompressedPart); ok {
+			packed += int64(len(part.Data))
+		}
+	}
+	if r.Payload != packed {
+		t.Fatalf("payload %d, want the %d packed bytes on the wire", r.Payload, packed)
 	}
 }
 
@@ -537,8 +548,8 @@ func TestIncompressibleBlockSentPlain(t *testing.T) {
 	if sentCount[client.CompressedPart](l) != 0 || sentCount[client.SendingPart](l) != 18 {
 		t.Fatalf("sent %d plain packets", sentCount[client.SendingPart](l))
 	}
-	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) {
-		t.Fatal("block differs")
+	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) || r.Payload != size {
+		t.Fatalf("block differs or payload %d", r.Payload)
 	}
 }
 
@@ -1040,5 +1051,56 @@ func TestCompressedPartLargerThanBlockCloses(t *testing.T) {
 	l.run(l.b, Output{Send: []wire.Packet{client.CompressedPart{Hash: file, Start: 0, PackedSize: 1 << 30, Data: make([]byte, 10)}}})
 	if l.a.closed != closeProtocol {
 		t.Fatalf("closed = %q, want protocol", l.a.closed)
+	}
+}
+
+func TestRepeatedSlotKeepsRequestedBlocks(t *testing.T) {
+	l := buildLink(t)
+	size := piece.BlockSize
+	file, data := addShare(l.b, 1, size, false)
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
+	l.run(l.b, l.b.s.StartUpload())
+	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: size}}))
+	l.sent = nil
+	l.run(l.b, l.b.s.StartUpload())
+	if sentCount[client.AcceptUploadRequest](l) != 1 {
+		t.Fatal("repeated request not accepted again")
+	}
+	l.sendRequestedBlocks(l.b, file, data)
+	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) {
+		t.Fatal("block requested before the repeated grant was dropped")
+	}
+}
+
+func TestArchiveBlockSentPlain(t *testing.T) {
+	l := buildLink(t)
+	size := piece.BlockSize
+	file, data := addShare(l.b, 1, size, true)
+	share := l.b.shares[file]
+	share.Name = "backup.Tar"
+	l.b.shares[file] = share
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
+	l.run(l.b, l.b.s.StartUpload())
+	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: size}}))
+	l.sent = nil
+	l.sendRequestedBlocks(l.b, file, data)
+	if sentCount[client.CompressedPart](l) != 0 {
+		t.Fatal("archive block compressed")
+	}
+	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) {
+		t.Fatal("block differs")
+	}
+}
+
+// eMule 0.70b and aMule pack at level 1; the default level costs about
+// twice the CPU on blocks that mostly do not shrink.
+func TestBlockPackedAtFastestLevel(t *testing.T) {
+	data := buildData(piece.BlockSize, true, 1)
+	var want bytes.Buffer
+	w, _ := zlib.NewWriterLevel(&want, zlib.BestSpeed)
+	w.Write(data)
+	w.Close()
+	if got := toDeflated(data); !bytes.Equal(got, want.Bytes()) {
+		t.Fatalf("packed to %d bytes, level 1 packs to %d", len(got), want.Len())
 	}
 }

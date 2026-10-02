@@ -51,7 +51,11 @@ type conn struct {
 	isServer     bool
 	isOutgoing   bool
 	isObfuscated bool
-	out          *leafQueue[outItem]
+	// control and data feed the writer: upload data waits in data so that
+	// a control packet never queues behind it, as aMule keeps a control
+	// and a standard queue per socket (EMSocket.cpp:338-360).
+	control *leafQueue[outItem]
+	data    *leafQueue[outItem]
 	// session is the peer's state machine, from the dial on; nil on a server
 	// connection. Its Files are the downloads this connection serves.
 	session *peer.Session
@@ -91,7 +95,8 @@ func (e *Engine) addConn(remote netip.AddrPort, isServer, isOutgoing bool) *conn
 		remote:     netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port()),
 		isServer:   isServer,
 		isOutgoing: isOutgoing,
-		out:        buildLeafQueue[outItem](e.caps.writer),
+		control:    buildLeafQueue[outItem](e.caps.writer),
+		data:       buildLeafQueue[outItem](e.caps.writer),
 	}
 	e.conns[c.id] = c
 	return c
@@ -260,7 +265,7 @@ func (e *Engine) startConnLeaves(c *conn) {
 		limiterIn, limiterOut = nil, nil
 	}
 	e.startLeaf(func() { e.runReader(c.ctx, c.id, c.remote, c.net, parse, limiterIn) })
-	e.startLeaf(func() { e.runWriter(c.ctx, c.id, c.remote, c.net, c.out.items, limiterOut) })
+	e.startLeaf(func() { e.runWriter(c.ctx, c.id, c.remote, c.net, c.control.items, c.data.items, limiterOut) })
 }
 
 func (e *Engine) buildPeerConfig(c *conn) peer.Config {
@@ -330,23 +335,34 @@ func (e *Engine) runReader(ctx context.Context, id uint64, remote netip.AddrPort
 	}
 }
 
-// runWriter is a connection's writer leaf. It reports each written packet
-// so the hub can count credit and uploaded bytes.
-func (e *Engine) runWriter(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, items <-chan outItem, limiter *rateLimiter) {
+// runWriter is a connection's writer leaf. It writes control packets before
+// upload data, and lets them pass the rate limiter at once, ahead of the data
+// already waiting there. It reports each written packet so the hub can count
+// credit and uploaded bytes.
+func (e *Engine) runWriter(ctx context.Context, id uint64, remote netip.AddrPort, netConn net.Conn, control, data <-chan outItem, limiter *rateLimiter) {
 	var buf []byte
 	for {
 		var item outItem
 		var ok bool
 		select {
-		case item, ok = <-items:
-		case <-ctx.Done():
-			return
+		case item, ok = <-control:
+		default:
+			select {
+			case item, ok = <-control:
+			case item, ok = <-data:
+			case <-ctx.Done():
+				return
+			}
 		}
 		if !ok {
 			return
 		}
 		buf = wire.BuildPacket(buf[:0], item.packet)
-		if limiter != nil && limiter.waitN(ctx, len(buf)) != nil {
+		switch {
+		case limiter == nil:
+		case item.payload == 0:
+			limiter.addControl(len(buf))
+		case limiter.waitN(ctx, len(buf)) != nil:
 			return
 		}
 		if _, err := netConn.Write(buf); err != nil {
@@ -362,13 +378,16 @@ func (e *Engine) runWriter(ctx context.Context, id uint64, remote netip.AddrPort
 	}
 }
 
+// sendPacket queues p for c's writer; a non-zero payload marks upload data.
 func (e *Engine) sendPacket(c *conn, p wire.Packet, file wire.Hash, payload int64) {
 	switch {
 	case c.isClosed:
-	case len(c.out.backlog) >= maxWriterBacklog:
+	case len(c.control.backlog)+len(c.data.backlog) >= maxWriterBacklog:
 		e.closeConn(c, "send queue full")
+	case payload == 0:
+		c.control.send(outItem{p, file, payload})
 	default:
-		c.out.send(outItem{p, file, payload})
+		c.data.send(outItem{p, file, payload})
 	}
 }
 
@@ -377,14 +396,15 @@ func (e *Engine) onPacketSent(m packetSent) {
 	if c == nil {
 		return
 	}
-	c.out.onDone()
 	now := e.now()
 	if c.session != nil {
 		c.session.OnSent(now)
 	}
 	if m.payload == 0 {
+		c.control.onDone()
 		return
 	}
+	c.data.onDone()
 	c.uploadBuffered -= m.payload
 	e.sendUploadReads(c)
 	e.queue.OnSent(c.id, m.payload)
@@ -412,7 +432,8 @@ func (e *Engine) closeConn(c *conn, reason string) {
 	if c.net != nil {
 		c.net.Close()
 	}
-	close(c.out.items)
+	close(c.control.items)
+	close(c.data.items)
 	now := e.now()
 	if c.isServer {
 		e.runServer(e.server.OnDisconnected(c.remote, now))
@@ -535,7 +556,7 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 			e.runSession(c, c.session.Request(ev.File, r.transfer.Request(c.id, ev.Count)))
 		}
 	case peer.BlockReceived:
-		e.ledger.OnTransferred(c.session.Capabilities().UserHash, c.remote.Addr(), 0, int64(len(ev.Data)))
+		e.ledger.OnTransferred(c.session.Capabilities().UserHash, c.remote.Addr(), 0, ev.Payload)
 		if r := e.downloadByHash(ev.File); r != nil {
 			e.runTransferActions(r, r.transfer.OnBlockReceived(c.id, ev.Block, ev.Data, now))
 		}

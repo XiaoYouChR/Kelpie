@@ -3,7 +3,9 @@ package peer
 import (
 	"bytes"
 	"compress/zlib"
+	"path"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/aich"
@@ -40,6 +42,29 @@ type uploadBlock struct {
 	block piece.Block
 }
 
+// pendingBlock is what sending a requested block needs of its file.
+type pendingBlock struct {
+	isLarge   bool
+	isArchive bool
+}
+
+// archiveExtensions are aMule's ED2KFT_ARCHIVE file types
+// (OtherFunctions.cpp:929-), whose blocks it never tries to compress
+// (UploadDiskIOThread.cpp:252): they do not shrink.
+var archiveExtensions = map[string]bool{
+	".7z": true, ".ace": true, ".alz": true, ".arc": true, ".arj": true, ".bz2": true,
+	".cab": true, ".cb7": true, ".cba": true, ".cbr": true, ".cbt": true, ".cbz": true,
+	".gz": true, ".hqx": true, ".lha": true, ".lz": true, ".lz4": true, ".lzh": true,
+	".lzma": true, ".pak": true, ".par": true, ".par2": true, ".rar": true, ".sea": true,
+	".sit": true, ".sitx": true, ".tar": true, ".tbz2": true, ".tgz": true, ".tlz": true,
+	".txz": true, ".uc2": true, ".xz": true, ".z": true, ".zip": true, ".zoo": true,
+	".zst": true,
+}
+
+func isArchive(name string) bool {
+	return archiveExtensions[strings.ToLower(path.Ext(name))]
+}
+
 // uploadState is the upload role. Like eMule we hold one slot per client;
 // while it is open the peer may request blocks of any file we share.
 type uploadState struct {
@@ -52,18 +77,23 @@ type uploadState struct {
 	slot *uploadSlot
 }
 
-// uploadSlot remembers the blocks requested and not yet sent, with the size
-// of their file, and the last ones sent, oldest first, so a peer re-listing
+// uploadSlot remembers the blocks requested and not yet sent, and the last
+// ones sent, oldest first, so a peer re-listing
 // blocks still in flight gets each only once.
 type uploadSlot struct {
-	pending map[uploadBlock]int64
+	pending map[uploadBlock]pendingBlock
 	sent    []uploadBlock
 }
 
-// StartUpload gives the peer an upload slot.
+// StartUpload gives the peer an upload slot. A peer that already holds one
+// gets OP_ACCEPTUPLOADREQ again and keeps the blocks it has requested, as
+// aMule answers a downloading client (UploadQueue.cpp:520-528): it would not
+// ask for them again.
 func (s *Session) StartUpload() Output {
 	var out Output
-	s.up.slot = &uploadSlot{pending: map[uploadBlock]int64{}}
+	if s.up.slot == nil {
+		s.up.slot = &uploadSlot{pending: map[uploadBlock]pendingBlock{}}
+	}
 	out.send(client.AcceptUploadRequest{})
 	return out
 }
@@ -90,7 +120,7 @@ func (s *Session) SendQueueRank(rank uint32) Output {
 }
 
 // SendBlock uploads one block the peer requested, compressed when the peer
-// supports it and compression makes it smaller.
+// supports it, the file is not an archive, and compression makes it smaller.
 func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Output {
 	var out Output
 	slot := s.up.slot
@@ -98,7 +128,7 @@ func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Outp
 		return out
 	}
 	key := uploadBlock{file, block}
-	size, ok := slot.pending[key]
+	pending, ok := slot.pending[key]
 	if !ok {
 		return out
 	}
@@ -106,8 +136,8 @@ func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Outp
 	if slot.sent = append(slot.sent, key); len(slot.sent) > maxUploadBlocks {
 		slot.sent = slot.sent[1:]
 	}
-	isLarge := size > largeFileSize
-	if s.features.canCompress {
+	isLarge := pending.isLarge
+	if s.features.canCompress && !pending.isArchive {
 		if packed := toDeflated(data); len(packed) < len(data) {
 			for chunk := range slices.Chunk(packed, partPacketSize) {
 				out.send(client.CompressedPart{Hash: file, Start: uint64(block.Begin), PackedSize: uint32(len(packed)), Data: chunk, IsLarge: isLarge})
@@ -124,9 +154,12 @@ func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Outp
 	return out
 }
 
+// toDeflated packs at zlib's fastest level, as eMule 0.70b and aMule do
+// (UploadDiskIOThread.cpp:521-529): 1.5 to 2.5 times faster than the default
+// for 4 to 12 percent more bytes.
 func toDeflated(data []byte) []byte {
 	var packed bytes.Buffer
-	w := zlib.NewWriter(&packed)
+	w, _ := zlib.NewWriterLevel(&packed, zlib.BestSpeed)
 	w.Write(data)
 	w.Close()
 	return packed.Bytes()
@@ -286,7 +319,7 @@ func (s *Session) onPartsRequest(file wire.Hash, blocks []piece.Block, out *Outp
 		if isPending || isFull || slices.Contains(slot.sent, key) || !canUpload(share, b) {
 			continue
 		}
-		slot.pending[key] = share.Size
+		slot.pending[key] = pendingBlock{isLarge: share.Size > largeFileSize, isArchive: isArchive(share.Name)}
 		fresh = append(fresh, b)
 	}
 	if len(fresh) > 0 {

@@ -90,6 +90,8 @@ type inFlight struct {
 	prefix int64
 	ranges []piece.Block
 	packed []byte
+	// payload counts the packet data that arrived for the block.
+	payload int64
 }
 
 // Add asks the peer about file, of which we have parts. It may be called
@@ -447,6 +449,7 @@ func (s *Session) onPart(file wire.Hash, start int64, data []byte, now time.Time
 	}
 	s.onData(len(data), now)
 	f := d.inFlight[i]
+	f.payload += int64(len(data))
 	if f.data == nil {
 		f.data = make([]byte, f.block.End-f.block.Begin)
 	}
@@ -483,7 +486,7 @@ func (s *Session) cancelInFlight(file wire.Hash, out *Output) {
 	}
 	for _, f := range d.inFlight {
 		if data := toReceived(f); len(data) > 0 {
-			out.add(BlockReceived{File: file, Block: piece.Block{Begin: f.block.Begin, End: f.block.Begin + int64(len(data))}, Data: data})
+			out.add(BlockReceived{File: file, Block: piece.Block{Begin: f.block.Begin, End: f.block.Begin + int64(len(data))}, Data: data, Payload: f.payload})
 		}
 	}
 	d.inFlight = nil
@@ -513,6 +516,7 @@ func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint3
 	}
 	s.onData(len(data), now)
 	f := d.inFlight[i]
+	f.payload += int64(len(data))
 	size := f.block.End - f.block.Begin
 	// eMule packs into a buffer 300 bytes larger than the block and sends
 	// the block plain unless packing shrinks it (UploadDiskIOThread.cpp:581-583).
@@ -536,7 +540,7 @@ func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint3
 func (s *Session) onBlockFilled(file wire.Hash, d *download, i int, out *Output) {
 	f := d.inFlight[i]
 	d.inFlight = slices.Delete(d.inFlight, i, i+1)
-	out.add(BlockReceived{File: file, Block: f.block, Data: f.data})
+	out.add(BlockReceived{File: file, Block: f.block, Data: f.data, Payload: f.payload})
 	if s.down.slot == slotGranted && s.down.started == file {
 		s.requestBlocks(d, out)
 	}
