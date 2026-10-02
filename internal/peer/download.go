@@ -90,8 +90,11 @@ type inFlight struct {
 	prefix int64
 	ranges []piece.Block
 	packed []byte
-	// payload counts the packet data that arrived for the block, which
-	// credits count rather than the block's size (BlockReceived.Payload).
+	// handed counts the bytes from the block's start already handed over.
+	handed int64
+	// payload counts the packet data that arrived for the block since the
+	// last hand-over, which credits count rather than the block's size
+	// (BlockReceived.Payload).
 	payload int64
 }
 
@@ -458,8 +461,10 @@ func (s *Session) onPart(file wire.Hash, start int64, data []byte, now time.Time
 	f.ranges = append(f.ranges, piece.Block{Begin: start, End: end})
 	f.updatePrefix()
 	if f.prefix == int64(len(f.data)) {
-		s.onBlockFilled(file, d, i, out)
+		s.onBlockFilled(file, d, i, f.data, out)
+		return
 	}
+	handOver(file, f, f.data[:f.prefix], out)
 }
 
 func (f *inFlight) updatePrefix() {
@@ -477,20 +482,35 @@ func (f *inFlight) updatePrefix() {
 }
 
 // cancelInFlight gives up file's block requests and hands over what arrived
-// of each block from its start: aMule writes every packet as it comes and
-// later asks only for the gaps (DownloadClient.cpp:835-848), and inflates a
-// compressed block as its packets arrive.
+// of each block from its start and is not handed over yet: aMule later asks
+// only for the gaps (DownloadClient.cpp:835-848), and inflates a compressed
+// block as its packets arrive.
 func (s *Session) cancelInFlight(file wire.Hash, out *Output) {
 	d := s.downloadByHash(file)
 	if d == nil {
 		return
 	}
 	for _, f := range d.inFlight {
-		if data := toReceived(f); len(data) > 0 {
-			out.add(BlockReceived{File: file, Block: piece.Block{Begin: f.block.Begin, End: f.block.Begin + int64(len(data))}, Data: data, Payload: f.payload})
-		}
+		handOver(file, f, toReceived(f), out)
 	}
 	d.inFlight = nil
+}
+
+// handOver hands over the part of received, f's data from the block's start,
+// that is new since the last hand-over, and the payload not yet counted, even
+// of a packet beyond a gap. aMule writes and credits every packet as it comes
+// (DownloadClient.cpp:835-865), so Progress and the rate move with each packet
+// rather than once a 180 KB block is complete. The data is copied: a late
+// duplicate packet may still be copied into the block while the disk writes
+// what was handed over.
+func handOver(file wire.Hash, f *inFlight, received []byte, out *Output) {
+	if int64(len(received)) == f.handed && f.payload == 0 {
+		return
+	}
+	data := slices.Clone(received[f.handed:])
+	begin := f.block.Begin + f.handed
+	out.add(BlockReceived{File: file, Block: piece.Block{Begin: begin, End: begin + int64(len(data))}, Data: data, Payload: f.payload})
+	f.handed, f.payload = int64(len(received)), 0
 }
 
 // toReceived is the block's data received without a gap from its start; for
@@ -534,8 +554,7 @@ func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint3
 		s.cancelBlock(file, d, i, out)
 		return
 	}
-	f.data = plain
-	s.onBlockFilled(file, d, i, out)
+	s.onBlockFilled(file, d, i, plain, out)
 }
 
 // cancelBlock gives up a compressed block whose stream is broken and
@@ -550,10 +569,9 @@ func (s *Session) cancelBlock(file wire.Hash, d *download, i int, out *Output) {
 	}
 }
 
-func (s *Session) onBlockFilled(file wire.Hash, d *download, i int, out *Output) {
-	f := d.inFlight[i]
+func (s *Session) onBlockFilled(file wire.Hash, d *download, i int, data []byte, out *Output) {
+	handOver(file, d.inFlight[i], data, out)
 	d.inFlight = slices.Delete(d.inFlight, i, i+1)
-	out.add(BlockReceived{File: file, Block: f.block, Data: f.data, Payload: f.payload})
 	if s.down.slot == slotGranted && s.down.started == file {
 		s.requestBlocks(d, out)
 	}
