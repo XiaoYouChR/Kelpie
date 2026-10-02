@@ -136,11 +136,10 @@ func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Outp
 	if slot.sent = append(slot.sent, key); len(slot.sent) > maxUploadBlocks {
 		slot.sent = slot.sent[1:]
 	}
-	isLarge := pending.isLarge
 	if s.features.canCompress && !pending.isArchive {
 		if packed := toDeflated(data); len(packed) < len(data) {
 			for chunk := range slices.Chunk(packed, partPacketSize) {
-				out.send(client.CompressedPart{Hash: file, Start: uint64(block.Begin), PackedSize: uint32(len(packed)), Data: chunk, IsLarge: isLarge})
+				out.send(client.CompressedPart{Hash: file, Start: uint64(block.Begin), PackedSize: uint32(len(packed)), Data: chunk, IsLarge: pending.isLarge})
 			}
 			return out
 		}
@@ -148,7 +147,7 @@ func (s *Session) SendBlock(file wire.Hash, block piece.Block, data []byte) Outp
 	start := block.Begin
 	for chunk := range slices.Chunk(data, partPacketSize) {
 		end := start + int64(len(chunk))
-		out.send(client.SendingPart{Hash: file, Start: uint64(start), End: uint64(end), Data: chunk, IsLarge: isLarge})
+		out.send(client.SendingPart{Hash: file, Start: uint64(start), End: uint64(end), Data: chunk, IsLarge: pending.isLarge})
 		start = end
 	}
 	return out
