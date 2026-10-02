@@ -361,14 +361,13 @@ func (t *Transfer) OnConnectFailed(endpoint netip.AddrPort, reason string, now t
 // says nothing about the source, which only waits for its next reask, once
 // we are back online.
 func (t *Transfer) setFailed(s *source, wait time.Duration, reason string, now time.Time) TraceEvent {
-	s.state = stateFailed
-	s.deadline = now.Add(wait)
-	if s.ClientID != 0 || s.Buddy.IsValid() {
-		s.deadline = s.deadline.Add(callbackDeadTime)
-	}
-	if t.tick.IsOffline {
-		s.state = stateNew
-		s.lastAsked = now
+	switch {
+	case t.tick.IsOffline:
+		s.state, s.lastAsked = stateNew, now
+	case s.ClientID != 0 || s.Buddy.IsValid():
+		s.state, s.deadline = stateFailed, now.Add(wait+callbackDeadTime)
+	default:
+		s.state, s.deadline = stateFailed, now.Add(wait)
 	}
 	event := t.buildTrace(now, s, EventFailed)
 	event.Reason = reason

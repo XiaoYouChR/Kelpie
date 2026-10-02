@@ -221,7 +221,6 @@ func (p *picker) hasNeededPart(peer uint64) bool {
 	return false
 }
 
-// isRequesting tells whether the peer is asked for any block.
 func (p *picker) isRequesting(peer uint64) bool {
 	for _, part := range p.parts {
 		for _, block := range part.blocks {
