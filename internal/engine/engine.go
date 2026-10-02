@@ -371,8 +371,12 @@ func (e *Engine) openSockets() error {
 		e.serverUDP, err = e.ports.Transport.OpenUDP(0)
 		if err != nil {
 			e.closeSockets()
+			return err
 		}
-		return err
+		if c, ok := e.serverUDP.(*udpLogConn); ok {
+			c.isServer = true
+		}
+		return nil
 	}
 	return err
 }
