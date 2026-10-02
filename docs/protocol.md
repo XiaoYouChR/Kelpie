@@ -44,8 +44,9 @@ Engine Process writes diagnostics to stderr, never to stdout.
   nodes it knew for the next start and leaves the UDP port to eD2k; turning
   it on bootstraps from those nodes and the `nodeLists` of `hello`. Turning
   port mapping off deletes the mappings.
-- `remove` deletes the Transfer's Durable State, never the file. If a run is
-  open for that hash, it ends first as if stopped. Unknown hashes are ignored.
+- `remove` deletes the Transfer's Durable State, never the file, and drops
+  the sources kept from its last run (CONTEXT.md, Source). If a run is open
+  for that hash, it ends first as if stopped. Unknown hashes are ignored.
 - A line that cannot be parsed, or has an unknown `type`, a non-positive run
   id, an empty `file`, an unknown `mode`, an invalid `hash` or a negative rate
   limit, is logged to stderr and ignored; such a `run` gets no `ended`.

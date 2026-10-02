@@ -742,3 +742,20 @@ func TestHostNameServer(t *testing.T) {
 		t.Fatalf("connect after new address = %+v", out.Dial)
 	}
 }
+
+// A file wanted again after a while without it is asked for in the next
+// frame, as eMule asks for a resumed file; one still wanted waits out
+// SERVERREASKTIME.
+func TestFileWantedAgainIsAskedNextFrame(t *testing.T) {
+	again, kept := downloads(2)[0], downloads(2)[1]
+	s, out := loggedIn(t, []Entry{{Endpoint: ep("1.0.0.1:4661")}}, highID, 0, []Wanted{again, kept})
+	if got := sent[serverwire.GetSources](out); len(got) != 2 {
+		t.Fatalf("first frame %+v", got)
+	}
+	s.OnTick(start.Add(time.Minute), []Wanted{kept}, noIP)
+	at := start.Add(sourceFrameTime)
+	got := sent[serverwire.GetSources](byKind(s.OnTick(at, []Wanted{again, kept}, noIP)))
+	if len(got) != 1 || got[0].Hash != again.File {
+		t.Fatalf("asked %+v at the next frame, want only the file wanted again", got)
+	}
+}

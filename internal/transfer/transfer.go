@@ -71,6 +71,10 @@ type Options struct {
 	State  *State
 	Mode   Mode
 	Random *rand.Rand
+	// Previous is the stopped Transfer of the file's previous Run in this
+	// Engine Process, nil when there is none. A download takes over its
+	// sources, with their reask times, and its bans.
+	Previous *Transfer
 }
 
 type Transfer struct {
@@ -108,7 +112,8 @@ type Transfer struct {
 }
 
 // Build creates the Transfer for options.File with the actions to start it:
-// hashing parts written before a restart, and the link's sources. Persisted
+// hashing parts written before a restart, and the link's sources besides
+// those of options.Previous. Persisted
 // state that does not fit the file is dropped and the download starts over;
 // a seed whose state is not complete fails at once with a file error.
 func Build(options Options, now time.Time) (*Transfer, []Action) {
@@ -150,11 +155,16 @@ func Build(options Options, now time.Time) (*Transfer, []Action) {
 	case t.mode == ModeSeed:
 		t.outcome = Outcome{Status: StatusFailed, Message: "the file is not complete"}
 	default:
+		if p := options.Previous; p != nil {
+			t.sources = p.sources
+			t.bannedHashes, t.bannedEndpoints = p.bannedHashes, p.bannedEndpoints
+			t.lastExchangeAsk, t.lastPurge = p.lastExchangeAsk, p.lastPurge
+		}
 		for _, part := range t.picker.writtenParts() {
 			actions = append(actions, t.requestPartHash(part)...)
 		}
 		for _, source := range options.File.Sources {
-			actions = append(actions, t.addSource(Source{Endpoint: source}, ChannelLink, now)...)
+			actions = append(actions, t.addSource(Source{Endpoint: source}, channelLink, now)...)
 		}
 	}
 	return t, actions

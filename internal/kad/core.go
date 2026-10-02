@@ -3,6 +3,8 @@
 package kad
 
 import (
+	"cmp"
+	"maps"
 	"math/rand/v2"
 	"net/netip"
 	"slices"
@@ -45,6 +47,11 @@ const (
 	// Kad versions 8 and up read TAG_KADMISCOPTIONS and answer it with
 	// KADEMLIA2_HELLO_RES_ACK (KADEMLIA_VERSION8_49b).
 	versionMiscOptions = 8
+	// stoppedFindTime is how long a file no longer wanted keeps its search
+	// pace: aMule resets it only once the file has been paused for an hour
+	// (CPartFile::StopPausedFile and StopFile, PartFile.cpp:2766-2767,
+	// 2780-2797).
+	stoppedFindTime = time.Hour
 	// maxSourcesUDP is GetMaxSourcePerFileUDP: a file with this many sources
 	// is not searched, and its running search stops (aMule
 	// PartFile.cpp:1648-1675, 4566-4573; MAX_SOURCES_FILE_UDP, Constants.h:51).
@@ -82,6 +89,8 @@ type find struct {
 	searches int
 	next     time.Time
 	lookup   *lookup
+	// stopped is when the file left the wanted set.
+	stopped time.Time
 }
 
 type publish struct {
@@ -167,7 +176,16 @@ type core struct {
 	// lookup start from.
 	isSelfLookupDone bool
 	finds            []*find
-	publishes        []*publish
+	// stoppedFinds are the finds of files no longer wanted, kept so that a
+	// file wanted again, as when its download is stopped and run again, is
+	// not searched sooner than eMule would.
+	stoppedFinds map[wire.Hash]*find
+	publishes    []*publish
+	// stoppedPublishes are the publishes of files no longer shared, kept
+	// until they are due, so that a file shared again is not published
+	// sooner than aMule, whose per-file publish time outlives a pause
+	// (CKnownFile::PublishSrc, KnownFile.cpp:1590-1614).
+	stoppedPublishes map[wire.Hash]*publish
 
 	// lastBootstrap paces seed and peer bootstraps alike, as aMule
 	// shares one clock between them (bootstrapGap, peerBootstrapGap).
@@ -184,12 +202,14 @@ type core struct {
 func buildCore(cfg coreConfig, now time.Time) *core {
 	return &core{
 		id: cfg.ID, userHash: cfg.UserHash, version: kadwire.Version, tcpPort: cfg.TCPPort, udpPort: cfg.UDPPort, udpKey: cfg.UDPKey, rng: cfg.Rand,
-		table:       buildTable(cfg.ID, now),
-		index:       index{files: map[wire.Hash]map[wire.Hash]indexed{}},
-		flood:       buildFlood(),
-		firewall:    firewall{isLastFirewalled: true, asked: map[netip.Addr]bool{}},
-		udp:         buildUDPCheck(),
-		buddySearch: buddySearch{next: now.Add(firstBuddySearch)},
+		table:            buildTable(cfg.ID, now),
+		index:            index{files: map[wire.Hash]map[wire.Hash]indexed{}},
+		flood:            buildFlood(),
+		firewall:         firewall{isLastFirewalled: true, asked: map[netip.Addr]bool{}},
+		udp:              buildUDPCheck(),
+		buddySearch:      buddySearch{next: now.Add(firstBuddySearch)},
+		stoppedFinds:     map[wire.Hash]*find{},
+		stoppedPublishes: map[wire.Hash]*publish{},
 	}
 }
 
@@ -204,6 +224,12 @@ func (c *core) addNodes(nodes []Node, now time.Time) {
 }
 
 func (c *core) setWanted(w Wanted, now time.Time) {
+	maps.DeleteFunc(c.stoppedFinds, func(_ wire.Hash, f *find) bool {
+		return now.Sub(f.stopped) >= stoppedFindTime
+	})
+	maps.DeleteFunc(c.stoppedPublishes, func(_ wire.Hash, p *publish) bool {
+		return !now.Before(p.next)
+	})
 	finds := map[wire.Hash]*find{}
 	for _, f := range c.finds {
 		finds[f.Hash] = f
@@ -213,11 +239,9 @@ func (c *core) setWanted(w Wanted, now time.Time) {
 		if file.IsComplete {
 			continue
 		}
-		f := finds[file.Hash]
-		if f == nil {
-			f = &find{}
-		}
+		f := cmp.Or(finds[file.Hash], c.stoppedFinds[file.Hash], &find{})
 		delete(finds, file.Hash)
+		delete(c.stoppedFinds, file.Hash)
 		f.File = file
 		if file.Sources >= maxSourcesUDP {
 			c.cancelLookup(f.lookup)
@@ -225,7 +249,14 @@ func (c *core) setWanted(w Wanted, now time.Time) {
 		c.finds = append(c.finds, f)
 	}
 	for _, f := range finds {
+		// A search cut short is due again at once (CPartFile::PauseFile,
+		// PartFile.cpp:2807-2811).
+		if f.lookup != nil && !f.lookup.isDone {
+			f.next = time.Time{}
+		}
 		c.cancelLookup(f.lookup)
+		f.stopped = now
+		c.stoppedFinds[f.Hash] = f
 	}
 	publishes := map[wire.Hash]*publish{}
 	for _, p := range c.publishes {
@@ -236,16 +267,15 @@ func (c *core) setWanted(w Wanted, now time.Time) {
 		if !file.IsShared {
 			continue
 		}
-		pub := publishes[file.Hash]
-		if pub == nil {
-			pub = &publish{}
-		}
+		pub := cmp.Or(publishes[file.Hash], c.stoppedPublishes[file.Hash], &publish{})
 		delete(publishes, file.Hash)
+		delete(c.stoppedPublishes, file.Hash)
 		pub.File = file
 		c.publishes = append(c.publishes, pub)
 	}
 	for _, p := range publishes {
 		c.cancelLookup(p.lookup)
+		c.stoppedPublishes[p.Hash] = p
 	}
 }
 

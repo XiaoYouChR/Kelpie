@@ -96,15 +96,17 @@ const (
 )
 
 // Channel is where a source came from, or where sources are requested.
+// The Transfer itself adds the sources of the link and those that connect
+// to us; OnSourcesFound takes the other channels.
 type Channel string
 
 const (
-	ChannelLink         Channel = "link"
+	channelLink         Channel = "link"
 	ChannelServer       Channel = "server"
 	ChannelGlobalServer Channel = "globalServer"
 	ChannelKad          Channel = "kad"
 	ChannelExchange     Channel = "exchange"
-	ChannelIncoming     Channel = "incoming"
+	channelIncoming     Channel = "incoming"
 )
 
 func (Connect) isAction()               {}

@@ -148,8 +148,11 @@ type Engine struct {
 	conns    map[uint64]*conn
 	// runs are the open runs in the order they started; runByHash indexes
 	// them.
-	runs            []*run
-	runByHash       map[wire.Hash]*run
+	runs      []*run
+	runByHash map[wire.Hash]*run
+	// stopped holds what the ended download Runs left for the next Run of
+	// their file, see stoppedRun.
+	stopped         map[wire.Hash]stoppedRun
 	uploadEndpoints map[uploadKey]uploadTarget
 	a4afClients     map[wire.Hash]*a4afClient
 	recentConnects  []time.Time
@@ -207,6 +210,7 @@ func build(config Config, ports seams, events Events, caps capacities, mapPorts 
 		disk:            buildLeafQueue[diskJob](caps.disk),
 		conns:           map[uint64]*conn{},
 		runByHash:       map[wire.Hash]*run{},
+		stopped:         map[wire.Hash]stoppedRun{},
 		uploadEndpoints: map[uploadKey]uploadTarget{},
 		a4afClients:     map[wire.Hash]*a4afClient{},
 		buddy:           buddy{incoming: map[netip.Addr]incomingBuddy{}},
@@ -651,6 +655,7 @@ func (e *Engine) onTick() {
 	e.runTransfers(now)
 	e.refreshUploadEndpoints()
 	e.refreshAsked()
+	e.refreshStopped()
 	e.refreshA4AF()
 	serverWanted, kadWanted := e.buildWanted()
 	e.runServer(e.server.OnTick(now, serverWanted, e.publicIP))
