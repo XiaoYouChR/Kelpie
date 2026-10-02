@@ -57,6 +57,10 @@ reaches the caller, and it always arrives through the Run.
 
 A peer that may have parts of a Transfer's file, as a link, a server, Kad,
 another peer, or the peer itself announced it.
+Sources are not Durable State. When a download Run ends, the Engine Process
+keeps its sources for an hour, for the next Run of the file, which goes on
+asking each when it is due instead of waiting for a server or Kad to find
+them again; `remove` drops them. This keeps no Transfer running.
 
 ## Settings
 

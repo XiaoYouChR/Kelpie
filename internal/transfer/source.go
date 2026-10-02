@@ -43,8 +43,9 @@ const (
 	banTime = 2 * time.Hour
 
 	// minRequestTime is MIN_REQUESTTIME (Constants.h:67): aMule 3.1.0 counts
-	// an OP_AICHREQUEST sooner than this after the client's last request as
-	// aggressive (ClientTCPSocket.cpp:1761-1771).
+	// an OP_AICHREQUEST, OP_STARTUPLOADREQ or OP_REASKFILEPING sooner than
+	// this after the client's last request as aggressive
+	// (ClientTCPSocket.cpp:1761-1771, UploadClient.cpp:655-680).
 	minRequestTime = 590 * time.Second
 
 	exchangeReaskSlow = 40 * time.Minute // SOURCECLIENTREASKS
@@ -403,7 +404,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Source, now time.Time) []A
 			return []Action{Close{Peer: peer, Reason: "too many sources"}}
 		}
 		event := t.buildTrace(now, s, EventFound)
-		event.Channel = ChannelIncoming
+		event.Channel = channelIncoming
 		actions = append(actions, event)
 	}
 	if t.isConnected(s) {
@@ -567,6 +568,41 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 	event := t.buildTrace(now, s, EventClosed)
 	event.Reason = reason
 	return append(actions, event)
+}
+
+// Stop detaches every peer when the Run ends and keeps the sources for
+// Options.Previous of the file's next Run, as aMule keeps a paused file's
+// sources (CPartFile::PauseFile, PartFile.cpp:2799-2846). A source that was
+// sending is asked again once MIN_REQUESTTIME has passed since we last asked
+// it: aMule asks it as soon as the file resumes (ResetLastAskedTime,
+// PartFile.cpp:2828-2830), but the peer counts an ask within MIN_REQUESTTIME
+// as aggressive (UploadClient.cpp:655-680), and over TCP, since a UDP reask
+// would come before that. Every other source keeps its reask time. A
+// Connect the engine was to answer is made again; a callback still times
+// out.
+func (t *Transfer) Stop(now time.Time) []Action {
+	var actions []Action
+	for _, s := range t.sources {
+		if !t.isConnected(s) {
+			if s.state == stateConnecting && s.deadline.IsZero() {
+				s.state = stateNew
+			}
+			continue
+		}
+		delete(t.peers, s.peer)
+		actions = append(actions, t.sendReceived(s, now)...)
+		switch s.state {
+		case stateAsking:
+			s.state = stateNew
+		case stateDownloading:
+			s.state = stateNew
+			s.lastAsked = s.lastAsked.Add(minRequestTime - fileReaskTime)
+		}
+		event := t.buildTrace(now, s, EventClosed)
+		event.Reason = "run ended"
+		actions = append(actions, event)
+	}
+	return actions
 }
 
 func (t *Transfer) sendReceived(s *source, now time.Time) []Action {

@@ -41,6 +41,25 @@ type run struct {
 // reask interval.
 const fileReaskTime = 1300 * time.Second
 
+// stoppedRun is what an ended download Run leaves for the next Run of its
+// file: the stopped Transfer, which holds the sources and when each is due,
+// and asked. Without it a Run opened after a stop would know no source until
+// the server or Kad, which pace their searches per file, found them again,
+// and would ask the sources it finds sooner than eMule does. It is no
+// paused state (ADR-0004): nothing resumes it, and it ends with the Engine
+// Process, with remove, with the next Run of the file, or after
+// stoppedTime.
+type stoppedRun struct {
+	transfer *transfer.Transfer
+	asked    map[wire.Hash]time.Time
+	at       time.Time
+}
+
+// stoppedTime is how long a stopped Run's sources are kept: aMule drops the
+// sources of a file paused for an hour (CPartFile::StopPausedFile,
+// PartFile.cpp:2780-2797).
+const stoppedTime = time.Hour
+
 func (e *Engine) onCommand(command Command) {
 	switch c := command.(type) {
 	case RunCommand:
@@ -55,6 +74,7 @@ func (e *Engine) onCommand(command Command) {
 		if r := e.runByHash[c.Hash]; r != nil {
 			e.stopRun(r, nil)
 		}
+		delete(e.stopped, c.Hash)
 		if _, ok := e.state.Transfers[c.Hash]; ok {
 			delete(e.state.Transfers, c.Hash)
 			e.requestSave()
@@ -93,7 +113,7 @@ func (e *Engine) startRun(c RunCommand) *Error {
 		}
 		e.addRun(r)
 		if state != nil && isComplete(state) {
-			e.startTransfer(r, state)
+			e.startTransfer(r, state, nil)
 		} else {
 			e.disk.send(diskJob{kind: jobHashFile, run: r.id, file: r.handle, block: piece.Block{End: file.Size}})
 		}
@@ -111,8 +131,12 @@ func (e *Engine) startRun(c RunCommand) *Error {
 	if r.handle, err = e.ports.Disk.Open(c.File, disk.Create); err != nil {
 		return toFileError(err)
 	}
+	var previous *transfer.Transfer
+	if stopped, ok := e.stopped[file.Hash]; ok {
+		previous, r.asked = stopped.transfer, stopped.asked
+	}
 	e.addRun(r)
-	e.startTransfer(r, state)
+	e.startTransfer(r, state, previous)
 	e.refreshProgress(r, true)
 	return nil
 }
@@ -129,6 +153,7 @@ func isComplete(state *transfer.State) bool {
 }
 
 func (e *Engine) addRun(r *run) {
+	delete(e.stopped, r.file.Hash)
 	e.runByHash[r.file.Hash] = r
 	e.runs = append(e.runs, r)
 }
@@ -141,18 +166,19 @@ func (e *Engine) runByID(id RunID) *run {
 	return nil
 }
 
-func (e *Engine) startTransfer(r *run, state *transfer.State) {
+func (e *Engine) startTransfer(r *run, state *transfer.State, previous *transfer.Transfer) {
 	mode := transfer.ModeDownload
 	if r.mode == ModeSeed {
 		mode = transfer.ModeSeed
 	}
 	var actions []transfer.Action
 	r.transfer, actions = transfer.Build(transfer.Options{
-		File:   r.file,
-		Path:   r.path,
-		State:  state,
-		Mode:   mode,
-		Random: e.ports.Rand,
+		File:     r.file,
+		Path:     r.path,
+		State:    state,
+		Mode:     mode,
+		Random:   e.ports.Rand,
+		Previous: previous,
 	}, e.now())
 	e.refreshShare(r)
 	e.runTransferActions(r, actions)
@@ -176,7 +202,7 @@ func (e *Engine) onFileHashed(r *run, partHashes []wire.Hash, fileHash wire.Hash
 		state.Uploaded = old.Uploaded
 		state.Created = old.Created
 	}
-	e.startTransfer(r, &state)
+	e.startTransfer(r, &state, nil)
 }
 
 func (e *Engine) refreshShare(r *run) {
@@ -200,9 +226,16 @@ func (e *Engine) downloadByHash(file wire.Hash) *run {
 	return r
 }
 
-// stopRun ends r exactly once and keeps its Durable State.
+// stopRun ends r exactly once and keeps its Durable State, and a download's
+// sources for the next Run.
 func (e *Engine) stopRun(r *run, err *Error) {
 	h := r.file.Hash
+	if r.transfer != nil {
+		e.runTransferActions(r, r.transfer.Stop(e.now()))
+		if r.mode == ModeDownload {
+			e.stopped[h] = stoppedRun{transfer: r.transfer, asked: r.asked, at: e.now()}
+		}
+	}
 	for _, c := range e.sortedConns() {
 		e.removeFile(c, h, "run ended")
 	}
@@ -387,6 +420,13 @@ func (e *Engine) refreshAsked() {
 			return now.Sub(asked) >= fileReaskTime
 		})
 	}
+}
+
+func (e *Engine) refreshStopped() {
+	now := e.now()
+	maps.DeleteFunc(e.stopped, func(_ wire.Hash, s stoppedRun) bool {
+		return now.Sub(s.at) >= stoppedTime
+	})
 }
 
 // matchKnownSource lists the downloads that know the peer as a source, in
