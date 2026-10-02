@@ -3,8 +3,9 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from itertools import count
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +25,12 @@ logger = logging.getLogger(__name__)
 class Run:
     def __init__(self, id: int) -> None:
         self.id = id
+        # Only the newest Progress: a slow consumer skips the stale ones.
         self._progress: Progress | None = None
+        # Kept apart from _error, because a normal end has no error.
         self._isEnded = False
         self._error: BaseException | None = None
+        # An Event, not a queue: repeated set() calls collapse into one wake-up.
         self._changed = asyncio.Event()
 
     async def __aiter__(self) -> AsyncIterator[Progress]:
@@ -65,7 +69,11 @@ class Run:
 @dataclass
 class EngineProcess:
     process: asyncio.subprocess.Process
+    # The Runs this process still owes an `ended`, by run id because a stopped
+    # download must not end the seed that follows it. Whoever pops a Run ends
+    # it, and the `ended` that follows finds no route.
     routes: dict[int, Run] = field(default_factory=dict)
+    # Describes this process only, so it goes away with it.
     network: Network | None = None
 
 
@@ -79,10 +87,18 @@ class Kelpie:
         self._executable = executable
         self._dataFolder = dataFolder
         self._settings = settings
+        # None again once the process exits: only the next call starts another.
         self._engine: EngineProcess | None = None
+        # Callers that arrive during a start wait for it instead of starting
+        # a second Engine Process.
         self._starting: asyncio.Task[None] | None = None
+        # By hash and across Engine Process restarts: a Transfer has one open
+        # Run even while no Engine Process runs.
         self._runs: dict[str, Run] = {}
-        self._nextRunId = 1
+        # Never reused, so an id stays unique within every Engine Process.
+        self._runIds = count(1)
+        # The event loop keeps only weak references to tasks, and close() waits
+        # for them.
         self._tasks: set[asyncio.Task[None]] = set()
 
     @property
@@ -113,10 +129,8 @@ class Kelpie:
 
     async def close(self) -> None:
         if self._starting is not None:
-            try:
+            with suppress(Error):
                 await asyncio.shield(self._starting)
-            except Error:
-                pass
         engine = self._engine
         if engine is None:
             return
@@ -137,8 +151,7 @@ class Kelpie:
     async def _run(self, mode: str, link: Link, file: Path) -> AsyncIterator[Run]:
         if link.hash in self._runs:
             raise Error(ErrorCode.TRANSFER_BUSY, f"a Run is already open for {link.hash}")
-        run = Run(self._nextRunId)
-        self._nextRunId += 1
+        run = Run(next(self._runIds))
         self._runs[link.hash] = run
         try:
             try:
