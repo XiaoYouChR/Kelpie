@@ -2,6 +2,7 @@ package peer
 
 import (
 	"bytes"
+	"fmt"
 	"net/netip"
 	"strings"
 
@@ -140,6 +141,7 @@ func (s *Session) setHello(h client.Hello) {
 		HasSourceExchange2: h.Misc2.HasSourceExchange2,
 		HasDirectCallback:  h.Misc2.HasDirectUDPCallback,
 		CryptOptions:       toCryptOptions(h.Misc2),
+		Software:           toSoftware(h.EmuleVersion, h.ModName),
 	}
 	s.features = features{
 		isEmule:                    h.EmuleVersion != 0,
@@ -175,6 +177,52 @@ func toPublicIPv6(addr netip.Addr) netip.Addr {
 		return netip.Addr{}
 	}
 	return addr
+}
+
+// toSoftware names a client from CT_EMULE_VERSION, laid out as
+// wire.ToEmuleVersion describes, and CT_MOD_VERSION, as aMule's client list
+// does (ReGetClientSoft, BaseClient.cpp:2102; ClientVersionString.cpp): the
+// mule family counts its update as a number, eMule and the rest as a letter
+// from 'a'. A client it does not know goes by its mod version alone.
+func toSoftware(emuleVersion uint32, modName string) string {
+	if emuleVersion == 0 {
+		return ""
+	}
+	major, minor, update := emuleVersion>>17&0x7F, emuleVersion>>10&0x7F, emuleVersion>>7&0x07
+	isNumbered := true
+	var name string
+	switch emuleVersion >> 24 {
+	case 0:
+		name, isNumbered = "eMule", false
+	case 1:
+		name, isNumbered = "cDonkey", false
+	case 2:
+		name = "xMule"
+	case 3:
+		name = "aMule"
+	case 4, 0x28, 0x44:
+		name, isNumbered = "Shareaza", false
+	case 5:
+		name, isNumbered = "eMule Plus", false
+	case 6:
+		name = "Hydranode"
+	case 0x0A, 0x34, 0x98:
+		name = "MLDonkey"
+	case 0x14:
+		name, isNumbered = "lphant", false
+	case 0x4B:
+		name = clientName
+	default:
+		return modName
+	}
+	software := fmt.Sprintf("%s %d.%d%c", name, major, minor, 'a'+update)
+	if isNumbered {
+		software = fmt.Sprintf("%s %d.%d.%d", name, major, minor, update)
+	}
+	if name == "eMule" && modName != "" {
+		software += " [" + modName + "]"
+	}
+	return software
 }
 
 func toMuleVersion(emuleVersion uint32) byte {
@@ -232,8 +280,11 @@ func (s *Session) setEmuleInfo(p client.EmuleInfo) {
 	}
 	s.features.isEmule = true
 	s.caps.MuleVersion = p.Version
+	var compatible uint32
 	for _, t := range p.Tags {
 		switch t.ID {
+		case client.InfoCompatibleClient:
+			compatible = uint32(t.Uint)
 		case client.InfoCompression:
 			s.features.canCompress = t.Uint > 0
 		case client.InfoUDPVersion:
@@ -245,6 +296,12 @@ func (s *Session) setEmuleInfo(p client.EmuleInfo) {
 		case client.InfoFeatures:
 			s.features.secureIdent = byte(t.Uint) & 0x03
 		}
+	}
+	// The version byte holds 0.xy as x and y in its nibbles (aMule
+	// BaseClient.cpp:2174).
+	if p.Version != 0 {
+		minor := uint32(p.Version>>4)*10 + uint32(p.Version&0x0F)
+		s.caps.Software = toSoftware(compatible<<24|minor<<10, "")
 	}
 }
 

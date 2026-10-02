@@ -82,6 +82,9 @@ type Capabilities struct {
 	// CryptOptions is the peer's obfuscation setting from its Hello, in
 	// Source's layout.
 	CryptOptions byte
+	// Software names the peer's client and version, such as "eMule 0.70b";
+	// "" when it does not tell.
+	Software string
 }
 
 // features are the peer's protocol extensions that only decide the shape of
