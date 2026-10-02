@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 from .errors import Error, ErrorCode
 
@@ -55,6 +55,17 @@ class Settings:
     traceFile: Path | None = None
     downloadRateLimit: int = 0
     uploadRateLimit: int = 0
+    # A socks5:// or socks5h:// URL, or "" to go direct; ADR-0006 says why
+    # nothing else is accepted.
+    proxy: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.proxy:
+            return
+        parts = urlsplit(self.proxy)
+        # Reading parts.port raises ValueError for a port out of range.
+        if parts.scheme not in ("socks5", "socks5h") or not parts.hostname or parts.port == 0:
+            raise ValueError(f"proxy must be a socks5:// or socks5h:// URL: {self.proxy}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,3 +102,4 @@ class Network:
     isKadFirewalled: bool
     kadNodes: int
     isBehindCarrierNat: bool
+    proxyIssue: str

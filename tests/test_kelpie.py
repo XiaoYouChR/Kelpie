@@ -117,6 +117,7 @@ def test_download_reports_progress_until_complete(engine: Engine) -> None:
         "serverLists": ["/s.met"],
         "nodeLists": [],
         "traceFile": "",
+        "proxy": "",
     }
     (runMessage,) = engine.loadMessages("run")
     assert runMessage["mode"] == "download"
@@ -211,7 +212,7 @@ def test_concurrent_first_runs_share_one_start(engine: Engine) -> None:
     assert len(set(runIds)) == 2 and all(runId > 0 for runId in runIds)
 
 
-@pytest.mark.parametrize("version", ["v0.1.0", "v0.2.0", "1.0.0", "dev", "garbage"])
+@pytest.mark.parametrize("version", ["v0.2.0", "v0.2.1", "1.0.0", "dev", "garbage"])
 def test_current_or_unknown_versions_are_accepted(engine: Engine, version: str) -> None:
     engine.setScript({"version": version})
 
@@ -226,7 +227,7 @@ def test_current_or_unknown_versions_are_accepted(engine: Engine, version: str) 
 
 
 def test_older_engine_ends_the_run_with_outdated(engine: Engine) -> None:
-    engine.setScript({"version": "v0.0.9"})
+    engine.setScript({"version": "v0.1.0"})
 
     async def main():
         kelpie = engine.buildKelpie()
@@ -234,7 +235,7 @@ def test_older_engine_ends_the_run_with_outdated(engine: Engine) -> None:
             with pytest.raises(Error) as raised:
                 await collect(current)
         assert raised.value.code == ErrorCode.OUTDATED
-        assert "v0.0.9" in raised.value.message
+        assert "v0.1.0" in raised.value.message
         assert engine.networks == []
         await kelpie.close()
 
@@ -345,7 +346,7 @@ def test_update_sends_the_settings_to_the_running_engine(engine: Engine) -> None
         kelpie = Kelpie(lambda: FAKE_ENGINE, engine.folder / "data", lambda: settings[0])
         kelpie.update()
         await kelpie.remove(HASH_A)
-        settings[0] = Settings(enableKad=False, uploadRateLimit=512)
+        settings[0] = Settings(enableKad=False, uploadRateLimit=512, proxy="socks5h://u:p@127.0.0.1:1080")
         kelpie.update()
         await kelpie.close()
 
@@ -360,7 +361,20 @@ def test_update_sends_the_settings_to_the_running_engine(engine: Engine) -> None
     assert second["settings"]["port"] == 4662
     (update,) = engine.loadMessages("update")
     assert update["settings"]["enableKad"] is False
+    assert update["settings"]["proxy"] == "socks5h://u:p@127.0.0.1:1080"
+    assert first["settings"]["proxy"] == ""
     assert update["rateLimits"] == {"download": 0, "upload": 512}
+
+
+@pytest.mark.parametrize("proxy", ["", "socks5://127.0.0.1:1080", "socks5h://u:p@proxy.example:7890", "socks5://[::1]"])
+def test_settings_accept_direct_or_a_socks5_proxy(proxy: str) -> None:
+    assert Settings(proxy=proxy).proxy == proxy
+
+
+@pytest.mark.parametrize("proxy", ["http://127.0.0.1:8080", "socks4://127.0.0.1:1080", "127.0.0.1:1080", "socks5://", "socks5://host:99999"])
+def test_settings_refuse_any_other_proxy(proxy: str) -> None:
+    with pytest.raises(ValueError):
+        Settings(proxy=proxy)
 
 
 def test_update_during_startup_reaches_the_engine(engine: Engine) -> None:
@@ -389,6 +403,7 @@ def test_network_is_reported_while_the_engine_runs_with_or_without_a_run(engine:
         isKadFirewalled=True,
         kadNodes=812,
         isBehindCarrierNat=True,
+        proxyIssue="noUdp",
     )
     engine.setScript({"network": {field: getattr(network, field) for field in Network.__slots__}})
 

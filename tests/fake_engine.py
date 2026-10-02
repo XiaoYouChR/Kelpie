@@ -2,7 +2,7 @@
 """A scripted stand-in for the Engine Process.
 
 KELPIE_FAKE_SCRIPT names a JSON file:
-  version           ready.version (default "v0.1.0")
+  version           ready.version (default "v0.2.0")
   failed            answer hello with `failed` and this message, then exit 1
   crashOnHello      write this line to stderr and exit 2 without answering hello
   silentOnHello     never answer hello
@@ -75,7 +75,7 @@ def main():
                         }
                     )
                     sys.exit(1)
-                send({"type": "ready", "version": script.get("version", "v0.1.0"), "protocol": 1})
+                send({"type": "ready", "version": script.get("version", "v0.2.0"), "protocol": 1})
                 if "network" in script:
                     send({"type": "network", **script["network"]})
             case "run":
