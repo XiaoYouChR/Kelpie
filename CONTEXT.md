@@ -70,8 +70,9 @@ A cap on download or upload bytes per second across all Transfers; 0 means
 unlimited. It counts every byte on peer connections, protocol overhead
 included, so the observed rate never exceeds it unless protocol messages
 alone do: outgoing ones are sent at once, ahead of file data, which waits
-longer for the bytes they took. Server, Kad, and other UDP traffic is not
-limited. Rate Limits change while running and survive Engine
+longer for the bytes they took. Server traffic, including a server's
+connection that checks whether peers can reach us, Kad, and other UDP traffic
+is not limited. Rate Limits change while running and survive Engine
 Process restarts.
 
 ## Network

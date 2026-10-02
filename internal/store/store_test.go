@@ -126,7 +126,8 @@ func buildSampleState(t testing.TB) State {
 		Created:  lastSeen,
 	}
 	state.Servers = []Server{
-		{Endpoint: netip.MustParseAddrPort("45.82.80.155:5687"), Failures: 2, Ping: 80, Users: 5000, Files: 9000, SoftFiles: 10000, UDPFlags: 0x7FB, TCPObfuscationPort: 5688, UDPObfuscationPort: 5689, PingedAt: lastSeen},
+		{Endpoint: netip.MustParseAddrPort("45.82.80.155:5687"), Failures: 2, Ping: 80, Users: 5000, Files: 9000, SoftFiles: 10000, UDPFlags: 0x7FB, TCPObfuscationPort: 5688, UDPObfuscationPort: 5689, PingedAt: lastSeen,
+			UDPKey: 0xBEEF, UDPKeyIP: netip.MustParseAddr("203.0.113.5")},
 		{Host: "dyn.example", Port: 4661, Failures: 1},
 	}
 	return state
@@ -154,6 +155,22 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	entries, _ := os.ReadDir(folder)
 	if len(entries) != 1 {
 		t.Fatalf("temp file left behind: %v", entries)
+	}
+}
+
+// A state file written before server UDP keys were saved still loads;
+// its servers have no key.
+func TestLoadServerWithoutUDPKey(t *testing.T) {
+	folder := t.TempDir()
+	content := `{"version": 4, "servers": [{"endpoint": "45.82.80.155:5687", "failures": 2, "udpFlags": 2043}]}`
+	os.WriteFile(filepath.Join(folder, fileName), []byte(content), 0o644)
+	state, err := Load(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Server{{Endpoint: netip.MustParseAddrPort("45.82.80.155:5687"), Failures: 2, UDPFlags: 2043}}
+	if !reflect.DeepEqual(state.Servers, want) {
+		t.Fatalf("servers = %+v, want %+v", state.Servers, want)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/peer"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
+	"github.com/XiaoYouChR/Kelpie/internal/transport"
 	"github.com/XiaoYouChR/Kelpie/internal/upload"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
 	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
@@ -70,6 +71,10 @@ type conn struct {
 	// kadCheck is set on a connection opened for a Kad check until the
 	// check is done with it.
 	kadCheck *kadCheck
+	// isRefused: the dial was refused or never answered, which alone
+	// counts against a server (server.OnDisconnected). It is kept because
+	// closeConn, which reports the close, sees only the reason text.
+	isRefused bool
 	// isHandshaken is set once the engine has acted on the handshake, which
 	// is later than the session completes it: within the Output that carries
 	// HandshakeCompleted the transfers do not know the peer yet.
@@ -245,6 +250,7 @@ func (e *Engine) onConnOpened(m connOpened) {
 		return
 	}
 	if m.err != nil {
+		c.isRefused = transport.IsRefused(m.err)
 		e.closeConn(c, toReason(m.err))
 		return
 	}
@@ -257,11 +263,18 @@ func (e *Engine) onConnOpened(m connOpened) {
 	e.runSession(c, c.session.OnOpened(e.buildPeerConfig(c), e.now()))
 }
 
+// startConnLeaves starts c's reader and writer. Server traffic is not
+// rate limited, and neither is a peer connection from a server we are
+// logged in or logging in to: that is the server's HighID probe, which a
+// queue at the limiter could hold past the server's timer and so cost us
+// the HighID (aMule ClientTCPSocket.cpp:167-178, #778).
 func (e *Engine) startConnLeaves(c *conn) {
 	parse := client.Parse
-	limiterIn, limiterOut := e.downloadLimiter, e.uploadLimiter
 	if c.isServer {
 		parse = serverwire.Parse
+	}
+	limiterIn, limiterOut := e.downloadLimiter, e.uploadLimiter
+	if c.isServer || e.hasServerConn(c.remote.Addr()) {
 		limiterIn, limiterOut = nil, nil
 	}
 	e.startLeaf(func() { e.runReader(c.ctx, c.id, c.remote, c.net, parse, limiterIn) })
@@ -436,7 +449,7 @@ func (e *Engine) closeConn(c *conn, reason string) {
 	close(c.data.items)
 	now := e.now()
 	if c.isServer {
-		e.runServer(e.server.OnDisconnected(c.remote, now))
+		e.runServer(e.server.OnDisconnected(c.remote, c.isRefused, now))
 		return
 	}
 	e.queue.OnConnectionGone(c.id)
@@ -608,7 +621,14 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	c.isHandshaken = true
 	caps := c.session.Capabilities()
 	user := caps.UserHash
-	if _, clientID := e.server.Login(); ev.YourIP.Is4() && wire.IsLowID(clientID) {
+	// A peer's view fills in an unknown address or replaces the gateway's,
+	// which a carrier NAT above it hides (matchCarrierNAT). It never
+	// replaces what a server or another peer told us, as aMule takes
+	// OP_PUBLICIP answers only while it knows no address
+	// (BaseClient.cpp:2790-2802): one wrong peer would otherwise flip it.
+	_, clientID := e.server.Login()
+	isGuess := !e.publicIP.IsValid() || e.publicIP == e.mappedIP
+	if isPublicIPv4(ev.YourIP) && wire.IsLowID(clientID) && isGuess {
 		e.publicIP = ev.YourIP
 	}
 	if caps.Port != 0 {

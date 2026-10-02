@@ -54,7 +54,7 @@ func (s *Server) onDatagram(from netip.AddrPort, p wire.Packet, now time.Time) [
 		l.Ping = uint32(now.Sub(l.PingedAt).Milliseconds())
 		l.Users, l.Files, l.SoftFiles, l.UDPFlags = p.Users, p.Files, p.SoftFiles, p.UDPFlags
 		l.TCPObfuscationPort, l.UDPObfuscationPort = p.TCPObfuscationPort, p.UDPObfuscationPort
-		l.udpKey, l.udpKeyIP = p.UDPKey, s.publicIP
+		l.UDPKey, l.UDPKeyIP = p.UDPKey, s.publicIP
 	case serverwire.GlobFoundSources:
 		for _, f := range p.Files {
 			s.addSources(f.Hash, f.Sources, l.Endpoint, true, &out)
@@ -118,7 +118,7 @@ func (s *Server) isPingDue(l *listed, now time.Time) bool {
 		return true
 	case l.isCryptPinging:
 		return since >= cryptPingTimeout
-	case l.challenge == 0 && l.udpKey != 0 && s.publicIP.IsValid() && l.udpKeyIP != s.publicIP:
+	case l.challenge == 0 && l.UDPKey != 0 && s.publicIP.IsValid() && l.UDPKeyIP != s.publicIP:
 		return since >= udpStatMinReaskTime
 	}
 	return since >= udpStatReaskTime
@@ -136,10 +136,10 @@ func (s *Server) buildDatagram(l *listed, p wire.Packet) Datagram {
 // udpKey is aMule's GetServerKeyUDP when SupportsObfuscationUDP
 // (Server.cpp:303-310); 0 means plain.
 func (s *Server) udpKey(l *listed) uint32 {
-	if l.UDPFlags&serverwire.UDPFlagUDPObfuscation == 0 || l.UDPObfuscationPort == 0 || !s.publicIP.IsValid() || l.udpKeyIP != s.publicIP {
+	if l.UDPFlags&serverwire.UDPFlagUDPObfuscation == 0 || l.UDPObfuscationPort == 0 || !s.publicIP.IsValid() || l.UDPKeyIP != s.publicIP {
 		return 0
 	}
-	return l.udpKey
+	return l.UDPKey
 }
 
 // UDPKeyByAddr is the key that opens an obfuscated datagram from a
@@ -233,12 +233,12 @@ func (s *Server) searchFiles(udpFlags uint32) []Wanted {
 }
 
 // nextSearchServer is the first server in list order that is due, skipping
-// the connected server (asked over TCP) and servers given up on. A server
-// that failed over TCP may still answer over UDP, as aMule assumes.
+// the connected server, which is asked over TCP. A server that failed over
+// TCP may still answer over UDP, as aMule assumes.
 func (s *Server) nextSearchServer(now time.Time) *listed {
 	for _, l := range s.servers {
 		isDue := l.searchedAt.IsZero() || now.Sub(l.searchedAt) > udpSearchTime
-		if l != s.current && isDue && l.Failures < maxFailures && l.isResolved() && len(s.searchFiles(l.UDPFlags)) > 0 {
+		if l != s.current && isDue && l.isResolved() && len(s.searchFiles(l.UDPFlags)) > 0 {
 			return l
 		}
 	}

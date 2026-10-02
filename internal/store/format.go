@@ -37,6 +37,8 @@ type serverFile struct {
 	TCPObfuscationPort uint16         `json:"tcpObfuscationPort"`
 	UDPObfuscationPort uint16         `json:"udpObfuscationPort"`
 	PingedAt           time.Time      `json:"pingedAt"`
+	UDPKey             uint32         `json:"udpKey,omitempty"`
+	UDPKeyIP           netip.Addr     `json:"udpKeyIP,omitzero"`
 }
 
 type kadFile struct {

@@ -116,6 +116,7 @@ type Engine struct {
 	buddy     buddy
 	listener  transport.Listener
 	udp       transport.PacketConn
+	serverUDP transport.PacketConn
 	tcpPort   int
 	udpPort   int
 	saves     chan store.State
@@ -252,8 +253,9 @@ func (e *Engine) start(mapPorts openNAT) error {
 	go e.runSaver()
 	e.startLeaf(e.runAcceptor)
 	if e.udp != nil {
-		e.startLeaf(e.runUDPReader)
+		e.startLeaf(func() { e.runUDPReader(e.udp, false) })
 	}
+	e.startLeaf(func() { e.runUDPReader(e.serverUDP, true) })
 	if mapPorts != nil {
 		e.startLeaf(func() { e.runNAT(mapPorts) })
 	}
@@ -324,6 +326,12 @@ func loadFile(d disk.Disk, path string) ([]byte, error) {
 
 // openSockets binds TCP and UDP to one port number. With Kad, Kad owns the
 // UDP socket, so it is only probed here to fail Start synchronously.
+//
+// Server UDP has a socket of its own on a port the system picks, as eMule's
+// ServerUDPPort does by default: an obfuscated server datagram may start
+// with any byte but 0xE3, so on the shared socket Kad would take one in
+// about 128 for its own. Servers answer the port a datagram came from, so
+// it needs no port mapping.
 func (e *Engine) openSockets() error {
 	tries := 1
 	if e.config.Port == 0 {
@@ -348,7 +356,11 @@ func (e *Engine) openSockets() error {
 		} else {
 			e.udp = udp
 		}
-		return nil
+		e.serverUDP, err = e.ports.Transport.OpenUDP(0)
+		if err != nil {
+			e.closeSockets()
+		}
+		return err
 	}
 	return err
 }
@@ -357,6 +369,9 @@ func (e *Engine) closeSockets() {
 	e.listener.Close()
 	if e.udp != nil {
 		e.udp.Close()
+	}
+	if e.serverUDP != nil {
+		e.serverUDP.Close()
 	}
 }
 
@@ -456,8 +471,9 @@ type (
 	}
 	traceWritten     struct{}
 	datagramReceived struct {
-		from netip.AddrPort
-		data []byte
+		from     netip.AddrPort
+		data     []byte
+		isServer bool
 	}
 	natOpened struct {
 		unmap func(context.Context) error
@@ -546,7 +562,11 @@ func (e *Engine) onMessage(m any) {
 	case traceWritten:
 		e.trace.onDone()
 	case datagramReceived:
-		e.onDatagram(m.from, m.data)
+		if m.isServer {
+			e.onServerDatagram(m.from, m.data)
+		} else {
+			e.onDatagram(m.from, m.data)
+		}
 	case natOpened:
 		e.onNATOpened(m)
 	case hostResolved:

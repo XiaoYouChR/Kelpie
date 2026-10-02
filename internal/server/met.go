@@ -38,6 +38,11 @@ type Entry struct {
 	UDPObfuscationPort uint16
 	// PingedAt is when the server was last sent a status ping.
 	PingedAt time.Time
+	// UDPKey is the server's UDP obfuscation key for UDPKeyIP, our public
+	// address when it came; the server derives it from that address
+	// (aMule Server.cpp:307-321).
+	UDPKey   uint32
+	UDPKeyIP netip.Addr
 }
 
 // server.met tags (eMule Opcodes.h ST_*).

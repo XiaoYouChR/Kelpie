@@ -14,6 +14,7 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/server"
 	"github.com/XiaoYouChR/Kelpie/internal/store"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
+	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
 
 // startFakeServer runs an eD2k server on its own host until the test ends.
@@ -24,7 +25,9 @@ func (w *world) startFakeServer(ip string) *fakeserver.Server {
 // startFakeServerWith fills in the host, clock and name of config.
 func (w *world) startFakeServerWith(config fakeserver.Config) *fakeserver.Server {
 	w.t.Helper()
-	config.Transport = w.network.AddHost(config.Addr.Addr())
+	if config.Transport == nil {
+		config.Transport = w.network.AddHost(config.Addr.Addr())
+	}
 	config.Clock = w.clock
 	config.Name = "test"
 	srv, err := fakeserver.Create(config)
@@ -225,5 +228,188 @@ func TestGlobalSourceRequestIsObfuscated(t *testing.T) {
 	}
 	if !a.events.lastNetwork().IsServerConnected || !strings.Contains(text, "in  198.51.100.100:4661 server.IDChange") {
 		t.Fatalf("A not on S1:\n%s", text)
+	}
+}
+
+// setServerList gives n a server.met naming servers by address only.
+func (n *node) setServerList(servers ...netip.AddrPort) {
+	met := binary.LittleEndian.AppendUint32([]byte{0x0E}, uint32(len(servers)))
+	for _, endpoint := range servers {
+		met = wire.BuildTags(wire.BuildAddrPort(met, endpoint), nil)
+	}
+	path := filepath.Join(n.folder, "server.met")
+	n.disk.SetData(path, met)
+	n.config.ServerLists = []string{path}
+}
+
+// A server whose host refuses the connection is counted as failed; one we
+// cannot reach at all is not, since the fault may be our own link
+// (aMule 3.1.0, #887). Both are dialled again in every pass.
+func TestOnlyRefusedServerCountsAsFailed(t *testing.T) {
+	w := buildWorld(t)
+	refusing, unreachable := netip.MustParseAddrPort("198.51.100.100:4661"), netip.MustParseAddrPort("198.51.100.101:4661")
+	w.network.AddHost(refusing.Addr())
+	a := w.addNode("198.51.100.1")
+	log := &lockedBuffer{}
+	a.config.PacketLog = log
+	a.setServerList(refusing, unreachable)
+	a.start()
+	passes := 3
+	w.waitFor("three passes", func() bool {
+		return strings.Count(log.String(), "open "+unreachable.String()) >= passes
+	})
+	a.close()
+	state, err := store.Load(a.folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := map[netip.AddrPort]uint32{}
+	for _, s := range state.Servers {
+		failures[s.Endpoint] = s.Failures
+	}
+	if failures[refusing] < uint32(passes) || failures[unreachable] != 0 {
+		t.Fatalf("failures %v, want the refusing server counted every pass and the unreachable one never", failures)
+	}
+}
+
+// A LowID takes our address from the server's OP_IDCHANGE. Here the
+// gateway's own external address differs from it, which shows a carrier
+// NAT above the gateway.
+func TestLowIDTakesServerReportedIP(t *testing.T) {
+	w := buildWorld(t)
+	srv := w.startFakeServer("198.51.100.100")
+	a := w.addNode("198.51.100.1")
+	a.host.SetLowID(true)
+	a.setServer(srv)
+	a.startMapped("203.0.113.9")
+	w.waitFor("server login", func() bool { return a.events.lastNetwork().IsServerConnected })
+	w.waitFor("carrier NAT", func() bool { return a.events.lastNetwork().IsBehindCarrierNat })
+}
+
+// A server's HighID probe is a peer connection from the server's address.
+// It is not held at the rate limiter, behind a queue of peer traffic,
+// while other peers' connections are.
+func TestServerProbeSkipsRateLimit(t *testing.T) {
+	w := buildWorld(t)
+	serverHost := w.network.AddHost(netip.MustParseAddr("198.51.100.100"))
+	srv := w.startFakeServerWith(fakeserver.Config{
+		Addr: netip.MustParseAddrPort("198.51.100.100:4661"), Transport: serverHost, ShouldDropLogins: true,
+	})
+	a := w.addNode("198.51.100.1")
+	log := &lockedBuffer{}
+	a.config.PacketLog = log
+	a.config.RateLimits = RateLimitsCommand{Download: 1000, Upload: 1000}
+	a.setServer(srv)
+	e := a.start()
+	w.waitFor("login attempt", func() bool { return strings.Contains(log.String(), "out 198.51.100.100:4661 server.Login") })
+	for _, l := range []*rateLimiter{e.downloadLimiter, e.uploadLimiter} {
+		l.mu.Lock()
+		l.reserved += 1 << 20
+		l.mu.Unlock()
+	}
+
+	hello := wire.BuildPacket(nil, client.Hello{UserHash: wire.Hash{9}, Port: 4662})
+	probe, err := serverHost.OpenTCP(context.Background(), a.endpoint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close()
+	probe.Write(hello)
+	probe.SetReadDeadline(time.Now().Add(waitTimeout))
+	frame, err := wire.ParseFrameFrom(probe)
+	if err != nil {
+		t.Fatalf("server probe not answered: %v", err)
+	}
+	if p, err := client.Parse(frame.Protocol, frame.Opcode, frame.Body); err != nil {
+		t.Fatal(err)
+	} else if _, ok := p.(client.HelloAnswer); !ok {
+		t.Fatalf("server probe answered with %T", p)
+	}
+
+	peer := w.openRaw("198.51.100.9", a)
+	defer peer.Close()
+	peer.Write(hello)
+	peer.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if _, err := wire.ParseFrameFrom(peer); err == nil {
+		t.Fatal("a peer's hello passed the full rate limiter")
+	}
+}
+
+// The server UDP socket is the engine's own, so an obfuscated server
+// answer whose marker byte is a Kad protocol byte reaches the server
+// state machine even with Kad on.
+func TestServerAnswerWithKadMarker(t *testing.T) {
+	w := buildWorld(t)
+	s1 := w.startFakeServerWith(fakeserver.Config{Addr: netip.MustParseAddrPort("198.51.100.100:4661"), ObfuscationPort: 4665})
+	s2 := w.startFakeServerWith(fakeserver.Config{
+		Addr: netip.MustParseAddrPort("198.51.100.101:4661"), UDPKey: 0x0BADF00D, UDPMarker: 0xE4, Delay: 2 * time.Second,
+	})
+	a, c := w.addNode("198.51.100.1"), w.addNode("198.51.100.3")
+	a.setKad(wire.Hash{0x40, 1})
+	log := &lockedBuffer{}
+	a.config.PacketLog = log
+	path := filepath.Join(a.folder, "server.met")
+	a.disk.SetData(path, fakeserver.BuildMet(s1, s2))
+	a.config.ServerLists = []string{path}
+	c.setServer(s2)
+	a.start()
+	c.start()
+	f := buildTestFile("marker.bin", 500_000, 16)
+	c.seed(1, f)
+	w.waitFor("A's obfuscated ping to S2", func() bool {
+		return strings.Contains(log.String(), "udp out 198.51.100.101:4673 obfuscated")
+	})
+	settle := w.clock.Now().Add(10 * time.Second)
+	w.waitFor("S2's answer", func() bool { return !w.clock.Now().Before(settle) })
+	a.download(2, f)
+	w.waitFor("A to find C through S2", func() bool {
+		return matchTrace(a.loadTrace(), "found", c.endpoint().String())
+	})
+	if text := log.String(); strings.Count(text, "udp out 198.51.100.101:4673 obfuscated") < 2 || strings.Contains(text, "udp out 198.51.100.101:4665") {
+		t.Fatalf("S2's answer lost, so UDP to S2 fell back to plain:\n%s", text)
+	}
+}
+
+// A server's UDP key is saved with the address it belongs to; after a
+// restart at the same address the first global source request is
+// obfuscated at once, without waiting hours for the next status ping.
+func TestServerUDPKeySurvivesRestart(t *testing.T) {
+	w := buildWorld(t)
+	s1 := w.startFakeServerWith(fakeserver.Config{Addr: netip.MustParseAddrPort("198.51.100.100:4661"), ObfuscationPort: 4665})
+	s2 := w.startFakeServerWith(fakeserver.Config{Addr: netip.MustParseAddrPort("198.51.100.101:4661"), UDPKey: 0x0BADF00D, Delay: 2 * time.Second})
+	a, c := w.addNode("198.51.100.1"), w.addNode("198.51.100.3")
+	path := filepath.Join(a.folder, "server.met")
+	a.disk.SetData(path, fakeserver.BuildMet(s1, s2))
+	a.config.ServerLists = []string{path}
+	a.config.PacketLog = &lockedBuffer{}
+	c.setServer(s2)
+	a.start()
+	w.waitFor("A's obfuscated ping answered by S2", func() bool {
+		return strings.Contains(a.config.PacketLog.(*lockedBuffer).String(), "udp in  198.51.100.101:4673 obfuscated")
+	})
+	a.close()
+	state, err := store.Load(a.folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := state.Servers[1]
+	if saved.Endpoint != s2.Addr() || saved.UDPKey == 0 || saved.UDPKeyIP != a.ip {
+		t.Fatalf("saved S2 %+v, want its UDP key for %v", saved, a.ip)
+	}
+
+	c.start()
+	f := buildTestFile("saved-key.bin", 500_000, 17)
+	c.seed(1, f)
+	settle := w.clock.Now().Add(10 * time.Second)
+	w.waitFor("C to offer the file to S2", func() bool { return !w.clock.Now().Before(settle) })
+	log := &lockedBuffer{}
+	a.config.PacketLog = log
+	a.start()
+	a.download(2, f)
+	w.waitFor("A to find C through S2", func() bool {
+		return matchTrace(a.loadTrace(), "found", c.endpoint().String())
+	})
+	if text := log.String(); !strings.Contains(text, "udp out 198.51.100.101:4673 obfuscated") || strings.Contains(text, "udp out 198.51.100.101:4665") {
+		t.Fatalf("source request to S2 after the restart not obfuscated:\n%s", text)
 	}
 }
