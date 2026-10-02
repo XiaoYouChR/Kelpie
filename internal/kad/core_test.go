@@ -749,3 +749,27 @@ func TestStateKeepsTCPPort(t *testing.T) {
 		t.Fatalf("saved nodes %+v, want TCP port %d", got, n.TCPPort)
 	}
 }
+
+// Up to thirty files are searched at once, as in aMule 3.1.0, still one
+// new search a second.
+func TestSourceSearchesRunSideBySide(t *testing.T) {
+	h := buildHarness(t)
+	h.connect(fileHash, 6)
+	var wanted Wanted
+	for i := range 8 {
+		hash := fileHash
+		hash[0] ^= byte(i + 1)
+		wanted = append(wanted, File{Hash: hash, Size: 1000})
+	}
+	h.c.setWanted(wanted, h.now)
+	h.tick(time.Second)
+	if got := h.c.lookupCount(sourceSearch); got != 1 {
+		t.Fatalf("%d searches after a second, want 1", got)
+	}
+	for range 7 {
+		h.tick(time.Second)
+	}
+	if got := h.c.lookupCount(sourceSearch); got != 8 {
+		t.Fatalf("%d searches running, want all 8", got)
+	}
+}

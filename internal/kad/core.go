@@ -15,8 +15,13 @@ import (
 
 // eMule opcodes.h and CKademlia::Process.
 const (
-	fileSearchGap    = time.Second      // KADEMLIAASKTIME: one new source search a second
-	maxFileSearches  = 5                // KADEMLIATOTALFILE
+	fileSearchGap = time.Second // KADEMLIAASKTIME: one new source search a second
+	// maxFileSearches is aMule 3.1.0's KadMaxSourceSearches (eMule's
+	// KADEMLIATOTALFILE is 5): files no longer queue behind each other, and
+	// fileSearchGap and reaskSources still pace the searches.
+	maxFileSearches = 30
+	// reaskSources stays eMule's hour, not aMule 3.1.0's 30 minutes, so
+	// we never search one file more often than eMule does.
 	reaskSources     = time.Hour        // KADEMLIAREASKTIME, times the search count...
 	maxReaskFactor   = 7                // ...which CPartFile caps at 7 (m_TotalSearchesKad)
 	publishGap       = 2 * time.Second  // KADEMLIAPUBLISHTIME
