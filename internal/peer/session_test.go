@@ -2,6 +2,7 @@ package peer
 
 import (
 	"bytes"
+	"compress/zlib"
 	"math/rand/v2"
 	"net/netip"
 	"slices"
@@ -1058,5 +1059,38 @@ func TestRepeatedSlotKeepsRequestedBlocks(t *testing.T) {
 	l.sendRequestedBlocks(l.b, file, data)
 	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) {
 		t.Fatal("block requested before the repeated grant was dropped")
+	}
+}
+
+func TestArchiveBlockSentPlain(t *testing.T) {
+	l := buildLink(t)
+	size := piece.BlockSize
+	file, data := addShare(l.b, 1, size, true)
+	share := l.b.shares[file]
+	share.Name = "backup.Tar"
+	l.b.shares[file] = share
+	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
+	l.run(l.b, l.b.s.StartUpload())
+	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: size}}))
+	l.sent = nil
+	l.sendRequestedBlocks(l.b, file, data)
+	if sentCount[client.CompressedPart](l) != 0 {
+		t.Fatal("archive block compressed")
+	}
+	if r := lastOf[BlockReceived](t, l.a); !bytes.Equal(r.Data, data) {
+		t.Fatal("block differs")
+	}
+}
+
+// eMule 0.70b and aMule pack at level 1; the default level costs about
+// twice the CPU on blocks that mostly do not shrink.
+func TestBlockPackedAtFastestLevel(t *testing.T) {
+	data := buildData(piece.BlockSize, true, 1)
+	var want bytes.Buffer
+	w, _ := zlib.NewWriterLevel(&want, zlib.BestSpeed)
+	w.Write(data)
+	w.Close()
+	if got := toDeflated(data); !bytes.Equal(got, want.Bytes()) {
+		t.Fatalf("packed to %d bytes, level 1 packs to %d", len(got), want.Len())
 	}
 }
