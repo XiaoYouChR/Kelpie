@@ -422,7 +422,7 @@ func (c *core) onPacket(from netip.AddrPort, p wire.Packet, k keys, now time.Tim
 func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 	switch p := p.(type) {
 	case kadwire.BootstrapReq:
-		c.send(from, kadwire.BootstrapRes{ID: c.id, TCPPort: c.tcpPort, Version: c.version, Contacts: c.buildContacts(c.id, bootstrapAnswer)})
+		c.send(from, kadwire.BootstrapRes{ID: c.id, TCPPort: c.tcpPort, Version: c.version, Contacts: c.buildBootstrapContacts()})
 	case kadwire.BootstrapRes:
 		c.onBootstrapRes(from, p, now)
 	case kadwire.HelloReq:
@@ -553,9 +553,27 @@ func (c *core) onFirewallCheck(from netip.AddrPort, tcpPort uint16, user wire.Ha
 func (c *core) buildContacts(target wire.Hash, n int) []kadwire.Contact {
 	var out []kadwire.Contact
 	for _, ct := range c.table.closestContacts(target, n, true) {
-		out = append(out, kadwire.Contact{ID: ct.ID, Addr: ct.Addr.Addr(), UDPPort: ct.Addr.Port(), TCPPort: ct.TCPPort, Version: ct.Version})
+		out = append(out, toContact(ct))
 	}
 	return out
+}
+
+// buildBootstrapContacts answers a BootstrapReq with verified contacts
+// drawn at random from the whole table, as aMule's TopDepth draws them from
+// random bins all over its routing zones (RoutingZone.cpp:705, 1012): a
+// node bootstrapping from us should not learn only our neighbourhood.
+func (c *core) buildBootstrapContacts() []kadwire.Contact {
+	verified := c.table.closestContacts(c.id, len(c.table.byID), true)
+	c.rng.Shuffle(len(verified), func(i, j int) { verified[i], verified[j] = verified[j], verified[i] })
+	var out []kadwire.Contact
+	for _, ct := range verified[:min(bootstrapAnswer, len(verified))] {
+		out = append(out, toContact(ct))
+	}
+	return out
+}
+
+func toContact(ct *contact) kadwire.Contact {
+	return kadwire.Contact{ID: ct.ID, Addr: ct.Addr.Addr(), UDPPort: ct.Addr.Port(), TCPPort: ct.TCPPort, Version: ct.Version}
 }
 
 func (c *core) onTick(now time.Time) output {

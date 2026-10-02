@@ -670,3 +670,31 @@ func TestHelloResAck(t *testing.T) {
 		}
 	}
 }
+
+// A bootstrap answer samples the whole table, not only the contacts
+// nearest to us, as aMule's TopDepth does.
+func TestBootstrapAnswerSpreadsOverTable(t *testing.T) {
+	h := buildHarness(t)
+	rng := rand.New(rand.NewPCG(5, 5))
+	far := map[wire.Hash]bool{}
+	for i := range 40 {
+		index := 0
+		if i%2 == 1 {
+			index = 20 + i
+		}
+		n := Node{ID: buildRandomID(selfID, index, i%8, rng), Addr: netip.MustParseAddrPort(fmt.Sprintf("10.3.%d.1:4672", i)), Version: 9}
+		h.c.table.add(n, true, h.now)
+		far[n.ID] = index == 0
+	}
+	h.receive(netip.MustParseAddrPort("10.9.9.9:4672"), kadwire.BootstrapReq{})
+	boot := packetsOf[kadwire.BootstrapRes](h)
+	farCount := 0
+	for _, ct := range boot[0].packet.Contacts {
+		if far[ct.ID] {
+			farCount++
+		}
+	}
+	if len(boot[0].packet.Contacts) != bootstrapAnswer || farCount == 0 || farCount == bootstrapAnswer {
+		t.Fatalf("%d of %d contacts from the far half, want a mix", farCount, len(boot[0].packet.Contacts))
+	}
+}

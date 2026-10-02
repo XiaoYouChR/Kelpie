@@ -266,17 +266,17 @@ func TestNewcomerFillsItsTable(t *testing.T) {
 // first nodes, whose seed knew nobody yet, are left out. The running
 // network is large enough that those contacts know strangers.
 func TestSimulatedUDPCheck(t *testing.T) {
-	ids := buildIDs(180, false)
-	s := buildSim(t, ids[:60])
+	ids := buildIDs(220, false)
+	s := buildSim(t, ids[:100])
 	s.run(2 * time.Minute)
-	for i, id := range ids[60:] {
+	for i, id := range ids[100:] {
 		n := s.addNode(id)
 		n.isUDPFirewalled = i%10 == 5
 		s.addSeed(n)
 	}
 	s.run(10 * time.Minute)
 	open, closed := 0, 0
-	for i, n := range s.nodes[60:] {
+	for i, n := range s.nodes[100:] {
 		u := &n.c.udp
 		switch {
 		case n.isUDPFirewalled && u.isOpen():
