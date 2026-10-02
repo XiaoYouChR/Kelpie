@@ -97,7 +97,7 @@ class Kelpie:
 
     def update(self) -> None:
         if self._engine is not None:
-            send(self._engine.process, {"type": "update", **buildSettings(self._settings())})
+            send(self._engine.process, {"type": "update", **toMessageFields(self._settings())})
 
     def isActive(self, hash: str) -> bool:
         return hash in self._runs
@@ -262,11 +262,11 @@ def buildHello(dataFolder: Path, settings: Settings) -> dict[str, Any]:
         "type": "hello",
         "protocol": PROTOCOL,
         "dataFolder": str(dataFolder),
-        **buildSettings(settings),
+        **toMessageFields(settings),
     }
 
 
-def buildSettings(settings: Settings) -> dict[str, Any]:
+def toMessageFields(settings: Settings) -> dict[str, Any]:
     return {
         "settings": {
             "port": settings.port,
