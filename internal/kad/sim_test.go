@@ -61,20 +61,26 @@ type sim struct {
 // the first.
 func buildSim(t *testing.T, ids []wire.Hash) *sim {
 	s := &sim{t: t, now: start, byAddr: map[netip.AddrPort]*simNode{}}
-	for i, id := range ids {
-		var user wire.Hash
-		user[0], user[14], user[15] = 0xEE, byte(i>>8), byte(i)
-		addr := netip.MustParseAddrPort(fmt.Sprintf("10.0.%d.%d:4672", i/250, i%250+1))
-		n := &simNode{addr: addr, sentTo: map[netip.Addr]bool{}, c: buildCore(coreConfig{
-			ID: id, UserHash: user, TCPPort: 4662, UDPPort: 4672, UDPKey: uint32(i)*7919 + 1, Rand: rand.New(rand.NewPCG(uint64(i), 3)),
-		}, s.now)}
-		s.nodes = append(s.nodes, n)
-		s.byAddr[addr] = n
+	for _, id := range ids {
+		s.addNode(id)
 	}
 	for _, n := range s.nodes[1:] {
 		s.addSeed(n)
 	}
 	return s
+}
+
+func (s *sim) addNode(id wire.Hash) *simNode {
+	i := len(s.nodes)
+	var user wire.Hash
+	user[0], user[14], user[15] = 0xEE, byte(i>>8), byte(i)
+	addr := netip.MustParseAddrPort(fmt.Sprintf("10.0.%d.%d:4672", i/250, i%250+1))
+	n := &simNode{addr: addr, sentTo: map[netip.Addr]bool{}, c: buildCore(coreConfig{
+		ID: id, UserHash: user, TCPPort: 4662, UDPPort: 4672, UDPKey: uint32(i)*7919 + 1, Rand: rand.New(rand.NewPCG(uint64(i), 3)),
+	}, s.now)}
+	s.nodes = append(s.nodes, n)
+	s.byAddr[addr] = n
+	return n
 }
 
 func (s *sim) addSeed(n *simNode) {
@@ -253,16 +259,24 @@ func TestNewcomerFillsItsTable(t *testing.T) {
 	}
 }
 
-// TestSimulatedUDPCheck: nodes find test clients among strangers; a test
-// confirms the open nodes and never one behind a NAT.
+// TestSimulatedUDPCheck: nodes joining a running network find test clients
+// among strangers; a test confirms the open nodes and never one behind a
+// NAT. A lookup starts from verified contacts only, so a node looks for
+// test clients through the contacts of its seed's bootstrap answer; the
+// first nodes, whose seed knew nobody yet, are left out. The running
+// network is large enough that those contacts know strangers.
 func TestSimulatedUDPCheck(t *testing.T) {
-	s := buildSim(t, buildIDs(120, false))
-	for i, n := range s.nodes {
+	ids := buildIDs(180, false)
+	s := buildSim(t, ids[:60])
+	s.run(2 * time.Minute)
+	for i, id := range ids[60:] {
+		n := s.addNode(id)
 		n.isUDPFirewalled = i%10 == 5
+		s.addSeed(n)
 	}
 	s.run(10 * time.Minute)
 	open, closed := 0, 0
-	for i, n := range s.nodes {
+	for i, n := range s.nodes[60:] {
 		u := &n.c.udp
 		switch {
 		case n.isUDPFirewalled && u.isOpen():

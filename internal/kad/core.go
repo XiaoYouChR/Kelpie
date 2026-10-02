@@ -480,13 +480,18 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 	}
 }
 
+// onBootstrapRes: while we know no verified contact, the answer's contacts
+// count as verified, as aMule assumes while its table is empty
+// (KademliaUDPListener.cpp:546): lookups start only from verified contacts,
+// and the answering node would otherwise be the only one.
 func (c *core) onBootstrapRes(from netip.AddrPort, p kadwire.BootstrapRes, now time.Time) {
 	if c.rpcs.match(from, rpcBootstrap, wire.Hash{}) == nil {
 		return
 	}
+	isAssumedVerified := c.table.verifiedCount() == 0
 	c.table.add(Node{ID: p.ID, Addr: from, TCPPort: p.TCPPort, Version: p.Version}, true, now)
 	for _, ct := range p.Contacts {
-		c.table.add(toNode(ct), false, now)
+		c.table.add(toNode(ct), isAssumedVerified, now)
 	}
 }
 

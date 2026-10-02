@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -120,8 +121,8 @@ func TestBootstrapThenSelfLookup(t *testing.T) {
 	h.receive(seed.Addr, kadwire.BootstrapRes{ID: seed.ID, TCPPort: seed.TCPPort, Version: seed.Version, Contacts: []kadwire.Contact{
 		{ID: learned.ID, Addr: learned.Addr.Addr(), UDPPort: learned.Addr.Port(), TCPPort: learned.TCPPort, Version: learned.Version},
 	}})
-	if got := h.c.status(); got.Nodes != 1 || !got.IsFirewalled {
-		t.Fatalf("status %+v, want one node and firewalled until checked", got)
+	if got := h.c.status(); got.Nodes != 2 || !got.IsFirewalled {
+		t.Fatalf("status %+v, want the seed and its contact taken as verified, and firewalled until checked", got)
 	}
 	h.clearSent()
 	h.tick(time.Second)
@@ -141,6 +142,33 @@ func TestBootstrapThenSelfLookup(t *testing.T) {
 	}
 	if len(packetsOf[kadwire.BootstrapReq](h)) != 0 {
 		t.Fatal("still bootstrapping while connected")
+	}
+}
+
+// A lookup starts from verified contacts only, as aMule's CSearch::Go:
+// hearsay may be dead or someone else's victim. Only the first bootstrap
+// answer's contacts are taken as verified.
+func TestLookupStartsFromVerifiedContacts(t *testing.T) {
+	h := buildHarness(t)
+	verified := h.connect(fileHash, 1)[0]
+	heard := buildNear(fileHash, 1)
+	h.c.table.add(heard, false, h.now)
+	seed := buildNear(fileHash, 2)
+	h.c.rpcs.add(&rpc{kind: rpcBootstrap, node: seed, sent: h.now})
+	pushed := buildNear(fileHash, 3)
+	h.receive(seed.Addr, kadwire.BootstrapRes{ID: seed.ID, TCPPort: 4662, Version: 9, Contacts: []kadwire.Contact{
+		{ID: pushed.ID, Addr: pushed.Addr.Addr(), UDPPort: pushed.Addr.Port(), TCPPort: 4662, Version: 9},
+	}})
+	h.c.startLookup(nodeLookup, fileHash, 0, h.now)
+	out := h.c.out
+	h.c.out = output{}
+	h.record(out)
+	var to []netip.AddrPort
+	for _, r := range packetsOf[kadwire.Req](h) {
+		to = append(to, r.to)
+	}
+	if len(to) != 2 || !slices.Contains(to, verified.Addr) || !slices.Contains(to, seed.Addr) {
+		t.Fatalf("lookup asked %v, want only %v and %v", to, verified.Addr, seed.Addr)
 	}
 }
 

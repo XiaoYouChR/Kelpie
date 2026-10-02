@@ -179,12 +179,14 @@ func (c *core) lookupCount(kind lookupKind) int {
 }
 
 // startLookup returns nil when the target is already being looked up or
-// the routing table has nobody to ask.
+// the routing table has nobody to ask. It starts from verified contacts
+// only, as CSearch::Go does (RoutingBin.cpp:194): hearsay may be dead, or
+// an address someone wants us to send requests to.
 func (c *core) startLookup(kind lookupKind, target wire.Hash, size uint64, now time.Time) *lookup {
 	if c.lookupByTarget(kind, target) != nil {
 		return nil
 	}
-	contacts := c.table.closestContacts(target, lookupStartContacts, false)
+	contacts := c.table.closestContacts(target, lookupStartContacts, true)
 	if len(contacts) == 0 {
 		return nil
 	}
