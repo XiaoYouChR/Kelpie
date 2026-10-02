@@ -207,12 +207,19 @@ func (e *Engine) onCallback(p client.Callback) {
 }
 
 // onReaskCallbackUDP passes a downloader's UDP reask of the client we serve
-// over our link (ClientUDPSocket.cpp:143).
+// over our link (ClientUDPSocket.cpp:143). A downloader on IPv6 is passed
+// on only to a client that announced an IPv6 address of its own: another
+// could not answer it, and aMule drops such a reask
+// (ClientTCPSocket.cpp:1891).
 func (e *Engine) onReaskCallbackUDP(from netip.AddrPort, p client.ReaskCallbackUDP) {
 	b := &e.buddy
-	if b.conn != nil && b.isServing && b.conn.isHandshaken && p.BuddyID == b.id {
-		e.sendPacket(b.conn, client.ReaskCallbackTCP{Endpoint: from, Ping: p.Ping}, wire.Hash{}, 0)
+	if b.conn == nil || !b.isServing || !b.conn.isHandshaken || p.BuddyID != b.id {
+		return
 	}
+	if from.Addr().Is6() && !b.conn.session.Capabilities().IPv6.IsValid() {
+		return
+	}
+	e.sendPacket(b.conn, client.ReaskCallbackTCP{Endpoint: from, Ping: p.Ping}, wire.Hash{}, 0)
 }
 
 // onReaskCallbackTCP answers, over UDP, a reask our buddy passed on
