@@ -20,6 +20,11 @@ const (
 	// One SearchRes carries at most this many entries, keeping it well
 	// under the UDP size eMule reads.
 	entriesByPacket = 50
+	// TAG_PUBLISHINFO and TAG_KADAICHHASHRESULT belong in answers the
+	// storing node builds itself; aMule 3.1.0 never stores a publisher's
+	// (Entry.cpp:80-91).
+	tagPublishInfo       byte = 0x33
+	tagKadAICHHashResult byte = 0x37
 )
 
 type indexed struct {
@@ -59,7 +64,7 @@ func (x *index) onPublishSources(self wire.Hash, from netip.AddrPort, req kadwir
 	tags := []wire.Tag{{Type: wire.TagUint32, ID: kadwire.TagSourceIP, Uint: uint64(kadwire.ToUint32(from.Addr()))}}
 	hasUDPPort := false
 	for _, t := range req.Source.Tags {
-		if t.Name == "" && t.ID == kadwire.TagSourceIP {
+		if t.Name == "" && (t.ID == kadwire.TagSourceIP || t.ID == tagPublishInfo || t.ID == tagKadAICHHashResult) {
 			continue
 		}
 		hasUDPPort = hasUDPPort || (t.Name == "" && t.ID == kadwire.TagSourceUPort && t.Uint != 0)

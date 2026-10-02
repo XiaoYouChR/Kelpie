@@ -59,3 +59,22 @@ func TestIndexIsBounded(t *testing.T) {
 		t.Fatalf("count %d after expiry, want room again", h.c.index.count)
 	}
 }
+
+// A publisher's TAG_PUBLISHINFO and TAG_KADAICHHASHRESULT are not stored,
+// as in aMule 3.1.0.
+func TestIndexDropsAnswerOnlyTags(t *testing.T) {
+	h := buildHarness(t)
+	file := selfID
+	file[15] ^= 1
+	source := kadwire.Entry{ID: userHash, Tags: []wire.Tag{
+		{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: 1},
+		{Type: wire.TagUint32, ID: tagPublishInfo, Uint: 7},
+		{Type: wire.TagUint8, ID: tagKadAICHHashResult, Uint: 1},
+	}}
+	h.c.index.onPublishSources(h.c.id, netip.MustParseAddrPort("10.7.0.1:4672"), kadwire.PublishSourcesReq{FileID: file, Source: source}, h.now)
+	for _, tag := range h.c.index.files[file][userHash].tags {
+		if tag.ID == tagPublishInfo || tag.ID == tagKadAICHHashResult {
+			t.Fatalf("stored tag %#x", tag.ID)
+		}
+	}
+}
