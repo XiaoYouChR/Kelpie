@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -42,6 +43,13 @@ const (
 	handshakeTimeout     = 30 * time.Second
 	associateRetryMin    = 5 * time.Second
 	associateRetryMax    = 5 * time.Minute
+	// A relay that has carried nothing back after this many datagrams and
+	// this long is taken for one that drops UDP: RFC 1928 lets a relay
+	// accept an association and then drop silently, as mihomo does with
+	// udp: false. Kad and server UDP ask many peers, so a working relay
+	// answers well within it.
+	silentAfterSent = 20
+	silentAfter     = 30 * time.Second
 	// udpHeaderMax is RSV, FRAG, ATYP, an IPv6 address, and a port.
 	udpHeaderMax = 3 + 1 + 16 + 2
 )
@@ -53,11 +61,18 @@ type proxy struct {
 	user, password     string
 	isRemoteResolution bool
 	retryMin, retryMax time.Duration
+	silentAfter        time.Duration
 	onIssue            func(issue string)
+	// isHeard is whether any relay of this Proxy carried a datagram back;
+	// once it has, sending checks nothing more.
+	isHeard atomic.Bool
 
 	mu        sync.Mutex
 	isTCPDown bool
 	udpDown   map[*relayConn]bool
+	sent      int
+	firstSent time.Time
+	isSilent  bool
 	lastIssue string
 }
 
@@ -105,6 +120,7 @@ func Proxied(direct Transport, proxyURL string, onIssue func(issue string)) (Tra
 		isRemoteResolution: u.Scheme == "socks5h",
 		retryMin:           associateRetryMin,
 		retryMax:           associateRetryMax,
+		silentAfter:        silentAfter,
 		onIssue:            onIssue,
 		udpDown:            map[*relayConn]bool{},
 	}
@@ -183,6 +199,36 @@ func (p *proxy) setUDPDown(c *relayConn, isDown bool) {
 	p.report()
 }
 
+// onSent counts a datagram given to a relay until one comes back, and
+// takes the Proxy for one that drops UDP if none has by silentAfterSent
+// datagrams and silentAfter.
+func (p *proxy) onSent() {
+	if p.isHeard.Load() {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	if p.sent == 0 {
+		p.firstSent = now
+	}
+	p.sent++
+	if !p.isSilent && p.sent >= silentAfterSent && now.Sub(p.firstSent) >= p.silentAfter {
+		p.isSilent = true
+		p.report()
+	}
+}
+
+func (p *proxy) onHeard() {
+	if p.isHeard.Swap(true) {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.isSilent = false
+	p.report()
+}
+
 // report tells onIssue what is wrong when that changes; a Proxy we cannot
 // reach explains missing UDP too, so it comes first.
 func (p *proxy) report() {
@@ -190,7 +236,7 @@ func (p *proxy) report() {
 	switch {
 	case p.isTCPDown:
 		issue = issueUnreachable
-	case len(p.udpDown) > 0:
+	case len(p.udpDown) > 0 || p.isSilent:
 		issue = issueNoUDP
 	}
 	if issue != p.lastIssue {
@@ -407,6 +453,7 @@ func (c *relayConn) ReadFrom(b []byte) (int, netip.AddrPort, error) {
 		if !ok {
 			continue
 		}
+		c.proxy.onHeard()
 		return copy(b, payload), source, nil
 	}
 }
@@ -445,6 +492,7 @@ func (c *relayConn) WriteTo(b []byte, addr netip.AddrPort) (int, error) {
 	if _, err := c.local.WriteTo(datagram, relay); err != nil {
 		return 0, err
 	}
+	c.proxy.onSent()
 	return len(b), nil
 }
 

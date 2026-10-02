@@ -19,7 +19,10 @@ directly instead.
 - IPv4 and IPv6 destinations both go through the Proxy.
 - When the Proxy has no UDP ASSOCIATE, or it drops, UDP stops and we download
   over TCP alone; the association is retried with backoff, and Network reports
-  the reason in `proxyIssue`.
+  the reason in `proxyIssue`. RFC 1928 lets a relay accept and then drop in
+  silence, so a relay that has carried nothing back after 20 datagrams and
+  30 s is reported the same way. Our own Kad and server requests are the
+  probe: no third party hears from us, unlike a STUN check.
 - We keep listening for TCP directly and keep port mapping. Listening sends
   nothing, and peers that already know our address can still reach us. UDP
   arrives only through the relay; datagrams sent straight to our UDP port are

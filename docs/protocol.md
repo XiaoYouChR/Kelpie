@@ -131,7 +131,8 @@ After `failed` the Engine Process exits with a non-zero status. Kelpie waits
   `unreachable` when the last attempt to reach the Proxy failed, and `noUdp`
   when the Proxy relays no UDP, so Kad, server UDP and UDP reasks wait while
   the Engine Process asks again with backoff; `unreachable` wins when both
-  hold.
+  hold. A Proxy that accepts UDP but has carried nothing back after 20
+  datagrams and 30 s counts as relaying none, until the first one comes back.
 
 ## Run rules
 

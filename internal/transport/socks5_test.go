@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -20,9 +21,12 @@ type socksServer struct {
 	connectReply    byte
 	isUDPRefused    bool
 	isRelayWildcard bool
-	relays          chan *net.UDPConn
-	controls        chan net.Conn
-	lastClient      chan netip.AddrPort
+	// isUDPDropped makes the relay accept an association and drop
+	// everything, as mihomo does with udp: false.
+	isUDPDropped atomic.Bool
+	relays       chan *net.UDPConn
+	controls     chan net.Conn
+	lastClient   chan netip.AddrPort
 }
 
 func startSocksServer(t *testing.T, configure func(*socksServer)) *socksServer {
@@ -164,6 +168,9 @@ func (s *socksServer) associate(conn net.Conn) {
 			client = from
 			s.lastClient <- client
 		}
+		if s.isUDPDropped.Load() {
+			continue
+		}
 		if from != client {
 			relay.WriteToUDPAddrPort(append(append([]byte{0, 0, 0}, buildAddr(from)...), buf[:n]...), client)
 			continue
@@ -221,6 +228,7 @@ func openProxied(t *testing.T, proxyURL string) (Transport, chan string) {
 		t.Fatal(err)
 	}
 	p.(*proxy).retryMin, p.(*proxy).retryMax = 20*time.Millisecond, 40*time.Millisecond
+	p.(*proxy).silentAfter = 50 * time.Millisecond
 	return p, issues
 }
 
@@ -444,5 +452,52 @@ func TestBuildAddrRoundTripsThroughParseRelayed(t *testing.T) {
 		if !ok || got != addr || !bytes.Equal(payload, []byte("x")) {
 			t.Errorf("%s: %s %q %v", addr, got, payload, ok)
 		}
+	}
+}
+
+func TestSilentRelayIsReportedAsNoUDPUntilItAnswers(t *testing.T) {
+	s := startSocksServer(t, nil)
+	s.isUDPDropped.Store(true)
+	p, issues := openProxied(t, s.url("socks5"))
+	conn, err := p.OpenUDP(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	echo := startEcho(t, "udp", netip.MustParseAddr("127.0.0.1"))
+	for range silentAfterSent {
+		conn.WriteTo([]byte("lost"), echo)
+	}
+	time.Sleep(60 * time.Millisecond)
+	conn.WriteTo([]byte("lost"), echo)
+	waitIssue(t, issues, issueNoUDP)
+
+	s.isUDPDropped.Store(false)
+	conn.WriteTo([]byte("back"), echo)
+	if _, _, err := conn.ReadFrom(make([]byte, 64)); err != nil {
+		t.Fatal(err)
+	}
+	waitIssue(t, issues, "")
+}
+
+func TestWorkingRelayIsNeverSilent(t *testing.T) {
+	s := startSocksServer(t, nil)
+	p, issues := openProxied(t, s.url("socks5"))
+	conn, err := p.OpenUDP(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	echo := startEcho(t, "udp", netip.MustParseAddr("127.0.0.1"))
+	conn.WriteTo([]byte("ping"), echo)
+	conn.ReadFrom(make([]byte, 64))
+	time.Sleep(60 * time.Millisecond)
+	for range 2 * silentAfterSent {
+		conn.WriteTo([]byte("more"), echo)
+	}
+	select {
+	case issue := <-issues:
+		t.Fatalf("issue %q", issue)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
