@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -80,6 +81,10 @@ type conn struct {
 	// is later than the session completes it: within the Output that carries
 	// HandshakeCompleted the transfers do not know the peer yet.
 	isHandshaken bool
+	// handshakenAt is when that was. Only its age tells a peer that dialled
+	// us while we dialled it from one that came back after losing an older
+	// connection; see closeDuplicate.
+	handshakenAt time.Time
 	isClosed     bool
 }
 
@@ -640,7 +645,10 @@ func (e *Engine) requestTree(file wire.Hash) {
 }
 
 func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
-	c.isHandshaken = true
+	c.isHandshaken, c.handshakenAt = true, e.now()
+	if !e.closeDuplicate(c) {
+		return
+	}
 	caps := c.session.Capabilities()
 	user := caps.UserHash
 	// A peer's view fills in an unknown address or replaces the gateway's,
@@ -675,6 +683,53 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 	if !c.isClosed {
 		e.runQueueActions(e.queue.OnConnected(c.id, toUploadPeer(c), e.now()))
 	}
+}
+
+// closeDuplicate closes one of two connections to the same client, by user
+// hash and endpoint, and tells whether c stays. Like aMule's
+// AttachToAlreadyKnown (ClientList.cpp:372-445) the new one stays: a client
+// that comes back, say to give us a slot, may have lost the old one without
+// us knowing. When both ends dialled each other at once, each keeping its
+// newer connection could close both; so while the older one is younger than
+// CONNECTION_TIMEOUT, both ends keep the one the client with the smaller
+// user hash opened, aMule's rule for the same race over uTP (UtpDialPolicy.h
+// ShouldKeepFoundUtp). A closed c hands its downloads to the one kept. A
+// Kad check or the buddy link is tied to its connection; those are left
+// alone.
+func (e *Engine) closeDuplicate(c *conn) bool {
+	old := e.duplicateConn(c)
+	if old == nil || old.kadCheck != nil || c.kadCheck != nil || old == e.buddy.conn || c == e.buddy.conn {
+		return true
+	}
+	isOldKept := false
+	if old.isOutgoing != c.isOutgoing && e.now().Sub(old.handshakenAt) < connectTimeout {
+		user := c.session.Capabilities().UserHash
+		isOursKept := bytes.Compare(e.self.UserHash[:], user[:]) < 0
+		isOldKept = old.isOutgoing == isOursKept
+	}
+	if !isOldKept {
+		e.closeConn(old, "duplicate")
+		return true
+	}
+	files := c.session.Files()
+	e.closeConn(c, "duplicate")
+	for _, h := range files {
+		if r := e.downloadByHash(h); r != nil && !old.isClosed {
+			e.addFile(old, r)
+		}
+	}
+	return false
+}
+
+// duplicateConn is another handshaken connection to c's client.
+func (e *Engine) duplicateConn(c *conn) *conn {
+	user := c.session.Capabilities().UserHash
+	for _, other := range e.conns {
+		if other != c && other.isHandshaken && other.session.Capabilities().UserHash == user && other.endpoint() == c.endpoint() {
+			return other
+		}
+	}
+	return nil
 }
 
 // isReaskDue tells whether a connection the peer opened may carry our file
