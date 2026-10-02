@@ -11,7 +11,8 @@ import (
 
 // rateLimiter is a token bucket shared by every peer connection in one
 // direction. Their reader and writer goroutines call waitN before moving n bytes,
-// protocol overhead included.
+// protocol overhead included; writers call addControl instead for control
+// packets.
 //
 // The bucket counts bytes cumulatively: reserved is every byte callers asked
 // for, paid is every byte the rate has covered. A caller reserves its bytes
@@ -82,6 +83,20 @@ func (l *rateLimiter) waitN(ctx context.Context, n int) error {
 		l.mu.Lock()
 		l.updatePaid(l.clock.Now())
 	}
+}
+
+// addControl counts the n bytes of a control packet, which passes at once:
+// like aMule's throttler, which sends control packets before any upload data
+// (UploadBandwidthThrottler.cpp:350-), it goes ahead of every waiting caller,
+// and they wait n/rate longer, so the rate holds.
+func (l *rateLimiter) addControl(n int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.rate == 0 {
+		return
+	}
+	l.updatePaid(l.clock.Now())
+	l.paid -= float64(n)
 }
 
 // burst is a quarter second of rate: enough that waiters wake rarely, little

@@ -2,10 +2,14 @@ package engine
 
 import (
 	"context"
+	"net"
+	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/clock"
+	"github.com/XiaoYouChR/Kelpie/internal/wire"
+	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
 
 // runWithClock advances c in steps whenever work is parked on a timer, until
@@ -124,5 +128,50 @@ func TestLimiterCancel(t *testing.T) {
 	}
 	if c.Waiters() != 0 {
 		t.Fatal("timer leaked")
+	}
+}
+
+func TestLimiterControlGoesFirst(t *testing.T) {
+	c := clock.BuildFake(start)
+	l := buildRateLimiter(c, 1000)
+	done := make(chan struct{})
+	go func() {
+		l.waitN(context.Background(), 1000)
+		close(done)
+	}()
+	for c.Waiters() == 0 {
+		time.Sleep(time.Microsecond)
+	}
+	l.addControl(500)
+	runWithClock(c, time.Millisecond, func() { <-done })
+	if elapsed := c.Now().Sub(start); elapsed < 1500*time.Millisecond || elapsed > 1510*time.Millisecond {
+		t.Fatalf("1000 data bytes after 500 control bytes at 1000 B/s took %v", elapsed)
+	}
+}
+
+func TestWriterSendsControlBeforeData(t *testing.T) {
+	c := clock.BuildFake(start)
+	l := buildRateLimiter(c, 1000)
+	go l.waitN(context.Background(), 1<<20)
+	for c.Waiters() == 0 {
+		time.Sleep(time.Microsecond)
+	}
+	e := &Engine{inbox: make(chan any, 8)}
+	ours, theirs := net.Pipe()
+	defer theirs.Close()
+	control, data := make(chan outItem, 4), make(chan outItem, 4)
+	block := outItem{packet: client.SendingPart{Data: make([]byte, 10)}, payload: 10}
+	data <- block
+	data <- block
+	control <- outItem{packet: client.QueueRanking{Rank: 7}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.runWriter(ctx, 1, netip.AddrPort{}, ours, control, data, l)
+	frame, err := wire.ParseFrameFrom(theirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := client.Parse(frame.Protocol, frame.Opcode, frame.Body); p != (client.QueueRanking{Rank: 7}) {
+		t.Fatalf("first packet %#v, want the queue ranking", p)
 	}
 }
