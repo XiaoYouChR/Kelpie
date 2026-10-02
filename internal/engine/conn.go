@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"slices"
@@ -122,6 +123,7 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 	var secret [16]byte
 	binary.LittleEndian.PutUint64(secret[:8], e.ports.Rand.Uint64())
 	binary.LittleEndian.PutUint64(secret[8:], e.ports.Rand.Uint64())
+	random := e.buildLeafRandom()
 	dial := c.remote
 	if obfuscationPort != 0 {
 		dial = netip.AddrPortFrom(c.remote.Addr(), obfuscationPort)
@@ -137,11 +139,11 @@ func (e *Engine) openConn(remote netip.AddrPort, isServer bool, obfuscateFor wir
 		case err != nil:
 		case obfuscationPort != 0:
 			netConn, err = openObfuscated(c.ctx, netConn, func(c net.Conn) (net.Conn, error) {
-				return obfuscation.OpenServer(c, secret, keyPart[0])
+				return obfuscation.OpenServer(c, secret, keyPart[0], random)
 			})
 		case obfuscateFor != wire.Hash{}:
 			netConn, err = openObfuscated(c.ctx, netConn, func(c net.Conn) (net.Conn, error) {
-				return obfuscation.OpenOutgoing(c, obfuscateFor, keyPart)
+				return obfuscation.OpenOutgoing(c, obfuscateFor, keyPart, random)
 			})
 		}
 		if !e.send(c.ctx, connOpened{c.id, netConn, err}) && netConn != nil {
@@ -199,7 +201,9 @@ func (e *Engine) refreshUploadEndpoints() {
 	})
 }
 
-func (e *Engine) runAcceptor() {
+// runAcceptor takes random from the hub, since it cannot share the hub's;
+// each connection's leaf gets one of its own from it.
+func (e *Engine) runAcceptor(random *rand.Rand) {
 	self := e.self.UserHash
 	handshakes := make(chan struct{}, maxIncomingHandshakes)
 	for {
@@ -212,8 +216,9 @@ func (e *Engine) runAcceptor() {
 		if err != nil {
 			return
 		}
+		connRandom := rand.New(rand.NewPCG(random.Uint64(), random.Uint64()))
 		e.startLeaf(func() {
-			e.runIncoming(netConn, remote, self)
+			e.runIncoming(netConn, remote, self, connRandom)
 			<-handshakes
 		})
 	}
@@ -221,9 +226,9 @@ func (e *Engine) runAcceptor() {
 
 // runIncoming waits for an accepted connection's first bytes, which tell
 // whether the peer obfuscates, before the hub sees the connection.
-func (e *Engine) runIncoming(netConn net.Conn, remote netip.AddrPort, self wire.Hash) {
+func (e *Engine) runIncoming(netConn net.Conn, remote netip.AddrPort, self wire.Hash, random *rand.Rand) {
 	conn, err := openObfuscated(e.ctx, netConn, func(c net.Conn) (net.Conn, error) {
-		return obfuscation.OpenIncoming(c, self)
+		return obfuscation.OpenIncoming(c, self, random)
 	})
 	if err == nil && !e.send(e.ctx, connAccepted{conn, remote}) {
 		netConn.Close()

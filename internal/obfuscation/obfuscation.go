@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"math/rand/v2"
 	"net"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
@@ -30,6 +31,12 @@ const (
 	// primeSize is PRIMESIZE_BYTES, the length of every number in the
 	// server handshake.
 	primeSize = 96
+	// Each handshake step ends in random padding, so that its length is no
+	// fingerprint: up to CryptTCPPaddingLength (254 by default) between
+	// clients, but under 16 towards a server, which takes no more
+	// (EncryptedStreamSocket.cpp:464, 493, 619-627, 724).
+	maxPadding       = 254
+	maxServerPadding = 15
 )
 
 // dhPrime is dh768_p, the fixed prime of the server handshake
@@ -67,6 +74,16 @@ func (c *cipherConn) Write(b []byte) (int, error) {
 	c.wbuf = append(c.wbuf[:0], b...)
 	c.out.XORKeyStream(c.wbuf, c.wbuf)
 	return c.Conn.Write(c.wbuf)
+}
+
+// buildPadding is <PaddingLen 1><Padding> with up to max random bytes.
+func buildPadding(random *rand.Rand, max int) []byte {
+	padding := make([]byte, 1+random.IntN(max+1))
+	padding[0] = byte(len(padding) - 1)
+	for i := 1; i < len(padding); i++ {
+		padding[i] = byte(random.Uint32())
+	}
+	return padding
 }
 
 // readAnswer reads <MagicValue 4><MethodSelected 1><PaddingLen 1><Padding>.
@@ -107,14 +124,15 @@ func matchPlain(b byte) bool {
 }
 
 // OpenOutgoing starts obfuscation on a connection we opened to the client
-// with user hash user. keyPart is random; it salts both keys. It blocks
+// with user hash user. keyPart is random; it salts both keys, and random
+// pads the request. It blocks
 // until the peer has answered, as eMule holds its Hello until then (aMule
 // drops a peer that sends more than the handshake step needs): the caller
 // closes conn to give up.
 //
 // Request: <Marker 1><KeyPart 4>, then encrypted <MagicValue 4>
-// <MethodsSupported 1><MethodPreferred 1><PaddingLen 1>.
-func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (net.Conn, error) {
+// <MethodsSupported 1><MethodPreferred 1><PaddingLen 1><Padding>.
+func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte, random *rand.Rand) (net.Conn, error) {
 	c := &cipherConn{
 		Conn: conn,
 		r:    bufio.NewReader(conn),
@@ -126,7 +144,8 @@ func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (net.Conn, err
 		marker++
 	}
 	request := binary.LittleEndian.AppendUint32(nil, magicSync)
-	request = append(request, methodObfuscation, methodObfuscation, 0)
+	request = append(request, methodObfuscation, methodObfuscation)
+	request = append(request, buildPadding(random, maxPadding)...)
 	c.out.XORKeyStream(request, request)
 	if _, err := conn.Write(append(append([]byte{marker}, keyPart[:]...), request...)); err != nil {
 		return nil, err
@@ -141,22 +160,22 @@ func OpenOutgoing(conn net.Conn, user wire.Hash, keyPart [4]byte) (net.Conn, err
 // obfuscation port. A server has no user hash to key with, so the key is
 // agreed by Diffie-Hellman; secret is our 128-bit exponent and marker a
 // random first byte (aMule EncryptedStreamSocket.cpp:56-81, 398-424,
-// 603-668). It blocks until the server has answered: the caller closes
-// conn to give up.
+// 603-668); random pads the request and the reply. It blocks until the
+// server has answered: the caller closes conn to give up.
 //
-// Request, plain: <Marker 1><g^a mod p 96><PaddingLen 1>. Answer: plain
-// <g^b mod p 96>, then encrypted <MagicValue 4><MethodsSupported 1>
+// Request, plain: <Marker 1><g^a mod p 96><PaddingLen 1><Padding>. Answer:
+// plain <g^b mod p 96>, then encrypted <MagicValue 4><MethodsSupported 1>
 // <MethodPreferred 1><PaddingLen 1><Padding>. Reply, encrypted:
-// <MagicValue 4><MethodSelected 1><PaddingLen 1>.
-func OpenServer(conn net.Conn, secret [16]byte, marker byte) (net.Conn, error) {
+// <MagicValue 4><MethodSelected 1><PaddingLen 1><Padding>.
+func OpenServer(conn net.Conn, secret [16]byte, marker byte, random *rand.Rand) (net.Conn, error) {
 	a := new(big.Int).SetBytes(secret[:])
 	for matchPlain(marker) {
 		marker++
 	}
-	request := make([]byte, 1+primeSize+1)
+	request := make([]byte, 1+primeSize)
 	request[0] = marker
-	new(big.Int).Exp(big.NewInt(2), a, dhPrime).FillBytes(request[1 : 1+primeSize])
-	if _, err := conn.Write(request); err != nil {
+	new(big.Int).Exp(big.NewInt(2), a, dhPrime).FillBytes(request[1:])
+	if _, err := conn.Write(append(request, buildPadding(random, maxServerPadding)...)); err != nil {
 		return nil, err
 	}
 	r := bufio.NewReader(conn)
@@ -183,7 +202,8 @@ func OpenServer(conn net.Conn, secret [16]byte, marker byte) (net.Conn, error) {
 		return nil, err
 	}
 	reply := binary.LittleEndian.AppendUint32(nil, magicSync)
-	if _, err := c.Write(append(reply, methodObfuscation, 0)); err != nil {
+	reply = append(reply, methodObfuscation)
+	if _, err := c.Write(append(reply, buildPadding(random, maxServerPadding)...)); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -191,14 +211,19 @@ func OpenServer(conn net.Conn, secret [16]byte, marker byte) (net.Conn, error) {
 
 // OpenIncoming reads the first byte of a connection a peer opened to us,
 // whose user hash is self. A plain eD2k frame is returned as it came; an
-// obfuscation request is answered and the encrypted connection returned. It blocks
-// until the peer has sent its handshake: the caller closes conn to give up.
+// obfuscation request is answered, padded by random, and the encrypted
+// connection returned. It blocks until the peer has sent its handshake: the
+// caller closes conn to give up.
+//
+// The answer is padded as towards a server: a server we log in to tests
+// our port with this handshake and takes no more (aMule
+// EncryptedStreamSocket.cpp:619-627), and who connected is not known yet.
 //
 // eMule and aMule drop a peer whose first read holds more than the
 // handshake. Kelpie keeps such bytes for the reader instead: a requester
 // that waits for our answer, as eMule and Kelpie do, never sends them, and
 // whether early bytes share one read is up to TCP.
-func OpenIncoming(conn net.Conn, self wire.Hash) (net.Conn, error) {
+func OpenIncoming(conn net.Conn, self wire.Hash, random *rand.Rand) (net.Conn, error) {
 	r := bufio.NewReader(conn)
 	first, err := r.Peek(1)
 	if err != nil {
@@ -229,8 +254,8 @@ func OpenIncoming(conn net.Conn, self wire.Hash) (net.Conn, error) {
 		return nil, err
 	}
 	answer := binary.LittleEndian.AppendUint32(nil, magicSync)
-	answer = append(answer, methodObfuscation, 0)
-	if _, err := c.Write(answer); err != nil {
+	answer = append(answer, methodObfuscation)
+	if _, err := c.Write(append(answer, buildPadding(random, maxServerPadding)...)); err != nil {
 		return nil, err
 	}
 	return c, nil
