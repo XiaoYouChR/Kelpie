@@ -179,3 +179,53 @@ func TestExternPortPingsSpreadOverNodes(t *testing.T) {
 		t.Fatalf("%d pings to the one silent node in 90 s, want 1", got)
 	}
 }
+
+// A reconnect does not start another firewall check before the hour is
+// up: the nodes asked would get the same request again.
+func TestReconnectKeepsFirewallSchedule(t *testing.T) {
+	h := buildHarness(t)
+	nodes := h.connect(fileHash, firewallChecks)
+	for range 10 {
+		h.tick(time.Second)
+	}
+	asked := len(packetsOf[kadwire.FirewalledReq](h))
+	if asked != firewallChecks {
+		t.Fatalf("%d firewall checks, want %d", asked, firewallChecks)
+	}
+	h.tick(responseTimeout)
+	for _, n := range nodes {
+		h.c.table.remove(h.c.table.byID[n.ID])
+	}
+	h.tick(time.Second)
+	for _, n := range nodes {
+		h.c.table.add(n, true, h.now)
+	}
+	h.clearSent()
+	for range 10 {
+		h.tick(time.Second)
+	}
+	if got := len(packetsOf[kadwire.FirewalledReq](h)); got != 0 {
+		t.Fatalf("%d firewall checks after a reconnect, want none before the hour", got)
+	}
+}
+
+// A node that acknowledged is not asked again in the round: two
+// acknowledgements must come from two nodes.
+func TestAckedNodeIsNotAskedAgain(t *testing.T) {
+	h := buildHarness(t)
+	h.connect(fileHash, 2)
+	h.tick(time.Second)
+	first := packetsOf[kadwire.FirewalledReq](h)
+	if len(first) != 1 {
+		t.Fatalf("%d firewall checks in the first second, want 1", len(first))
+	}
+	h.c.onFirewallAck(first[0].to.Addr())
+	for range 3 {
+		h.tick(time.Second)
+	}
+	for _, r := range packetsOf[kadwire.FirewalledReq](h)[1:] {
+		if r.to == first[0].to {
+			t.Fatal("asked a node that acknowledged again")
+		}
+	}
+}

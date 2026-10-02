@@ -97,8 +97,10 @@ type firewall struct {
 	isLastFirewalled bool
 	responses        int
 	acks             int
-	asked            map[netip.Addr]bool
-	next             time.Time
+	// asked holds the nodes asked this round, true until one acknowledges:
+	// each counts once and is not asked again.
+	asked map[netip.Addr]bool
+	next  time.Time
 }
 
 func (f *firewall) isFirewalled() bool {
@@ -257,7 +259,7 @@ func (c *core) cancelLookup(l *lookup) {
 // (KADEMLIA_FIREWALLED_ACK_RES). Only nodes we asked count.
 func (c *core) onFirewallAck(from netip.Addr) {
 	if c.firewall.asked[from] {
-		delete(c.firewall.asked, from)
+		c.firewall.asked[from] = false
 		c.firewall.acks++
 	}
 }
@@ -597,9 +599,12 @@ func (c *core) onTick(now time.Time) output {
 	}
 	c.runBucketChecks(now)
 	isConnected := c.table.verifiedCount() > 0
+	// The first firewall check runs on the first connection, the next ones
+	// hourly (Kademlia.cpp:191, 357); a reconnect does not start one, or a
+	// node that keeps losing its last contact would ask the same nodes
+	// again within the two FirewalledReq a minute they accept.
 	if isConnected && !c.isConnected {
 		c.nextSelfLookup = now
-		c.firewall.next = now
 	}
 	c.isConnected = isConnected
 	if isConnected {
@@ -745,7 +750,7 @@ func (c *core) runFirewallCheck(now time.Time) {
 		return
 	}
 	for _, ct := range c.table.closestContacts(buildRandomID(c.id, 0, 0, c.rng), len(c.table.byID), true) {
-		if f.asked[ct.Addr.Addr()] {
+		if _, ok := f.asked[ct.Addr.Addr()]; ok {
 			continue
 		}
 		f.asked[ct.Addr.Addr()] = true
