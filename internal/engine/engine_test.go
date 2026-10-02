@@ -515,7 +515,7 @@ func TestCorruptSeederWithoutAICHIsNotBanned(t *testing.T) {
 		t.Fatal("seeder banned without AICH to tell it sent the corrupt data")
 	}
 	good.host.SetUnreachable(false)
-	// The good seeder failed once and is retried after DeadSourceList's 45
+	// The good seeder failed once and is retried after DeadSourceList's 30
 	// minutes; skip ahead a minute at a time.
 	deadline := time.Now().Add(waitTimeout)
 	for {

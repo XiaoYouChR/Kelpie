@@ -28,8 +28,13 @@ const (
 	udpReaskLead = 20 * time.Second
 	// callbackTimeout is CONNECTION_TIMEOUT, how long a callback may take.
 	callbackTimeout = 40 * time.Second
-	// deadSourceTime is DeadSourceList.cpp's BLOCKTIME for a file's own list.
-	deadSourceTime = 45 * time.Minute
+	// deadSourceTime is how long a source we could not reach, or that did
+	// not answer, waits on aMule's global dead source list; a LowID or
+	// firewalled source, reached only by callback, waits callbackDeadTime
+	// more (DeadSourceList.cpp:34-35, BLOCKTIME and BLOCKTIMEFW). eMule
+	// waits less: 15 and 30 minutes.
+	deadSourceTime   = 30 * time.Minute
+	callbackDeadTime = 15 * time.Minute
 	// banTime is CLIENTBANTIME (Constants.h:66), how long a source that sent
 	// corrupt data stays refused.
 	banTime = 2 * time.Hour
@@ -73,7 +78,8 @@ const (
 	// has not been answered yet.
 	stateReasking
 	stateDownloading
-	// stateFailed sources wait out deadSourceTime before they are tried again.
+	// stateFailed sources wait out their deadline before they are tried
+	// again.
 	stateFailed
 )
 
@@ -338,6 +344,9 @@ func (t *Transfer) OnConnectFailed(endpoint netip.AddrPort, reason string, now t
 func (t *Transfer) setFailed(s *source, reason string, now time.Time) TraceEvent {
 	s.state = stateFailed
 	s.deadline = now.Add(deadSourceTime)
+	if s.ClientID != 0 || s.Buddy.IsValid() {
+		s.deadline = s.deadline.Add(callbackDeadTime)
+	}
 	event := t.buildTrace(now, s, EventFailed)
 	event.Reason = reason
 	return event

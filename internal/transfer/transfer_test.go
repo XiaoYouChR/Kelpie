@@ -366,19 +366,31 @@ func TestReaskTiming(t *testing.T) {
 	}
 }
 
+// A source that failed waits 30 minutes, one reached by callback 45
+// (aMule's global DeadSourceList).
 func TestFailedSourceBacksOff(t *testing.T) {
 	data := buildData(1000)
+	server := endpoint(9999)
 	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
-	h.tick(transfer.Tick{ConnectBudget: 1})
+	h.transfer.OnSourcesFound([]transfer.Source{lowIDSource(2, server)}, transfer.ChannelServer, start)
+	h.tick(transfer.Tick{ConnectBudget: 2, Server: server})
 	failed := h.transfer.OnConnectFailed(endpoint(1), "refused", start)
 	if events := traces(failed, transfer.EventFailed); len(events) != 1 || events[0].Reason != "refused" {
 		t.Fatalf("failed trace: %+v", failed)
 	}
-	if got := h.tick(transfer.Tick{Now: start.Add(44 * time.Minute), ConnectBudget: 1}); countActions[transfer.Connect](got) != 0 {
-		t.Fatalf("Connect during backoff: %+v", got)
+	h.tick(transfer.Tick{Now: start.Add(40 * time.Second), ConnectBudget: 2, Server: server})
+
+	at := func(d time.Duration) []transfer.Action {
+		return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 2, Server: server})
 	}
-	if got := h.tick(transfer.Tick{Now: start.Add(45 * time.Minute), ConnectBudget: 1}); countActions[transfer.Connect](got) != 1 {
-		t.Fatalf("no Connect after backoff: %+v", got)
+	if got := at(30*time.Minute - time.Second); len(got) != 0 {
+		t.Fatalf("asked during backoff: %+v", got)
+	}
+	if got := at(30 * time.Minute); countActions[transfer.Connect](got) != 1 || countActions[transfer.RequestServerCallback](got) != 0 {
+		t.Fatalf("want only the HighID source asked after 30 minutes: %+v", got)
+	}
+	if got := at(40*time.Second + 45*time.Minute); countActions[transfer.RequestServerCallback](got) != 1 {
+		t.Fatalf("no callback 45 minutes after it timed out: %+v", got)
 	}
 }
 
