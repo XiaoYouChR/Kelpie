@@ -303,7 +303,10 @@ func TestConnectionGoroutinesExit(t *testing.T) {
 			p.readUntil("the handshake", isEvent[peer.HandshakeCompleted])
 			peers = append(peers, p)
 		}
-		if extra := runtime.NumGoroutine() - baseline; extra > 2*len(peers) {
+		// runtime.NumGoroutine counts the whole process, where the runtime
+		// may start a goroutine of its own meanwhile; one to spare keeps that
+		// from reading as a connection's third goroutine.
+		if extra := runtime.NumGoroutine() - baseline; extra > 2*len(peers)+1 {
 			t.Fatalf("%d goroutines for %d connections", extra, len(peers))
 		}
 		for _, p := range peers {

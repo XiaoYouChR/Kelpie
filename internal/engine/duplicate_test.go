@@ -118,6 +118,9 @@ func TestMutualFirewallChecksKeepBothConnections(t *testing.T) {
 		b := w.addNode("198.51.100.2")
 		b.config.EnableKad = true
 		b.start()
+		// B's Kad takes the UDP port over from the engine once started; a
+		// check sent before that is read by the engine and dropped.
+		synctest.Wait()
 		p := w.addScriptedPeer("198.51.100.5", buildTestFile("check.bin", 100_000, 24))
 		p.cfg.KadPort, p.cfg.KadVersion = kadPort, kadwire.Version
 		asker, err := p.host.OpenUDP(kadPort)
