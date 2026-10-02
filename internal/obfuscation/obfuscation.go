@@ -125,10 +125,9 @@ func matchPlain(b byte) bool {
 
 // OpenOutgoing starts obfuscation on a connection we opened to the client
 // with user hash user. keyPart is random; it salts both keys, and random
-// pads the request. It blocks
-// until the peer has answered, as eMule holds its Hello until then (aMule
-// drops a peer that sends more than the handshake step needs): the caller
-// closes conn to give up.
+// pads the request. It blocks until the peer has answered, as eMule holds
+// its Hello until then (aMule drops a peer that sends more than the
+// handshake step needs): the caller closes conn to give up.
 //
 // Request: <Marker 1><KeyPart 4>, then encrypted <MagicValue 4>
 // <MethodsSupported 1><MethodPreferred 1><PaddingLen 1><Padding>.
