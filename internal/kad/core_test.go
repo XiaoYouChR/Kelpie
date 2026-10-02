@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -120,8 +121,8 @@ func TestBootstrapThenSelfLookup(t *testing.T) {
 	h.receive(seed.Addr, kadwire.BootstrapRes{ID: seed.ID, TCPPort: seed.TCPPort, Version: seed.Version, Contacts: []kadwire.Contact{
 		{ID: learned.ID, Addr: learned.Addr.Addr(), UDPPort: learned.Addr.Port(), TCPPort: learned.TCPPort, Version: learned.Version},
 	}})
-	if got := h.c.status(); got.Nodes != 1 || !got.IsFirewalled {
-		t.Fatalf("status %+v, want one node and firewalled until checked", got)
+	if got := h.c.status(); got.Nodes != 2 || !got.IsFirewalled {
+		t.Fatalf("status %+v, want the seed and its contact taken as verified, and firewalled until checked", got)
 	}
 	h.clearSent()
 	h.tick(time.Second)
@@ -141,6 +142,33 @@ func TestBootstrapThenSelfLookup(t *testing.T) {
 	}
 	if len(packetsOf[kadwire.BootstrapReq](h)) != 0 {
 		t.Fatal("still bootstrapping while connected")
+	}
+}
+
+// A lookup starts from verified contacts only, as aMule's CSearch::Go:
+// hearsay may be dead or someone else's victim. Only the first bootstrap
+// answer's contacts are taken as verified.
+func TestLookupStartsFromVerifiedContacts(t *testing.T) {
+	h := buildHarness(t)
+	verified := h.connect(fileHash, 1)[0]
+	heard := buildNear(fileHash, 1)
+	h.c.table.add(heard, false, h.now)
+	seed := buildNear(fileHash, 2)
+	h.c.rpcs.add(&rpc{kind: rpcBootstrap, node: seed, sent: h.now})
+	pushed := buildNear(fileHash, 3)
+	h.receive(seed.Addr, kadwire.BootstrapRes{ID: seed.ID, TCPPort: 4662, Version: 9, Contacts: []kadwire.Contact{
+		{ID: pushed.ID, Addr: pushed.Addr.Addr(), UDPPort: pushed.Addr.Port(), TCPPort: 4662, Version: 9},
+	}})
+	h.c.startLookup(nodeLookup, fileHash, 0, h.now)
+	out := h.c.out
+	h.c.out = output{}
+	h.record(out)
+	var to []netip.AddrPort
+	for _, r := range packetsOf[kadwire.Req](h) {
+		to = append(to, r.to)
+	}
+	if len(to) != 2 || !slices.Contains(to, verified.Addr) || !slices.Contains(to, seed.Addr) {
+		t.Fatalf("lookup asked %v, want only %v and %v", to, verified.Addr, seed.Addr)
 	}
 }
 
@@ -326,7 +354,7 @@ func TestRequestCallbackReachesBuddy(t *testing.T) {
 	h := buildHarness(t)
 	buddyID := mustHash("0011223344556677889900AABBCCDDEE")
 	buddy := netip.MustParseAddrPort("9.8.7.6:4672")
-	out := h.c.onMessage(Callback{Buddy: buddy, BuddyID: buddyID, Hash: fileHash})
+	out := h.c.onMessage(Callback{Buddy: buddy, BuddyID: buddyID, Hash: fileHash}, h.now)
 	if len(out.datagrams) != 1 || out.datagrams[0].to != buddy {
 		t.Fatalf("callback datagrams %+v", out.datagrams)
 	}
@@ -544,7 +572,7 @@ func TestObfuscationFollowsAMule(t *testing.T) {
 		h.sent[0].senderKey != obfuscation.BuildKadVerifyKey(h.c.udpKey, modern.Addr.Addr()) {
 		t.Fatalf("answer to an obfuscated ping %+v, want it keyed by the ping's sender key", h.sent)
 	}
-	if h.c.table.byAddr[modern.Addr].udpKey != 0x1234 {
+	if h.c.table.contactByAddr(modern.Addr).udpKey != 0x1234 {
 		t.Fatal("contact did not keep its sender key")
 	}
 
@@ -646,5 +674,108 @@ func TestHelloResAck(t *testing.T) {
 		if tc.isAcked != (len(acks) == 1) || tc.isAcked && (acks[0].packet.ID != selfID || h.sent[0].receiverKey != tc.senderKey || h.sent[0].nodeID != (wire.Hash{})) {
 			t.Fatalf("version %d, sender key %#x: sent %+v", tc.version, tc.senderKey, h.sent)
 		}
+	}
+}
+
+// A bootstrap answer samples the whole table, not only the contacts
+// nearest to us, as aMule's TopDepth does.
+func TestBootstrapAnswerSpreadsOverTable(t *testing.T) {
+	h := buildHarness(t)
+	rng := rand.New(rand.NewPCG(5, 5))
+	far := map[wire.Hash]bool{}
+	for i := range 40 {
+		index := 0
+		if i%2 == 1 {
+			index = 20 + i
+		}
+		n := Node{ID: buildRandomID(selfID, index, i%8, rng), Addr: netip.MustParseAddrPort(fmt.Sprintf("10.3.%d.1:4672", i)), Version: 9}
+		h.c.table.add(n, true, h.now)
+		far[n.ID] = index == 0
+	}
+	h.receive(netip.MustParseAddrPort("10.9.9.9:4672"), kadwire.BootstrapReq{})
+	boot := packetsOf[kadwire.BootstrapRes](h)
+	farCount := 0
+	for _, ct := range boot[0].packet.Contacts {
+		if far[ct.ID] {
+			farCount++
+		}
+	}
+	if len(boot[0].packet.Contacts) != bootstrapAnswer || farCount == 0 || farCount == bootstrapAnswer {
+		t.Fatalf("%d of %d contacts from the far half, want a mix", farCount, len(boot[0].packet.Contacts))
+	}
+}
+
+// An eD2k peer's Kad port is asked for contacts while Kad is not
+// connected, at most every 10 s together with the seeds, and never a Kad 1
+// node.
+func TestPeerNodeBootstraps(t *testing.T) {
+	h := buildHarness(t)
+	peer := Node{Addr: netip.MustParseAddrPort("198.51.100.5:4672"), TCPPort: 4662, Version: 8}
+	h.record(h.c.onMessage(peer, h.now))
+	if got := packetsOf[kadwire.BootstrapReq](h); len(got) != 1 || got[0].to != peer.Addr {
+		t.Fatalf("bootstrap requests %+v, want one to the peer", got)
+	}
+	h.now = h.now.Add(peerBootstrapGap)
+	h.record(h.c.onMessage(Node{Addr: netip.MustParseAddrPort("198.51.100.6:4672"), Version: 8}, h.now))
+	h.now = h.now.Add(time.Second)
+	h.record(h.c.onMessage(Node{Addr: netip.MustParseAddrPort("198.51.100.7:4672"), Version: 1}, h.now))
+	if got := len(packetsOf[kadwire.BootstrapReq](h)); got != 1 {
+		t.Fatalf("%d bootstrap requests, want none within 10 s or to a Kad 1 node", got)
+	}
+	h.receive(peer.Addr, kadwire.BootstrapRes{ID: buildNear(fileHash, 0).ID, TCPPort: 4662, Version: 8})
+	h.tick(time.Second)
+	h.clearSent()
+	h.now = h.now.Add(time.Minute)
+	h.record(h.c.onMessage(Node{Addr: netip.MustParseAddrPort("198.51.100.6:4672"), Version: 8}, h.now))
+	if len(packetsOf[kadwire.BootstrapReq](h)) != 0 || h.c.status().Nodes != 1 {
+		t.Fatal("bootstrapped from a peer while connected")
+	}
+}
+
+// Behind a UDP firewall we store nobody's source: searchers could not
+// reach us to find it.
+func TestUDPFirewalledNodeStoresNothing(t *testing.T) {
+	h := buildHarness(t)
+	h.setUDPVerdict(true)
+	near := selfID
+	near[15] ^= 1
+	source := kadwire.Entry{ID: userHash, Tags: []wire.Tag{{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: 1}}}
+	h.receive(netip.MustParseAddrPort("10.7.0.1:4672"), kadwire.PublishSourcesReq{FileID: near, Source: source})
+	if len(h.sent) != 0 || h.c.index.count != 0 {
+		t.Fatal("stored a source while UDP firewalled")
+	}
+}
+
+// Saved nodes keep their TCP port, which UDP tests and buddies need from
+// the contacts we pass on.
+func TestStateKeepsTCPPort(t *testing.T) {
+	h := buildHarness(t)
+	n := h.connect(fileHash, 1)[0]
+	if got := h.c.state().Nodes; len(got) != 1 || got[0].TCPPort != n.TCPPort {
+		t.Fatalf("saved nodes %+v, want TCP port %d", got, n.TCPPort)
+	}
+}
+
+// Up to thirty files are searched at once, as in aMule 3.1.0, still one
+// new search a second.
+func TestSourceSearchesRunSideBySide(t *testing.T) {
+	h := buildHarness(t)
+	h.connect(fileHash, 6)
+	var wanted Wanted
+	for i := range 8 {
+		hash := fileHash
+		hash[0] ^= byte(i + 1)
+		wanted = append(wanted, File{Hash: hash, Size: 1000})
+	}
+	h.c.setWanted(wanted, h.now)
+	h.tick(time.Second)
+	if got := h.c.lookupCount(sourceSearch); got != 1 {
+		t.Fatalf("%d searches after a second, want 1", got)
+	}
+	for range 7 {
+		h.tick(time.Second)
+	}
+	if got := h.c.lookupCount(sourceSearch); got != 8 {
+		t.Fatalf("%d searches running, want all 8", got)
 	}
 }

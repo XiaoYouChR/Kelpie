@@ -198,10 +198,16 @@ func (w *world) buildKadWorld(f testFile, isSeederUDPFirewalled bool) kadWorld {
 	}
 	var testerIPs []netip.Addr
 	for i := range 6 {
-		tester := w.addNode(fmt.Sprintf("198.51.100.%d", 21+i))
-		tester.setKad(wire.Hash{0x7E, byte(i)})
+		testerIPs = append(testerIPs, netip.MustParseAddr(fmt.Sprintf("198.51.100.%d", 21+i)))
+	}
+	guide := w.startTesterGuide("198.51.100.11", wire.Hash{0x60}, testerIPs)
+	// The testers know only the guide, so that they stay connected to Kad
+	// and strangers to the others, rather than bootstrapping through the
+	// Kad port of the seeder that asks them for a UDP test.
+	for i, ip := range testerIPs {
+		tester := w.addNode(ip.String())
+		tester.setKad(wire.Hash{0x7E, byte(i)}, guide)
 		tester.start()
-		testerIPs = append(testerIPs, tester.ip)
 	}
 	k := kadWorld{seeder: w.addNode("198.51.100.1"), buddy: w.addNode("198.51.100.2"), downloader: w.addNode("198.51.100.3"), seederID: wire.Hash{0x10, 0x01}}
 	k.seeder.host.SetLowID(true)
@@ -210,7 +216,6 @@ func (w *world) buildKadWorld(f testFile, isSeederUDPFirewalled bool) kadWorld {
 	buddyID[15] ^= 1
 	ids := map[*node]wire.Hash{k.seeder: k.seederID, k.buddy: buddyID, k.downloader: nearFile(2)}
 	storer := w.startBareKad("198.51.100.10", nearFile(1), k.seeder.kadNode(k.seederID), k.buddy.kadNode(buddyID), k.downloader.kadNode(nearFile(2)))
-	guide := w.startTesterGuide("198.51.100.11", wire.Hash{0x60}, testerIPs)
 	for _, n := range []*node{k.buddy, k.downloader, k.seeder} {
 		known := []kadNode{storer, guide}
 		for other, otherID := range ids {
@@ -437,4 +442,22 @@ func TestOfflineSourceWaitsForTheNetwork(t *testing.T) {
 	if got := failures(); got != 1 || matchTrace(b.loadTrace(), "connected", a.endpoint().String()) {
 		t.Fatalf("source dialled again in two offline hours (%d failures)", got)
 	}
+}
+
+// TestKadBootstrapsFromEd2kPeer: a node that knows no Kad node reaches Kad
+// through the Kad port an eD2k peer names in its hello.
+func TestKadBootstrapsFromEd2kPeer(t *testing.T) {
+	w := buildWorld(t)
+	f := buildTestFile("peer.bin", 300_000, 9)
+	seeder, other, lost := w.addNode("198.51.100.1"), w.addNode("198.51.100.2"), w.addNode("198.51.100.3")
+	w.joinKad(seeder, other)
+	lost.setKad(wire.Hash{0x33, 0x01})
+	for _, n := range []*node{seeder, other, lost} {
+		n.start()
+	}
+	seeder.seed(1, f)
+	lost.download(2, f, seeder.endpoint())
+	w.waitFor("the node to join Kad through the seeder", func() bool {
+		return lost.events.lastNetwork().KadNodes > 0
+	})
 }

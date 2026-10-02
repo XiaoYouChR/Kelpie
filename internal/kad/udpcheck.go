@@ -96,7 +96,8 @@ func (u *udpCheck) setExternPort(port uint16, from netip.Addr) {
 }
 
 // recheckUDP is ReCheckFirewallUDP(false), run with every TCP firewall
-// recheck: a new lookup for test clients and a new extern port.
+// recheck: a new lookup for test clients, which runUDPCheck starts, and a
+// new extern port.
 func (c *core) recheckUDP(now time.Time) {
 	u := &c.udp
 	u.running, u.finished = 0, 0
@@ -106,7 +107,7 @@ func (c *core) recheckUDP(now time.Time) {
 	u.externIPs, u.externPorts = nil, nil
 	u.possible = nil
 	c.cancelLookup(u.lookup)
-	u.lookup = c.startLookup(udpCheckLookup, buildRandomID(c.id, 0, 0, c.rng), 0, now)
+	u.lookup = nil
 }
 
 // runUDPCheck runs once a second while Kad is connected.
@@ -116,12 +117,22 @@ func (c *core) runUDPCheck(now time.Time) {
 		!u.started.IsZero() && now.Sub(u.started) > udpCheckTimeout {
 		u.isTimedOut = true
 	}
+	// The lookup for test clients is made once, so it waits for the self
+	// lookup to fill the table with verified contacts to start from; aMule
+	// starts it at once, from a table its nodes.dat filled.
+	if u.isRunning() && u.lookup == nil && c.isSelfLookupDone {
+		u.lookup = c.startLookup(udpCheckLookup, buildRandomID(c.id, 0, 0, c.rng), 0, now)
+	}
 	if !u.isRunning() || !u.isFindingExternPort() || now.Before(u.nextExternPing) {
 		return
 	}
 	u.nextExternPing = now.Add(externPortGap)
+	// aMule picks a random contact each time, which in a network of
+	// thousands is never the same twice; we skip the ones that answered or
+	// have not yet, so a small table does not ping one node past the two a
+	// minute it accepts.
 	for _, ct := range c.table.closestContacts(buildRandomID(c.id, 0, 0, c.rng), len(c.table.byID), true) {
-		if ct.Version >= versionPingRange {
+		if ct.Version >= versionPingRange && !slices.Contains(u.externIPs, ct.Addr.Addr()) && !c.rpcs.hasPending(ct.Addr, rpcPing) {
 			c.sendTo(ct.Node, kadwire.Ping{})
 			c.rpcs.add(&rpc{kind: rpcPing, node: ct.Node, sent: now})
 			return
@@ -164,7 +175,7 @@ func (c *core) queryUDPCheck() {
 		if n.Version < versionUDPCheck || ip == c.publicIP || n.ID == c.id {
 			continue
 		}
-		if _, ok := u.asked[ip]; ok || u.tested[ip] || c.table.hasIP(ip) {
+		if _, ok := u.asked[ip]; ok || u.tested[ip] || c.table.byIP[ip] != nil {
 			continue
 		}
 		u.asked[ip] = false
@@ -239,7 +250,7 @@ func (c *core) onFirewallUDP(r FirewallUDP) {
 	}
 	c.udp.tested[r.IP] = true
 	var code byte
-	if r.IsKnown || c.table.hasIP(r.IP) {
+	if r.IsKnown || c.table.byIP[r.IP] != nil {
 		code = 1
 	}
 	c.sendKeyed(datagram{to: netip.AddrPortFrom(r.IP, r.InternPort), packet: kadwire.FirewalledUDP{ErrorCode: code, Port: r.InternPort}, receiverKey: r.Key})

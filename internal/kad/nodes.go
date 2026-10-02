@@ -76,7 +76,14 @@ func toNode(ct kadwire.Contact) Node {
 }
 
 func toStoreNode(n Node) store.KadNode {
-	return store.KadNode{ID: n.ID, Addr: n.Addr, Version: n.Version}
+	return store.KadNode{ID: n.ID, Addr: n.Addr, TCPPort: n.TCPPort, Version: n.Version}
+}
+
+// matchGoodNode rejects Kad 1 nodes, which do not read Kad 2 requests, and
+// nodes before Kad 6 on port 53, which cannot obfuscate against DNS protocol
+// confusion (RoutingZone.cpp:183-189).
+func matchGoodNode(n Node) bool {
+	return n.Version > 1 && !(n.Addr.Port() == 53 && n.Version <= 5) && matchGoodAddr(n.Addr)
 }
 
 // matchGoodAddr rejects endpoints no Kad node can listen on.

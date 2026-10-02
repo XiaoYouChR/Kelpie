@@ -61,20 +61,26 @@ type sim struct {
 // the first.
 func buildSim(t *testing.T, ids []wire.Hash) *sim {
 	s := &sim{t: t, now: start, byAddr: map[netip.AddrPort]*simNode{}}
-	for i, id := range ids {
-		var user wire.Hash
-		user[0], user[14], user[15] = 0xEE, byte(i>>8), byte(i)
-		addr := netip.MustParseAddrPort(fmt.Sprintf("10.0.%d.%d:4672", i/250, i%250+1))
-		n := &simNode{addr: addr, sentTo: map[netip.Addr]bool{}, c: buildCore(coreConfig{
-			ID: id, UserHash: user, TCPPort: 4662, UDPPort: 4672, UDPKey: uint32(i)*7919 + 1, Rand: rand.New(rand.NewPCG(uint64(i), 3)),
-		}, s.now)}
-		s.nodes = append(s.nodes, n)
-		s.byAddr[addr] = n
+	for _, id := range ids {
+		s.addNode(id)
 	}
 	for _, n := range s.nodes[1:] {
 		s.addSeed(n)
 	}
 	return s
+}
+
+func (s *sim) addNode(id wire.Hash) *simNode {
+	i := len(s.nodes)
+	var user wire.Hash
+	user[0], user[14], user[15] = 0xEE, byte(i>>8), byte(i)
+	addr := netip.MustParseAddrPort(fmt.Sprintf("10.0.%d.%d:4672", i/250, i%250+1))
+	n := &simNode{addr: addr, sentTo: map[netip.Addr]bool{}, c: buildCore(coreConfig{
+		ID: id, UserHash: user, TCPPort: 4662, UDPPort: 4672, UDPKey: uint32(i)*7919 + 1, Rand: rand.New(rand.NewPCG(uint64(i), 3)),
+	}, s.now)}
+	s.nodes = append(s.nodes, n)
+	s.byAddr[addr] = n
+	return n
 }
 
 func (s *sim) addSeed(n *simNode) {
@@ -118,7 +124,7 @@ func (s *sim) record(n *simNode, out output) {
 			s.callbacks = append(s.callbacks, r)
 		case UDPCheck:
 			if tester := s.nodeByIP(r.Addr.Addr()); tester != nil {
-				s.record(tester, tester.c.onMessage(FirewallUDP{IP: n.addr.Addr(), InternPort: r.InternPort, ExternPort: r.ExternPort, Key: r.Key}))
+				s.record(tester, tester.c.onMessage(FirewallUDP{IP: n.addr.Addr(), InternPort: r.InternPort, ExternPort: r.ExternPort, Key: r.Key}, s.now))
 			}
 			s.ended = append(s.ended, simEnded{n, r.Addr.Addr()})
 		}
@@ -164,7 +170,7 @@ func (s *sim) run(d time.Duration) {
 		for len(s.ended) > 0 {
 			e := s.ended[0]
 			s.ended = s.ended[1:]
-			s.record(e.asker, e.asker.c.onMessage(UDPCheckEnded{IP: e.ip}))
+			s.record(e.asker, e.asker.c.onMessage(UDPCheckEnded{IP: e.ip}, s.now))
 			s.drain()
 		}
 	}
@@ -253,16 +259,24 @@ func TestNewcomerFillsItsTable(t *testing.T) {
 	}
 }
 
-// TestSimulatedUDPCheck: nodes find test clients among strangers; a test
-// confirms the open nodes and never one behind a NAT.
+// TestSimulatedUDPCheck: nodes joining a running network find test clients
+// among strangers; a test confirms the open nodes and never one behind a
+// NAT. A lookup starts from verified contacts only, so a node looks for
+// test clients through the contacts of its seed's bootstrap answer; the
+// first nodes, whose seed knew nobody yet, are left out. The running
+// network is large enough that those contacts know strangers.
 func TestSimulatedUDPCheck(t *testing.T) {
-	s := buildSim(t, buildIDs(120, false))
-	for i, n := range s.nodes {
+	ids := buildIDs(220, false)
+	s := buildSim(t, ids[:100])
+	s.run(2 * time.Minute)
+	for i, id := range ids[100:] {
+		n := s.addNode(id)
 		n.isUDPFirewalled = i%10 == 5
+		s.addSeed(n)
 	}
 	s.run(10 * time.Minute)
 	open, closed := 0, 0
-	for i, n := range s.nodes {
+	for i, n := range s.nodes[100:] {
 		u := &n.c.udp
 		switch {
 		case n.isUDPFirewalled && u.isOpen():
@@ -319,7 +333,7 @@ func TestSimulatedBuddy(t *testing.T) {
 	if len(got) != 1 || got[0].Type != sourceFirewalled || got[0].Buddy != buddy.addr || got[0].BuddyID != firewalled.c.buddyTarget() {
 		t.Fatalf("searcher found %+v, want the firewalled node behind its buddy", got)
 	}
-	s.record(searcher, searcher.c.onMessage(Callback{Buddy: got[0].Buddy, BuddyID: got[0].BuddyID, Hash: fileHash}))
+	s.record(searcher, searcher.c.onMessage(Callback{Buddy: got[0].Buddy, BuddyID: got[0].BuddyID, Hash: fileHash}, s.now))
 	s.drain()
 	want := CallbackRequested{BuddyID: firewalled.c.buddyTarget(), Hash: fileHash, Addr: netip.AddrPortFrom(searcher.addr.Addr(), 4662)}
 	if len(s.callbacks) != 1 || s.callbacks[0] != want {

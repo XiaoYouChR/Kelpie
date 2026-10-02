@@ -45,6 +45,7 @@ type Kad struct {
 type KadNode struct {
 	ID      wire.Hash
 	Addr    netip.AddrPort
+	TCPPort uint16
 	Version byte
 }
 

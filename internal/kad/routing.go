@@ -17,6 +17,10 @@ const (
 	// A contact that misses this many checks in a row leaves the table.
 	maxFailures = 2
 	maxLeaves   = 8
+	// One /24 holds at most this many contacts in the table and in one
+	// leaf, LAN addresses aside (RoutingBin.cpp:51, 88); each IP holds one.
+	maxTableBySubnet = 10
+	maxLeafBySubnet  = 2
 )
 
 type contact struct {
@@ -43,6 +47,10 @@ type bucket struct {
 // differs from ours at bit i. Lookups only use the contacts, not the
 // replacements, which wait for a contact of their leaf to fail.
 //
+// Like aMule's CRoutingBin, it keeps one contact per IP and few per /24, so
+// that one machine or one subnet cannot fill a leaf and take over the
+// lookups near it.
+//
 // eMule's routing zones split while their level is below KBASE (4) or their
 // index below KK (5) (CRoutingZone::CanSplit). Bucket i is the zone at level
 // i+1 with index 1, so it ends up as leaves of K contacts keyed by the
@@ -52,13 +60,13 @@ type table struct {
 	self    wire.Hash
 	buckets [128]bucket
 	byID    map[wire.Hash]*contact
-	byAddr  map[netip.AddrPort]*contact
+	byIP    map[netip.Addr]*contact
 }
 
 // buildTable makes an empty table whose leaves are first looked up
 // bucketRefreshGap after now, as CRoutingZone::StartTimer schedules them.
 func buildTable(self wire.Hash, now time.Time) *table {
-	t := &table{self: self, byID: map[wire.Hash]*contact{}, byAddr: map[netip.AddrPort]*contact{}}
+	t := &table{self: self, byID: map[wire.Hash]*contact{}, byIP: map[netip.Addr]*contact{}}
 	for i := range t.buckets {
 		for leaf := range t.buckets[i].nextLookups {
 			t.buckets[i].nextLookups[leaf] = now.Add(bucketRefreshGap)
@@ -69,40 +77,48 @@ func buildTable(self wire.Hash, now time.Time) *table {
 
 // add inserts or updates a contact. A verified contact is one that just
 // answered us; others are hearsay and never move a verified contact to a new
-// address.
+// address, nor take an IP or /24 slot from another contact.
 func (t *table) add(n Node, isVerified bool, now time.Time) *contact {
-	if n.ID == t.self || !matchGoodAddr(n.Addr) {
+	if n.ID == t.self || !matchGoodNode(n) {
 		return nil
 	}
+	ip := n.Addr.Addr()
 	c := t.byID[n.ID]
 	if c == nil {
-		if other := t.byAddr[n.Addr]; other != nil {
+		if other := t.byIP[ip]; other != nil {
 			if !isVerified {
 				return nil
 			}
 			t.remove(other)
 		}
+		if !t.hasSubnetRoom(n.ID, ip) {
+			return nil
+		}
 		c = &contact{Node: n}
 		t.byID[n.ID] = c
-		t.byAddr[n.Addr] = c
+		t.byIP[ip] = c
 		t.addToBucket(c, isVerified)
 	} else if c.Addr != n.Addr {
 		if c.isVerified && !isVerified {
 			return c
 		}
-		if other := t.byAddr[n.Addr]; other != nil {
+		if other := t.byIP[ip]; other != nil && other != c {
+			if !isVerified {
+				return c
+			}
 			t.remove(other)
 		}
-		delete(t.byAddr, c.Addr)
+		if c.Addr.Addr() != ip && !t.hasSubnetRoom(n.ID, ip) {
+			return c
+		}
+		delete(t.byIP, c.Addr.Addr())
 		c.Addr = n.Addr
-		t.byAddr[n.Addr] = c
+		t.byIP[ip] = c
 	}
 	if n.TCPPort != 0 {
 		c.TCPPort = n.TCPPort
 	}
-	if n.Version != 0 {
-		c.Version = n.Version
-	}
+	c.Version = n.Version
 	if isVerified {
 		c.failures = 0
 		c.lastSeen = now
@@ -114,13 +130,37 @@ func (t *table) add(n Node, isVerified bool, now time.Time) *contact {
 	return c
 }
 
-func (t *table) hasIP(ip netip.Addr) bool {
-	for addr := range t.byAddr {
-		if addr.Addr() == ip {
-			return true
+// hasSubnetRoom is CheckGlobalIPLimits and the subnet rule of
+// CRoutingBin::AddContact for contact id at ip.
+func (t *table) hasSubnetRoom(id wire.Hash, ip netip.Addr) bool {
+	if ip.IsPrivate() {
+		return true
+	}
+	subnet, _ := ip.Prefix(24)
+	inTable := 0
+	for other, c := range t.byIP {
+		if c.ID != id && subnet.Contains(other) {
+			inTable++
 		}
 	}
-	return false
+	index := bucketIndex(t.self, id)
+	leaf := leafIndex(distance(t.self, id), index)
+	b := &t.buckets[index]
+	inLeaf := 0
+	for _, c := range slices.Concat(b.contacts, b.replacements) {
+		if c.ID != id && c.leaf == leaf && subnet.Contains(c.Addr.Addr()) {
+			inLeaf++
+		}
+	}
+	return inTable < maxTableBySubnet && inLeaf < maxLeafBySubnet
+}
+
+// contactByAddr is the contact at addr, port included.
+func (t *table) contactByAddr(addr netip.AddrPort) *contact {
+	if c := t.byIP[addr.Addr()]; c != nil && c.Addr == addr {
+		return c
+	}
+	return nil
 }
 
 func (t *table) addToBucket(c *contact, isVerified bool) {
@@ -159,10 +199,7 @@ func (b *bucket) unverifiedIndex(leaf int) int {
 
 func (t *table) removeExcessReplacements(b *bucket) {
 	for len(b.replacements) > bucketSize {
-		old := b.replacements[0]
-		b.replacements = b.replacements[1:]
-		delete(t.byID, old.ID)
-		delete(t.byAddr, old.Addr)
+		t.remove(b.replacements[0])
 	}
 }
 
@@ -189,7 +226,7 @@ func (t *table) updateBucket(c *contact) {
 // verified one after maxFailures misses, and the best replacement of its
 // leaf takes its place.
 func (t *table) onTimeout(addr netip.AddrPort) {
-	c := t.byAddr[addr]
+	c := t.contactByAddr(addr)
 	if c == nil {
 		return
 	}
@@ -202,7 +239,7 @@ func (t *table) onTimeout(addr netip.AddrPort) {
 
 func (t *table) remove(c *contact) {
 	delete(t.byID, c.ID)
-	delete(t.byAddr, c.Addr)
+	delete(t.byIP, c.Addr.Addr())
 	b := &t.buckets[bucketIndex(t.self, c.ID)]
 	if i := slices.Index(b.replacements, c); i >= 0 {
 		b.replacements = slices.Delete(b.replacements, i, i+1)

@@ -51,6 +51,7 @@ type kadFile struct {
 type kadNodeFile struct {
 	ID      hashText       `json:"id"`
 	Addr    netip.AddrPort `json:"addr"`
+	TCPPort uint16         `json:"tcpPort,omitempty"`
 	Version byte           `json:"version"`
 }
 
@@ -120,7 +121,7 @@ func toFile(state State) stateFile {
 		file.Servers = append(file.Servers, serverFile(server))
 	}
 	for _, node := range state.Kad.Nodes {
-		file.Kad.Nodes = append(file.Kad.Nodes, kadNodeFile{ID: hashText(node.ID), Addr: node.Addr, Version: node.Version})
+		file.Kad.Nodes = append(file.Kad.Nodes, kadNodeFile{ID: hashText(node.ID), Addr: node.Addr, TCPPort: node.TCPPort, Version: node.Version})
 	}
 	for hash, credit := range state.Credits {
 		file.Credits = append(file.Credits, creditFile{
@@ -170,7 +171,7 @@ func parse(raw []byte) (State, error) {
 	state.Identity = Identity{UserHash: wire.Hash(file.UserHash), PrivateKey: file.PrivateKey}
 	state.Kad = Kad{ID: wire.Hash(file.Kad.ID), IsFirewalled: file.Kad.IsFirewalled, UDPKey: file.Kad.UDPKey}
 	for _, node := range file.Kad.Nodes {
-		state.Kad.Nodes = append(state.Kad.Nodes, KadNode{ID: wire.Hash(node.ID), Addr: node.Addr, Version: node.Version})
+		state.Kad.Nodes = append(state.Kad.Nodes, KadNode{ID: wire.Hash(node.ID), Addr: node.Addr, TCPPort: node.TCPPort, Version: node.Version})
 	}
 	for _, credit := range file.Credits {
 		state.Credits[wire.Hash(credit.UserHash)] = Credit{

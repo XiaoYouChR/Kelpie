@@ -52,6 +52,9 @@ const (
 	stopLinger  = 15 * time.Second
 	maxRequest  = 32 // Process_KADEMLIA2_REQ: "Max count is 32"
 	maxBySubnet = 2  // CSearch::ProcessResponse: no more than 2 IPs from one /24
+	// findValueMore is KADEMLIA_FIND_VALUE_MORE, what a source search asks
+	// its closest answering node for once its two closest stay silent.
+	findValueMore = 11
 )
 
 // Kad versions that understand the Kad2 search and publish requests:
@@ -84,6 +87,9 @@ type lookup struct {
 	lastResponse time.Time
 	answers      int
 	sources      map[wire.Hash]bool
+	// moreFrom is the node asked for findValueMore contacts, so that its
+	// longer answer is taken and it is asked only once.
+	moreFrom wire.Hash
 }
 
 func (l *lookup) requestCount() byte {
@@ -179,12 +185,14 @@ func (c *core) lookupCount(kind lookupKind) int {
 }
 
 // startLookup returns nil when the target is already being looked up or
-// the routing table has nobody to ask.
+// the routing table has nobody to ask. It starts from verified contacts
+// only, as CSearch::Go does (RoutingBin.cpp:194): hearsay may be dead, or
+// an address someone wants us to send requests to.
 func (c *core) startLookup(kind lookupKind, target wire.Hash, size uint64, now time.Time) *lookup {
 	if c.lookupByTarget(kind, target) != nil {
 		return nil
 	}
-	contacts := c.table.closestContacts(target, lookupStartContacts, false)
+	contacts := c.table.closestContacts(target, lookupStartContacts, true)
 	if len(contacts) == 0 {
 		return nil
 	}
@@ -220,7 +228,11 @@ func (c *core) onRes(from netip.AddrPort, res kadwire.Res, now time.Time) {
 	}
 	l := r.lookup
 	// eMule drops answers with more contacts than asked for as malicious.
-	if len(res.Contacts) > int(l.requestCount()) {
+	asked := int(l.requestCount())
+	if r.node.ID == l.moreFrom {
+		asked = findValueMore
+	}
+	if len(res.Contacts) > asked {
 		return
 	}
 	c.table.add(Node{ID: r.node.ID, Addr: from, TCPPort: r.node.TCPPort, Version: r.node.Version}, true, now)
@@ -250,11 +262,12 @@ func (c *core) onRes(from netip.AddrPort, res kadwire.Res, now time.Time) {
 	if l.kind == nodeLookup {
 		l.answers++
 	}
+	fromSubnet, _ := from.Addr().Prefix(24)
 	seenIPs := map[netip.Addr]bool{from.Addr(): true}
-	bySubnet := map[netip.Prefix]int{}
+	bySubnet := map[netip.Prefix]int{fromSubnet: 1}
 	for _, ct := range res.Contacts {
 		n := toNode(ct)
-		if n.ID == c.id || !matchGoodAddr(n.Addr) || seenIPs[ct.Addr] {
+		if n.ID == c.id || !matchGoodNode(n) || seenIPs[ct.Addr] {
 			continue
 		}
 		seenIPs[ct.Addr] = true
@@ -287,6 +300,9 @@ func (c *core) runJumpStart(l *lookup, now time.Time) {
 		l.stop(now)
 		return
 	}
+	if c.sendFindMore(l, now) {
+		return
+	}
 	for len(l.possible) > 0 {
 		cand := l.possible[0]
 		if !cand.isTried {
@@ -298,6 +314,39 @@ func (c *core) runJumpStart(l *lookup, now time.Time) {
 		}
 		l.possible = l.possible[1:]
 	}
+}
+
+// sendFindMore is CSearch::JumpStart's fallback for source searches
+// (Search.cpp:332-364): once six nodes were tried and the two closest never
+// answered, answers of two contacts each may hide the closest live node
+// behind dead ones, so the closest node that answered is asked, once, for
+// findValueMore contacts.
+func (c *core) sendFindMore(l *lookup, now time.Time) bool {
+	if l.kind != sourceSearch || l.moreFrom != (wire.Hash{}) {
+		return false
+	}
+	var tried []*candidate
+	for _, cand := range l.known {
+		if cand.isTried {
+			tried = append(tried, cand)
+		}
+	}
+	if len(tried) < 3*int(kadwire.FindValue) {
+		return false
+	}
+	slices.SortFunc(tried, func(a, b *candidate) int { return bytes.Compare(a.distance[:], b.distance[:]) })
+	if tried[0].isResponded || tried[1].isResponded {
+		return false
+	}
+	for _, cand := range tried[2:] {
+		if cand.isResponded {
+			l.moreFrom = cand.ID
+			c.sendTo(cand.Node, kadwire.Req{SearchType: findValueMore, Target: l.target, Receiver: cand.ID})
+			c.rpcs.add(&rpc{kind: rpcFind, node: cand.Node, target: l.target, sent: now, lookup: l})
+			return true
+		}
+	}
+	return false
 }
 
 func (c *core) sendAction(l *lookup, cand *candidate, now time.Time) {
@@ -419,7 +468,7 @@ func (c *core) runLookups(now time.Time) {
 		if !now.Before(l.deadline) || isComplete {
 			l.isDone = true
 			if l.kind == nodeLookup && l.target == c.id {
-				c.canPublish = true
+				c.isSelfLookupDone = true
 			}
 			return true
 		}

@@ -15,13 +15,19 @@ import (
 
 // eMule opcodes.h and CKademlia::Process.
 const (
-	fileSearchGap    = time.Second      // KADEMLIAASKTIME: one new source search a second
-	maxFileSearches  = 5                // KADEMLIATOTALFILE
+	fileSearchGap = time.Second // KADEMLIAASKTIME: one new source search a second
+	// maxFileSearches is aMule 3.1.0's KadMaxSourceSearches (eMule's
+	// KADEMLIATOTALFILE is 5): files no longer queue behind each other, and
+	// fileSearchGap and reaskSources still pace the searches.
+	maxFileSearches = 30
+	// reaskSources stays eMule's hour, not aMule 3.1.0's 30 minutes, so
+	// we never search one file more often than eMule does.
 	reaskSources     = time.Hour        // KADEMLIAREASKTIME, times the search count...
 	maxReaskFactor   = 7                // ...which CPartFile caps at 7 (m_TotalSearchesKad)
 	publishGap       = 2 * time.Second  // KADEMLIAPUBLISHTIME
 	maxPublishes     = 3                // KADEMLIATOTALSTORESRC
 	bootstrapGap     = 2 * time.Second  // CKademlia::Process, while it has no contacts
+	peerBootstrapGap = 10 * time.Second // CKademlia::Bootstrap: a peer's Kad port at most every 10 s
 	selfLookupGap    = 4 * time.Hour    // m_tNextSelfLookup
 	bucketRefreshGap = 10 * time.Second // m_bigTimer: one leaf lookup every 10 s...
 	bucketLookupGap  = time.Hour        // ...each leaf at most hourly (m_nextBigTimer)
@@ -91,8 +97,10 @@ type firewall struct {
 	isLastFirewalled bool
 	responses        int
 	acks             int
-	asked            map[netip.Addr]bool
-	next             time.Time
+	// asked holds the nodes asked this round, true until one acknowledges:
+	// each counts once and is not asked again.
+	asked map[netip.Addr]bool
+	next  time.Time
 }
 
 func (f *firewall) isFirewalled() bool {
@@ -145,6 +153,7 @@ type core struct {
 	rpcs        rpcs
 	lookups     []*lookup
 	index       index
+	flood       flood
 	firewall    firewall
 	udp         udpCheck
 	buddy       Buddy
@@ -153,11 +162,14 @@ type core struct {
 	publicIP    netip.Addr
 	seeds       []netip.AddrPort
 	isConnected bool
-	canPublish  bool
-	finds       []*find
-	publishes   []*publish
+	// isSelfLookupDone: the first lookup of our own ID ended, so the table
+	// holds the verified contacts that publishing and the UDP test's
+	// lookup start from.
+	isSelfLookupDone bool
+	finds            []*find
+	publishes        []*publish
 
-	nextBootstrap    time.Time
+	lastBootstrap    time.Time
 	nextSelfLookup   time.Time
 	nextRandomLookup time.Time
 	nextFileSearch   time.Time
@@ -172,6 +184,7 @@ func buildCore(cfg coreConfig, now time.Time) *core {
 		id: cfg.ID, userHash: cfg.UserHash, version: kadwire.Version, tcpPort: cfg.TCPPort, udpPort: cfg.UDPPort, udpKey: cfg.UDPKey, rng: cfg.Rand,
 		table:       buildTable(cfg.ID, now),
 		index:       index{files: map[wire.Hash]map[wire.Hash]indexed{}},
+		flood:       buildFlood(),
 		firewall:    firewall{isLastFirewalled: true, asked: map[netip.Addr]bool{}},
 		udp:         buildUDPCheck(),
 		buddySearch: buddySearch{next: now.Add(firstBuddySearch)},
@@ -249,15 +262,17 @@ func (c *core) cancelLookup(l *lookup) {
 // (KADEMLIA_FIREWALLED_ACK_RES). Only nodes we asked count.
 func (c *core) onFirewallAck(from netip.Addr) {
 	if c.firewall.asked[from] {
-		delete(c.firewall.asked, from)
+		c.firewall.asked[from] = false
 		c.firewall.acks++
 	}
 }
 
 // onMessage reacts to what the engine posts besides wanted files, buddy
 // state and its own datagrams.
-func (c *core) onMessage(m Message) output {
+func (c *core) onMessage(m Message, now time.Time) output {
 	switch m := m.(type) {
+	case Node:
+		c.onPeerNode(m, now)
 	case Callback:
 		if m.Buddy.Addr().Is4() {
 			// Plain, as aMule sends it: we do not know the buddy's Kad version
@@ -373,7 +388,7 @@ func (c *core) send(to netip.AddrPort, p wire.Packet) {
 	key := c.reply.key
 	if to != c.reply.from {
 		key = 0
-		if ct := c.table.byAddr[to]; ct != nil {
+		if ct := c.table.contactByAddr(to); ct != nil {
 			key = ct.udpKey
 		}
 	}
@@ -384,7 +399,7 @@ func (c *core) send(to netip.AddrPort, p wire.Packet) {
 // as aMule's requests to contacts do.
 func (c *core) sendTo(n Node, p wire.Packet) {
 	d := datagram{to: n.Addr, packet: p}
-	if ct := c.table.byAddr[n.Addr]; ct != nil {
+	if ct := c.table.contactByAddr(n.Addr); ct != nil {
 		d.receiverKey = ct.udpKey
 	}
 	if n.Version >= versionObfuscation {
@@ -405,13 +420,16 @@ func (c *core) sendPlain(to netip.AddrPort, p wire.Packet) {
 }
 
 // onPacket handles a packet from from and the keys its datagram carried.
+// A plain datagram from port 53 is dropped, as aMule does against DNS
+// protocol confusion (KademliaUDPListener.cpp:243).
 func (c *core) onPacket(from netip.AddrPort, p wire.Packet, k keys, now time.Time) output {
-	if from.Addr().Is4() {
+	isDNS := from.Port() == 53 && k.sender == 0
+	if from.Addr().Is4() && !isDNS && c.flood.matchAllowed(from.Addr(), p, now) {
 		c.reply.from, c.reply.key = from, k.sender
 		c.reply.hasVerifyKey = k.receiver == obfuscation.BuildKadVerifyKey(c.udpKey, from.Addr())
 		c.runPacket(from, p, now)
 		c.reply.from, c.reply.key, c.reply.hasVerifyKey = netip.AddrPort{}, 0, false
-		if ct := c.table.byAddr[from]; ct != nil && k.sender != 0 {
+		if ct := c.table.contactByAddr(from); ct != nil && k.sender != 0 {
 			ct.udpKey = k.sender
 		}
 	}
@@ -423,7 +441,7 @@ func (c *core) onPacket(from netip.AddrPort, p wire.Packet, k keys, now time.Tim
 func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 	switch p := p.(type) {
 	case kadwire.BootstrapReq:
-		c.send(from, kadwire.BootstrapRes{ID: c.id, TCPPort: c.tcpPort, Version: c.version, Contacts: c.buildContacts(c.id, bootstrapAnswer)})
+		c.send(from, kadwire.BootstrapRes{ID: c.id, TCPPort: c.tcpPort, Version: c.version, Contacts: c.buildBootstrapContacts()})
 	case kadwire.BootstrapRes:
 		c.onBootstrapRes(from, p, now)
 	case kadwire.HelloReq:
@@ -448,6 +466,11 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 	case kadwire.SearchRes:
 		c.onSearchRes(from, p)
 	case kadwire.PublishSourcesReq:
+		// Searchers could not reach the source behind our UDP firewall, so
+		// we take nothing to store (KademliaUDPListener.cpp:1298).
+		if c.udp.isFirewalledNow() {
+			return
+		}
 		if load, isStored := c.index.onPublishSources(c.id, from, p, now); isStored {
 			c.send(from, kadwire.PublishRes{FileID: p.FileID, Load: load})
 		}
@@ -481,13 +504,18 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 	}
 }
 
+// onBootstrapRes: while we know no verified contact, the answer's contacts
+// count as verified, as aMule assumes while its table is empty
+// (KademliaUDPListener.cpp:546): lookups start only from verified contacts,
+// and the answering node would otherwise be the only one.
 func (c *core) onBootstrapRes(from netip.AddrPort, p kadwire.BootstrapRes, now time.Time) {
 	if c.rpcs.match(from, rpcBootstrap, wire.Hash{}) == nil {
 		return
 	}
+	isAssumedVerified := c.table.verifiedCount() == 0
 	c.table.add(Node{ID: p.ID, Addr: from, TCPPort: p.TCPPort, Version: p.Version}, true, now)
 	for _, ct := range p.Contacts {
-		c.table.add(toNode(ct), false, now)
+		c.table.add(toNode(ct), isAssumedVerified, now)
 	}
 }
 
@@ -549,9 +577,27 @@ func (c *core) onFirewallCheck(from netip.AddrPort, tcpPort uint16, user wire.Ha
 func (c *core) buildContacts(target wire.Hash, n int) []kadwire.Contact {
 	var out []kadwire.Contact
 	for _, ct := range c.table.closestContacts(target, n, true) {
-		out = append(out, kadwire.Contact{ID: ct.ID, Addr: ct.Addr.Addr(), UDPPort: ct.Addr.Port(), TCPPort: ct.TCPPort, Version: ct.Version})
+		out = append(out, toContact(ct))
 	}
 	return out
+}
+
+// buildBootstrapContacts answers a BootstrapReq with verified contacts
+// drawn at random from the whole table, as aMule's TopDepth draws them from
+// random bins all over its routing zones (RoutingZone.cpp:705, 1012): a
+// node bootstrapping from us should not learn only our neighbourhood.
+func (c *core) buildBootstrapContacts() []kadwire.Contact {
+	verified := c.table.closestContacts(c.id, len(c.table.byID), true)
+	c.rng.Shuffle(len(verified), func(i, j int) { verified[i], verified[j] = verified[j], verified[i] })
+	var out []kadwire.Contact
+	for _, ct := range verified[:min(bootstrapAnswer, len(verified))] {
+		out = append(out, toContact(ct))
+	}
+	return out
+}
+
+func toContact(ct *contact) kadwire.Contact {
+	return kadwire.Contact{ID: ct.ID, Addr: ct.Addr.Addr(), UDPPort: ct.Addr.Port(), TCPPort: ct.TCPPort, Version: ct.Version}
 }
 
 func (c *core) onTick(now time.Time) output {
@@ -562,9 +608,12 @@ func (c *core) onTick(now time.Time) output {
 	}
 	c.runBucketChecks(now)
 	isConnected := c.table.verifiedCount() > 0
+	// The first firewall check runs on the first connection, the next ones
+	// hourly (Kademlia.cpp:191, 357); a reconnect does not start one, or a
+	// node that keeps losing its last contact would ask the same nodes
+	// again within the two FirewalledReq a minute they accept.
 	if isConnected && !c.isConnected {
 		c.nextSelfLookup = now
-		c.firewall.next = now
 	}
 	c.isConnected = isConnected
 	if isConnected {
@@ -576,6 +625,7 @@ func (c *core) onTick(now time.Time) output {
 	c.runLookups(now)
 	if !now.Before(c.nextIndexCleanup) {
 		c.index.clearExpired(now)
+		c.flood.clearExpired(now)
 		c.nextIndexCleanup = now.Add(indexCleanupGap)
 	}
 	out := c.out
@@ -584,7 +634,7 @@ func (c *core) onTick(now time.Time) output {
 }
 
 func (c *core) runBootstrap(now time.Time) {
-	if now.Before(c.nextBootstrap) {
+	if now.Sub(c.lastBootstrap) < bootstrapGap {
 		return
 	}
 	if len(c.seeds) == 0 {
@@ -597,7 +647,23 @@ func (c *core) runBootstrap(now time.Time) {
 	}
 	to := c.seeds[0]
 	c.seeds = c.seeds[1:]
-	c.nextBootstrap = now.Add(bootstrapGap)
+	c.sendBootstrap(to, now)
+}
+
+// onPeerNode is CKademlia::Bootstrap(ip, port), which aMule calls with the
+// Kad port an eD2k peer's hello names (BaseClient.cpp:846): while Kad is
+// not connected, the peer is asked for contacts, at most one every
+// peerBootstrapGap, sharing the clock of the seed bootstraps. Thus Kad
+// comes back through any eD2k peer when every known node is gone.
+func (c *core) onPeerNode(n Node, now time.Time) {
+	if c.isConnected || now.Sub(c.lastBootstrap) <= peerBootstrapGap || !matchGoodNode(n) {
+		return
+	}
+	c.sendBootstrap(n.Addr, now)
+}
+
+func (c *core) sendBootstrap(to netip.AddrPort, now time.Time) {
+	c.lastBootstrap = now
 	c.send(to, kadwire.BootstrapReq{})
 	c.rpcs.add(&rpc{kind: rpcBootstrap, node: Node{Addr: to}, sent: now})
 }
@@ -693,7 +759,7 @@ func (c *core) runFirewallCheck(now time.Time) {
 		return
 	}
 	for _, ct := range c.table.closestContacts(buildRandomID(c.id, 0, 0, c.rng), len(c.table.byID), true) {
-		if f.asked[ct.Addr.Addr()] {
+		if _, ok := f.asked[ct.Addr.Addr()]; ok {
 			continue
 		}
 		f.asked[ct.Addr.Addr()] = true
@@ -728,7 +794,7 @@ func (c *core) runWanted(now time.Time) {
 			break
 		}
 	}
-	if !c.canPublish || !c.isReachable() || now.Before(c.nextPublish) || c.lookupCount(sourcePublish) >= maxPublishes {
+	if !c.isSelfLookupDone || !c.isReachable() || now.Before(c.nextPublish) || c.lookupCount(sourcePublish) >= maxPublishes {
 		return
 	}
 	c.nextPublish = now.Add(publishGap)

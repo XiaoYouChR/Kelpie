@@ -99,6 +99,7 @@ func TestOpenNodeServesAsBuddy(t *testing.T) {
 		t.Fatal("answered a buddy request before a UDP test confirmed us open")
 	}
 	h.setUDPVerdict(false)
+	h.now = h.now.Add(time.Minute)
 	h.record(h.c.onPacket(asker, req, keys{sender: 0x5555}, h.now))
 	res := packetsOf[kadwire.FindBuddyRes](h)
 	wantRes := kadwire.FindBuddyRes{Target: target, UserHash: userHash, TCPPort: 4662, HasOptions: true, Options: connectOptions}
@@ -118,6 +119,7 @@ func TestOpenNodeServesAsBuddy(t *testing.T) {
 		t.Fatal("passed a callback on without a buddy link")
 	}
 	h.c.setBuddy(Buddy{IsConnected: true})
+	h.now = h.now.Add(time.Minute)
 	h.receive(asker, req)
 	h.receive(downloader, callback)
 	want := CallbackRequested{BuddyID: target, Hash: fileHash, Addr: netip.AddrPortFrom(downloader.Addr(), 4663)}

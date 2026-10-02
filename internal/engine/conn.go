@@ -678,6 +678,12 @@ func (e *Engine) onHandshake(c *conn, ev peer.HandshakeCompleted) {
 			}
 		}
 	}
+	// A peer's Kad port lets Kad bootstrap through it while it knows no
+	// node (BaseClient.cpp:846); Kad paces these, the Nodes check only
+	// keeps the posts out of its mailbox once it is connected.
+	if e.kad != nil && e.kadStatus.Nodes == 0 && caps.KadPort != 0 && c.remote.Addr().Is4() {
+		e.kad.Post(kad.Node{Addr: netip.AddrPortFrom(c.remote.Addr(), caps.KadPort), TCPPort: caps.Port, Version: caps.KadVersion})
+	}
 	if !c.isClosed {
 		e.onKadHandshake(c)
 		e.onBuddyHandshake(c)

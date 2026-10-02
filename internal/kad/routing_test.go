@@ -118,7 +118,7 @@ func TestTableHearsayCannotMoveVerifiedContact(t *testing.T) {
 		t.Fatalf("hearsay moved a verified contact to %v", got)
 	}
 	tb.add(moved, true, start)
-	if got := tb.byID[n.ID].Addr; got != moved.Addr || tb.byAddr[n.Addr] != nil {
+	if got := tb.byID[n.ID].Addr; got != moved.Addr || tb.byIP[n.Addr.Addr()] != nil {
 		t.Fatalf("verified move not applied: %v", got)
 	}
 }
@@ -153,5 +153,69 @@ func TestRPCMatchesOnlyRequestedResponses(t *testing.T) {
 	p.add(&rpc{kind: rpcHello, node: Node{Addr: to}, sent: start})
 	if len(p.removeExpired(start.Add(responseTimeout-time.Second))) != 0 || len(p.removeExpired(start.Add(responseTimeout))) != 1 {
 		t.Fatal("expiry off")
+	}
+}
+
+// TestTableLimitsIPsAndSubnets follows aMule's CRoutingBin: one contact per
+// IP whatever its port, ten per public /24 in the table and two in one
+// leaf; a contact that answered from an IP takes it over.
+func TestTableLimitsIPsAndSubnets(t *testing.T) {
+	self := mustHash("23A8CEFF57A7A32D562D649ED7893796")
+	rng := rand.New(rand.NewPCG(3, 3))
+	tb := buildTable(self, start)
+	first := Node{ID: buildRandomID(self, 3, 0, rng), Addr: netip.MustParseAddrPort("198.51.100.1:4672"), Version: 8}
+	tb.add(first, false, start)
+	sameIP := Node{ID: buildRandomID(self, 4, 0, rng), Addr: netip.MustParseAddrPort("198.51.100.1:4673"), Version: 8}
+	if tb.add(sameIP, false, start) != nil {
+		t.Fatal("hearsay added a second ID at one IP")
+	}
+	if tb.add(sameIP, true, start) == nil || tb.byID[first.ID] != nil || len(tb.byID) != 1 {
+		t.Fatal("a verified ID did not take its IP over")
+	}
+
+	leaf := func(n int) Node {
+		return Node{ID: buildRandomID(self, 6, 0, rng), Addr: netip.MustParseAddrPort(fmt.Sprintf("203.0.113.%d:4672", n)), Version: 8}
+	}
+	tb.add(leaf(1), true, start)
+	tb.add(leaf(2), true, start)
+	if tb.add(leaf(3), true, start) != nil {
+		t.Fatal("a third contact of one /24 entered a leaf")
+	}
+	for i := range 8 {
+		n := Node{ID: buildRandomID(self, 10+i, 0, rng), Addr: netip.MustParseAddrPort(fmt.Sprintf("203.0.113.%d:4672", 10+i)), Version: 8}
+		if tb.add(n, true, start) == nil {
+			t.Fatalf("contact %d of a /24 refused below the table limit", 3+i)
+		}
+	}
+	if tb.add(Node{ID: buildRandomID(self, 30, 0, rng), Addr: netip.MustParseAddrPort("203.0.113.99:4672"), Version: 8}, true, start) != nil {
+		t.Fatal("an eleventh contact of one /24 entered the table")
+	}
+	moved := sameIP
+	moved.Addr = netip.MustParseAddrPort("203.0.113.100:4672")
+	if tb.add(moved, true, start); tb.byID[sameIP.ID].Addr != sameIP.Addr {
+		t.Fatal("a contact moved into a full /24")
+	}
+	for i := range 12 {
+		n := Node{ID: buildRandomID(self, 40+i, 0, rng), Addr: netip.MustParseAddrPort(fmt.Sprintf("10.0.0.%d:4672", i+1)), Version: 8}
+		if tb.add(n, true, start) == nil {
+			t.Fatal("LAN addresses are subject to the subnet limit")
+		}
+	}
+}
+
+// Kad 1 nodes and pre-obfuscation nodes on port 53 stay out, as in aMule.
+func TestTableRefusesOldNodes(t *testing.T) {
+	self := mustHash("23A8CEFF57A7A32D562D649ED7893796")
+	tb := buildTable(self, start)
+	for _, n := range []Node{
+		{ID: wire.Hash{1}, Addr: netip.MustParseAddrPort("198.51.100.1:4672"), Version: 1},
+		{ID: wire.Hash{2}, Addr: netip.MustParseAddrPort("198.51.100.2:53"), Version: 5},
+	} {
+		if tb.add(n, true, start) != nil {
+			t.Fatalf("added %+v", n)
+		}
+	}
+	if tb.add(Node{ID: wire.Hash{3}, Addr: netip.MustParseAddrPort("198.51.100.3:53"), Version: 6}, true, start) == nil {
+		t.Fatal("refused an obfuscating node on port 53")
 	}
 }
