@@ -450,6 +450,11 @@ func (c *core) runPacket(from netip.AddrPort, p wire.Packet, now time.Time) {
 	case kadwire.SearchRes:
 		c.onSearchRes(from, p)
 	case kadwire.PublishSourcesReq:
+		// Searchers could not reach the source behind our UDP firewall, so
+		// we take nothing to store (KademliaUDPListener.cpp:1298).
+		if c.udp.isFirewalledNow() {
+			return
+		}
 		if load, isStored := c.index.onPublishSources(c.id, from, p, now); isStored {
 			c.send(from, kadwire.PublishRes{FileID: p.FileID, Load: load})
 		}

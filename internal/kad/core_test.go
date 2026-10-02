@@ -725,3 +725,17 @@ func TestPeerNodeBootstraps(t *testing.T) {
 		t.Fatal("bootstrapped from a peer while connected")
 	}
 }
+
+// Behind a UDP firewall we store nobody's source: searchers could not
+// reach us to find it.
+func TestUDPFirewalledNodeStoresNothing(t *testing.T) {
+	h := buildHarness(t)
+	h.setUDPVerdict(true)
+	near := selfID
+	near[15] ^= 1
+	source := kadwire.Entry{ID: userHash, Tags: []wire.Tag{{Type: wire.TagUint8, ID: kadwire.TagSourceType, Uint: 1}}}
+	h.receive(netip.MustParseAddrPort("10.7.0.1:4672"), kadwire.PublishSourcesReq{FileID: near, Source: source})
+	if len(h.sent) != 0 || h.c.index.count != 0 {
+		t.Fatal("stored a source while UDP firewalled")
+	}
+}
