@@ -43,8 +43,11 @@ type Kad struct {
 }
 
 type KadNode struct {
-	ID      wire.Hash
-	Addr    netip.AddrPort
+	ID   wire.Hash
+	Addr netip.AddrPort
+	// TCPPort is kept because a loaded node verified by answering our
+	// KADEMLIA2_REQ never tells it again, and would be handed out with TCP
+	// port 0 in our contact answers.
 	TCPPort uint16
 	Version byte
 }
