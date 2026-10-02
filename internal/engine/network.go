@@ -309,10 +309,21 @@ func (e *Engine) onDatagram(from netip.AddrPort, data []byte) {
 	case client.DirectCallbackReq:
 		e.onDirectCallbackReq(from, p)
 	case client.ReaskAck:
-		for _, r := range slices.Clone(e.runs) {
-			if e.downloadByHash(r.file.Hash) != nil {
-				e.runTransferActions(r, r.transfer.OnReaskAnswered(from, int(p.Rank), e.now()))
-			}
+		e.onReaskAnswer(func(t *transfer.Transfer) []transfer.Action { return t.OnReaskAnswered(from, int(p.Rank), e.now()) })
+	case client.QueueFull:
+		e.onReaskAnswer(func(t *transfer.Transfer) []transfer.Action { return t.OnReaskAnswered(from, 0, e.now()) })
+	case client.FileNotFound:
+		e.onReaskAnswer(func(t *transfer.Transfer) []transfer.Action { return t.OnFileNotFound(from, e.now()) })
+	}
+}
+
+// onReaskAnswer gives an answer to our ReaskUDP to every download: the
+// answer does not name the file, and only the one reasking its sender
+// takes it.
+func (e *Engine) onReaskAnswer(answer func(*transfer.Transfer) []transfer.Action) {
+	for _, r := range slices.Clone(e.runs) {
+		if e.downloadByHash(r.file.Hash) != nil {
+			e.runTransferActions(r, answer(r.transfer))
 		}
 	}
 }

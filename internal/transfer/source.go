@@ -29,12 +29,14 @@ const (
 	// callbackTimeout is CONNECTION_TIMEOUT, how long a callback may take.
 	callbackTimeout = 40 * time.Second
 	// deadSourceTime is how long a source we could not reach, or that did
-	// not answer, waits on aMule's global dead source list; a LowID or
-	// firewalled source, reached only by callback, waits callbackDeadTime
-	// more (DeadSourceList.cpp:34-35, BLOCKTIME and BLOCKTIMEFW). eMule
-	// waits less: 15 and 30 minutes.
-	deadSourceTime   = 30 * time.Minute
-	callbackDeadTime = 15 * time.Minute
+	// not answer, waits on aMule's global dead source list, and
+	// deadFileSourceTime one that does not have the file on the file's own;
+	// a LowID or firewalled source, reached only by callback, waits
+	// callbackDeadTime more (DeadSourceList.cpp:34-35, BLOCKTIME and
+	// BLOCKTIMEFW). eMule's global list waits less: 15 and 30 minutes.
+	deadSourceTime     = 30 * time.Minute
+	deadFileSourceTime = 45 * time.Minute
+	callbackDeadTime   = 15 * time.Minute
 	// banTime is CLIENTBANTIME (Constants.h:66), how long a source that sent
 	// corrupt data stays refused.
 	banTime = 2 * time.Hour
@@ -331,7 +333,7 @@ func (t *Transfer) canReach(s *source) bool {
 func (t *Transfer) OnConnectFailed(endpoint netip.AddrPort, reason string, now time.Time) []Action {
 	for _, s := range t.sources {
 		if s.state == stateConnecting && s.Endpoint == endpoint {
-			event := t.setFailed(s, reason, now)
+			event := t.setFailed(s, deadSourceTime, reason, now)
 			if s.isDialledPlain && s.CanObfuscate {
 				s.state = stateNew
 			}
@@ -341,9 +343,9 @@ func (t *Transfer) OnConnectFailed(endpoint netip.AddrPort, reason string, now t
 	return nil
 }
 
-func (t *Transfer) setFailed(s *source, reason string, now time.Time) TraceEvent {
+func (t *Transfer) setFailed(s *source, wait time.Duration, reason string, now time.Time) TraceEvent {
 	s.state = stateFailed
-	s.deadline = now.Add(deadSourceTime)
+	s.deadline = now.Add(wait)
 	if s.ClientID != 0 || s.Buddy.IsValid() {
 		s.deadline = s.deadline.Add(callbackDeadTime)
 	}
@@ -473,12 +475,30 @@ func (t *Transfer) setQueued(s *source, rank int, now time.Time) TraceEvent {
 	return event
 }
 
-// OnReaskAnswered records the OP_REASKACK a source sent to our ReaskUDP.
+// OnReaskAnswered records the OP_REASKACK a source sent to our ReaskUDP,
+// or its OP_QUEUEFULL, which aMule takes as rank 0 (ClientUDPSocket.cpp:516-525).
 func (t *Transfer) OnReaskAnswered(endpoint netip.AddrPort, rank int, now time.Time) []Action {
+	if s := t.reaskingSource(endpoint); s != nil {
+		s.lastAsked = now
+		return []Action{t.setQueued(s, rank, now)}
+	}
+	return nil
+}
+
+// OnFileNotFound records the OP_FILENOTFOUND a source sent to our
+// ReaskUDP: it no longer shares the file and waits on the file's dead
+// source list (aMule UDPReaskFNF, DownloadClient.cpp:1237-1258).
+func (t *Transfer) OnFileNotFound(endpoint netip.AddrPort, now time.Time) []Action {
+	if s := t.reaskingSource(endpoint); s != nil {
+		return []Action{t.setFailed(s, deadFileSourceTime, "file not found", now)}
+	}
+	return nil
+}
+
+func (t *Transfer) reaskingSource(endpoint netip.AddrPort) *source {
 	for _, s := range t.sources {
 		if s.state == stateReasking && netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort) == endpoint {
-			s.lastAsked = now
-			return []Action{t.setQueued(s, rank, now)}
+			return s
 		}
 	}
 	return nil
@@ -508,7 +528,7 @@ func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Actio
 	actions := append(t.removePeer(peer), t.sendReceived(s, now)...)
 	switch s.state {
 	case stateAsking:
-		return append(actions, t.setFailed(s, reason, now))
+		return append(actions, t.setFailed(s, deadSourceTime, reason, now))
 	case stateDownloading:
 		s.state = stateQueued
 	}
@@ -640,7 +660,7 @@ func (t *Transfer) runSource(s *source, budget *int) []Action {
 		s.lastAsked = time.Time{}
 	case stateConnecting:
 		if !s.deadline.IsZero() && !now.Before(s.deadline) {
-			return []Action{t.setFailed(s, "callback timeout", now)}
+			return []Action{t.setFailed(s, deadSourceTime, "callback timeout", now)}
 		}
 		return nil
 	case stateAsking, stateDownloading:

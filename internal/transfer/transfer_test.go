@@ -368,6 +368,47 @@ func TestReaskTiming(t *testing.T) {
 
 // A source that failed waits 30 minutes, one reached by callback 45
 // (aMule's global DeadSourceList).
+// OP_QUEUEFULL answers a UDP reask as rank 0; OP_FILENOTFOUND puts the
+// source on the file's dead list for 45 minutes.
+func TestReaskRefusals(t *testing.T) {
+	data := buildData(1000)
+	udp := netip.AddrPortFrom(endpoint(1).Addr(), 4672)
+	reaskAt := fileReaskTime - 19*time.Second
+	for _, test := range []struct {
+		name     string
+		answer   func(*transfer.Transfer, time.Time) []transfer.Action
+		wantNext time.Duration
+	}{
+		{"queue full", func(tr *transfer.Transfer, now time.Time) []transfer.Action {
+			return tr.OnReaskAnswered(udp, 0, now)
+		}, reaskAt + reaskAt},
+		{"file not found", func(tr *transfer.Transfer, now time.Time) []transfer.Action {
+			return tr.OnFileNotFound(udp, now)
+		}, reaskAt + 45*time.Minute},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
+			h.tick(transfer.Tick{ConnectBudget: 1})
+			h.run(h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, start))
+			h.run(h.transfer.OnQueued(1, 42, start))
+			h.run(h.transfer.OnPeerGone(1, "idle", start))
+			at := func(d time.Duration) []transfer.Action {
+				return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 1})
+			}
+			if got := at(reaskAt); countActions[transfer.ReaskUDP](got) != 1 {
+				t.Fatalf("no UDP reask: %+v", got)
+			}
+			h.run(test.answer(h.transfer, start.Add(reaskAt)))
+			if got := at(test.wantNext - time.Second); len(got) != 0 {
+				t.Fatalf("asked again early: %+v", got)
+			}
+			if got := at(test.wantNext); len(got) == 0 {
+				t.Fatal("not asked again")
+			}
+		})
+	}
+}
+
 func TestFailedSourceBacksOff(t *testing.T) {
 	data := buildData(1000)
 	server := endpoint(9999)
