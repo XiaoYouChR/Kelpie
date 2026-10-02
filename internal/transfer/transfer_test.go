@@ -12,6 +12,7 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
+	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
 
 var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -350,7 +351,7 @@ func TestReaskTiming(t *testing.T) {
 				if udp[0] != want {
 					t.Fatalf("reask %+v, want %+v: obfuscated with the Hello's user hash", udp[0], want)
 				}
-				h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, start.Add(fileReaskTime-20*time.Second+2*time.Second)))
+				h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), client.ReaskAck{Rank: 7}, start.Add(fileReaskTime-20*time.Second+2*time.Second)))
 				if got := at(fileReaskTime); countActions[transfer.Connect](got) != 0 {
 					t.Fatalf("TCP reask after a UDP answer: %+v", got)
 				}
@@ -380,10 +381,10 @@ func TestReaskRefusals(t *testing.T) {
 		wantNext time.Duration
 	}{
 		{"queue full", func(tr *transfer.Transfer, now time.Time) []transfer.Action {
-			return tr.OnReaskAnswered(udp, 0, now)
+			return tr.OnReaskAnswered(udp, client.QueueFull{}, now)
 		}, reaskAt + reaskAt},
 		{"file not found", func(tr *transfer.Transfer, now time.Time) []transfer.Action {
-			return tr.OnFileNotFound(udp, now)
+			return tr.OnReaskAnswered(udp, client.FileNotFound{}, now)
 		}, reaskAt + 45*time.Minute},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -426,7 +427,7 @@ func TestReaskDueExchangeSkipsUDP(t *testing.T) {
 		t.Fatalf("no UDP reask before the exchange is due: %+v", got)
 	}
 	answered := start.Add(reaskAt)
-	h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, answered))
+	h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), client.ReaskAck{Rank: 7}, answered))
 
 	next := answered.Add(fileReaskTime - 10*time.Second)
 	if got := h.tick(transfer.Tick{Now: next, ConnectBudget: 1}); len(got) != 0 {
@@ -897,7 +898,7 @@ func TestLateReaskAnswerKeepsSlot(t *testing.T) {
 	h.run(h.transfer.OnPeerConnected(2, transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, reaskAt))
 	h.transfer.OnPeerParts(2, piece.Set{true})
 	h.run(h.transfer.OnSlotGranted(2, reaskAt))
-	h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, reaskAt.Add(time.Second)))
+	h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), client.ReaskAck{Rank: 7}, reaskAt.Add(time.Second)))
 	if got := h.request(2, 1); len(got) != 1 {
 		t.Fatalf("late UDP answer took the slot away: requested %v", got)
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
+	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
 
 // Timing and limits follow eMule (Opcodes.h, Preferences.cpp, PartFile.cpp,
@@ -484,24 +485,28 @@ func (t *Transfer) setQueued(s *source, rank int, now time.Time) TraceEvent {
 	return event
 }
 
-// OnReaskAnswered records the OP_REASKACK a source sent to our ReaskUDP,
-// or its OP_QUEUEFULL, which aMule takes as rank 0 (ClientUDPSocket.cpp:516-525).
-func (t *Transfer) OnReaskAnswered(endpoint netip.AddrPort, rank int, now time.Time) []Action {
-	if s := t.reaskingSource(endpoint); s != nil {
-		s.lastAsked = now
-		return []Action{t.setQueued(s, rank, now)}
+// OnReaskAnswered records a source's answer to our ReaskUDP: OP_REASKACK
+// with its rank; OP_QUEUEFULL, which aMule takes as rank 0
+// (ClientUDPSocket.cpp:516-525); or OP_FILENOTFOUND, after which the source
+// waits on the file's dead source list (aMule UDPReaskFNF,
+// DownloadClient.cpp:1237-1258).
+func (t *Transfer) OnReaskAnswered(endpoint netip.AddrPort, answer wire.Packet, now time.Time) []Action {
+	s := t.reaskingSource(endpoint)
+	if s == nil {
+		return nil
 	}
-	return nil
-}
-
-// OnFileNotFound records the OP_FILENOTFOUND a source sent to our
-// ReaskUDP: it no longer shares the file and waits on the file's dead
-// source list (aMule UDPReaskFNF, DownloadClient.cpp:1237-1258).
-func (t *Transfer) OnFileNotFound(endpoint netip.AddrPort, now time.Time) []Action {
-	if s := t.reaskingSource(endpoint); s != nil {
+	rank := 0
+	switch a := answer.(type) {
+	case client.ReaskAck:
+		rank = int(a.Rank)
+	case client.QueueFull:
+	case client.FileNotFound:
 		return []Action{t.setFailed(s, deadFileSourceTime, "file not found", now)}
+	default:
+		return nil
 	}
-	return nil
+	s.lastAsked = now
+	return []Action{t.setQueued(s, rank, now)}
 }
 
 func (t *Transfer) reaskingSource(endpoint netip.AddrPort) *source {
