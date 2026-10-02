@@ -8,9 +8,6 @@
 
 <p align="center">An eD2k engine that downloads as fast as eMule, behind a five-line asyncio interface.</p>
 
-> [!NOTE]
-> Kelpie is in active development; v0.1.0 is not released yet.
-
 ## Why Kelpie
 
 - **eMule-level speed.** Kelpie speaks the parts of the protocol that decide
