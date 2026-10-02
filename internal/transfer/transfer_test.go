@@ -896,3 +896,30 @@ func TestA4AFSourceWaits(t *testing.T) {
 		t.Fatalf("source connected for this Transfer still held: %+v", got)
 	}
 }
+
+// A LowID peer whose Hello offers direct callbacks is called back over UDP
+// when its reask is due, whatever server it is on; without that offer it
+// needs our own server (aMule BaseClient.cpp:1718-1747).
+func TestLowIDHelloTakesDirectCallback(t *testing.T) {
+	for _, isDirect := range []bool{true, false} {
+		data := buildData(1000)
+		h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+		kadPort := netip.AddrPortFrom(endpoint(1).Addr(), 4672)
+		hello := transfer.Source{Endpoint: endpoint(1), ClientID: 1234, Server: endpoint(9999), UserHash: userHash(1)}
+		if isDirect {
+			hello.Buddy, hello.IsDirectCallback = kadPort, true
+		}
+		h.run(h.transfer.OnPeerConnected(1, hello, start))
+		h.transfer.OnPeerParts(1, piece.Set{true})
+		h.run(h.transfer.OnPeerGone(1, "idle", start))
+
+		got := h.tick(transfer.Tick{Now: start.Add(fileReaskTime), ConnectBudget: 1, Server: endpoint(8888)})
+		want := transfer.RequestKadCallback{Buddy: kadPort, IsDirect: true, UserHash: userHash(1)}
+		switch {
+		case isDirect && (len(got) != 1 || got[0] != want):
+			t.Fatalf("reask %+v, want %+v", got, want)
+		case !isDirect && len(got) != 0:
+			t.Fatalf("reask through another server: %+v", got)
+		}
+	}
+}

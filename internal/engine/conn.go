@@ -743,6 +743,8 @@ func (e *Engine) isReaskDue(r *run, user wire.Hash) bool {
 }
 
 // addTransferPeer tells a download that a handshaken connection serves it.
+// A LowID peer that takes direct callbacks gets them at its Kad port on the
+// IPv4 address it connected from (BaseClient.cpp:1718).
 func (e *Engine) addTransferPeer(c *conn, r *run) {
 	caps := c.session.Capabilities()
 	user := caps.UserHash
@@ -756,6 +758,9 @@ func (e *Engine) addTransferPeer(c *conn, r *run) {
 		CanReaskUDP:  caps.UDPVersion > 0 && caps.UDPPort != 0,
 		CanExchange:  caps.HasSourceExchange2,
 		CanObfuscate: wire.CanObfuscate(caps.CryptOptions, user),
+	}
+	if caps.ClientID != 0 && caps.HasDirectCallback && caps.KadPort != 0 && c.remote.Addr().Is4() {
+		hello.Buddy, hello.IsDirectCallback = netip.AddrPortFrom(c.remote.Addr(), caps.KadPort), true
 	}
 	e.runTransferActions(r, r.transfer.OnPeerConnected(c.id, hello, e.now()))
 }
