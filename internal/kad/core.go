@@ -369,7 +369,7 @@ func (c *core) send(to netip.AddrPort, p wire.Packet) {
 	key := c.reply.key
 	if to != c.reply.from {
 		key = 0
-		if ct := c.table.byAddr[to]; ct != nil {
+		if ct := c.table.contactByAddr(to); ct != nil {
 			key = ct.udpKey
 		}
 	}
@@ -380,7 +380,7 @@ func (c *core) send(to netip.AddrPort, p wire.Packet) {
 // as aMule's requests to contacts do.
 func (c *core) sendTo(n Node, p wire.Packet) {
 	d := datagram{to: n.Addr, packet: p}
-	if ct := c.table.byAddr[n.Addr]; ct != nil {
+	if ct := c.table.contactByAddr(n.Addr); ct != nil {
 		d.receiverKey = ct.udpKey
 	}
 	if n.Version >= versionObfuscation {
@@ -410,7 +410,7 @@ func (c *core) onPacket(from netip.AddrPort, p wire.Packet, k keys, now time.Tim
 		c.reply.hasVerifyKey = k.receiver == obfuscation.BuildKadVerifyKey(c.udpKey, from.Addr())
 		c.runPacket(from, p, now)
 		c.reply.from, c.reply.key, c.reply.hasVerifyKey = netip.AddrPort{}, 0, false
-		if ct := c.table.byAddr[from]; ct != nil && k.sender != 0 {
+		if ct := c.table.contactByAddr(from); ct != nil && k.sender != 0 {
 			ct.udpKey = k.sender
 		}
 	}

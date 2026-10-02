@@ -254,7 +254,7 @@ func (c *core) onRes(from netip.AddrPort, res kadwire.Res, now time.Time) {
 	bySubnet := map[netip.Prefix]int{}
 	for _, ct := range res.Contacts {
 		n := toNode(ct)
-		if n.ID == c.id || !matchGoodAddr(n.Addr) || seenIPs[ct.Addr] {
+		if n.ID == c.id || !matchGoodNode(n) || seenIPs[ct.Addr] {
 			continue
 		}
 		seenIPs[ct.Addr] = true

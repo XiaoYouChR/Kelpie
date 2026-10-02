@@ -538,7 +538,7 @@ func TestObfuscationFollowsAMule(t *testing.T) {
 		h.sent[0].senderKey != obfuscation.BuildKadVerifyKey(h.c.udpKey, modern.Addr.Addr()) {
 		t.Fatalf("answer to an obfuscated ping %+v, want it keyed by the ping's sender key", h.sent)
 	}
-	if h.c.table.byAddr[modern.Addr].udpKey != 0x1234 {
+	if h.c.table.contactByAddr(modern.Addr).udpKey != 0x1234 {
 		t.Fatal("contact did not keep its sender key")
 	}
 

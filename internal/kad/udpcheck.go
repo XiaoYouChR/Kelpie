@@ -164,7 +164,7 @@ func (c *core) queryUDPCheck() {
 		if n.Version < versionUDPCheck || ip == c.publicIP || n.ID == c.id {
 			continue
 		}
-		if _, ok := u.asked[ip]; ok || u.tested[ip] || c.table.hasIP(ip) {
+		if _, ok := u.asked[ip]; ok || u.tested[ip] || c.table.byIP[ip] != nil {
 			continue
 		}
 		u.asked[ip] = false
@@ -239,7 +239,7 @@ func (c *core) onFirewallUDP(r FirewallUDP) {
 	}
 	c.udp.tested[r.IP] = true
 	var code byte
-	if r.IsKnown || c.table.hasIP(r.IP) {
+	if r.IsKnown || c.table.byIP[r.IP] != nil {
 		code = 1
 	}
 	c.sendKeyed(datagram{to: netip.AddrPortFrom(r.IP, r.InternPort), packet: kadwire.FirewalledUDP{ErrorCode: code, Port: r.InternPort}, receiverKey: r.Key})
