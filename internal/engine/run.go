@@ -270,6 +270,7 @@ func (e *Engine) runTransfers(now time.Time) {
 	}
 	e.budgetCursor++
 	server, _ := e.server.Login()
+	isOffline := e.isOffline()
 	for _, r := range order {
 		if r.transfer == nil || e.runByHash[r.file.Hash] != r {
 			continue
@@ -279,6 +280,7 @@ func (e *Engine) runTransfers(now time.Time) {
 			ConnectBudget: budget,
 			Server:        server,
 			IsFirewalled:  e.isFirewalled(),
+			IsOffline:     isOffline,
 			PublicIP:      e.publicIP,
 			Port:          uint16(e.tcpPort),
 			LocalAddrs:    e.config.LocalAddrs,
@@ -293,7 +295,17 @@ func (e *Engine) runTransfers(now time.Time) {
 	}
 }
 
-// connectBudget follows eMule's MaxConnections and MaxConperFive.
+// isOffline: no server is logged in and Kad has no verified node, aMule's
+// !theApp->IsConnected(). With no server listed and Kad off nothing tells
+// whether we are online and only link sources are known, which are then
+// asked as usual.
+func (e *Engine) isOffline() bool {
+	server, _ := e.server.Login()
+	isKadUp := e.kad != nil && e.kadStatus.Nodes > 0
+	return (e.kad != nil || len(e.server.Entries()) > 0) && !server.IsValid() && !isKadUp
+}
+
+// connectBudget follows maxConnections and maxNewConnections.
 func (e *Engine) connectBudget(now time.Time) int {
 	e.recentConnects = slices.DeleteFunc(e.recentConnects, func(at time.Time) bool {
 		return now.Sub(at) >= newConnectionWindow

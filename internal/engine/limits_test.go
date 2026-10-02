@@ -352,3 +352,34 @@ func TestTraceBacklogIsBounded(t *testing.T) {
 		t.Fatalf("%d trace lines waiting, want %d", got, maxTraceBacklog)
 	}
 }
+
+// At most 50 connections start in 5 s, aMule 3.1.0's MaxConnectionsPerFiveSeconds
+// (Preferences.cpp:1104); each source is still dialled once.
+func TestNewConnectionsPerFiveSeconds(t *testing.T) {
+	w := buildWorld(t)
+	b := w.addNode("198.51.100.2")
+	b.start()
+	f := buildTestFile("many.bin", 1000, 9)
+	var sources []netip.AddrPort
+	for i := range 60 {
+		sources = append(sources, netip.AddrPortFrom(netip.AddrFrom4([4]byte{198, 51, 101, byte(i + 1)}), peerPort))
+	}
+	b.download(2, f, sources...)
+	failures := func() int {
+		count := 0
+		for _, line := range b.loadTrace() {
+			if line["event"] == "failed" {
+				count++
+			}
+		}
+		return count
+	}
+	w.waitFor("the first dials to fail", func() bool { return failures() >= 50 })
+	if got := failures(); got != 50 || w.clock.Now().Sub(start) >= newConnectionWindow {
+		t.Fatalf("%d dials by fake %v, want 50 within the first 5 s", got, w.clock.Now().Sub(start))
+	}
+	w.waitFor("the rest to be dialled", func() bool { return failures() >= 60 })
+	if got := failures(); got != 60 {
+		t.Fatalf("%d dials, want each of the 60 sources once", got)
+	}
+}

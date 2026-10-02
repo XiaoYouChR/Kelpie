@@ -120,7 +120,9 @@ func (e *Engine) onNoNeededParts(c *conn, file wire.Hash) {
 	if files := c.session.Files(); r == nil || len(files) == 0 || files[0] != file {
 		return
 	}
-	r.transfer.OnNoNeededParts(c.id)
+	if !r.transfer.OnNoNeededParts(c.id) {
+		return
+	}
 	user := c.session.Capabilities().UserHash
 	target := e.swapTarget(c, user, file, false)
 	if target == nil {

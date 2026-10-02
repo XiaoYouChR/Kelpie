@@ -24,7 +24,8 @@ func TestSendersAreForgotten(t *testing.T) {
 		if peer == 0 {
 			tr.OnPeerParts(peer, piece.BuildFullSet(2))
 			tr.OnSlotGranted(peer, now)
-			block := tr.Request(peer, 1)[0]
+			blocks, _ := tr.Request(peer, 1, now)
+			block := blocks[0]
 			tr.OnBlockReceived(peer, block, make([]byte, block.End-block.Begin), now)
 		}
 		tr.OnPeerGone(peer, "closed", now)

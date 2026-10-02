@@ -521,7 +521,7 @@ func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint3
 	// eMule packs into a buffer 300 bytes larger than the block and sends
 	// the block plain unless packing shrinks it (UploadDiskIOThread.cpp:581-583).
 	if int64(packedSize) > size+300 || len(f.packed)+len(data) > int(packedSize) {
-		out.Close = closeProtocol
+		s.cancelBlock(file, d, i, out)
 		return
 	}
 	f.packed = append(f.packed, data...)
@@ -530,11 +530,23 @@ func (s *Session) onCompressedPart(file wire.Hash, start int64, packedSize uint3
 	}
 	plain, err := toInflated(f.packed, size)
 	if err != nil || int64(len(plain)) != size {
-		out.Close = closeProtocol
+		s.cancelBlock(file, d, i, out)
 		return
 	}
 	f.data = plain
 	s.onBlockFilled(file, d, i, out)
+}
+
+// cancelBlock gives up a compressed block whose stream is broken and
+// ignores the rest of it, keeping the connection: aMule does not
+// disconnect, as the next block's stream may be good
+// (DownloadClient.cpp:988-1015). The transfer hands the block out again
+// once this slot ends.
+func (s *Session) cancelBlock(file wire.Hash, d *download, i int, out *Output) {
+	d.inFlight = slices.Delete(d.inFlight, i, i+1)
+	if s.down.slot == slotGranted && s.down.started == file {
+		s.requestBlocks(d, out)
+	}
 }
 
 func (s *Session) onBlockFilled(file wire.Hash, d *download, i int, out *Output) {

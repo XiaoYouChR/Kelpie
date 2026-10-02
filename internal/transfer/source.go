@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
+	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
 
 // Timing and limits follow eMule (Opcodes.h, Preferences.cpp, PartFile.cpp,
@@ -28,8 +29,15 @@ const (
 	udpReaskLead = 20 * time.Second
 	// callbackTimeout is CONNECTION_TIMEOUT, how long a callback may take.
 	callbackTimeout = 40 * time.Second
-	// deadSourceTime is DeadSourceList.cpp's BLOCKTIME for a file's own list.
-	deadSourceTime = 45 * time.Minute
+	// deadSourceTime is how long a source we could not reach, or that did
+	// not answer, waits on aMule's global dead source list, and
+	// deadFileSourceTime one that does not have the file on the file's own;
+	// a LowID or firewalled source, reached only by callback, waits
+	// callbackDeadTime more (DeadSourceList.cpp:34-35, BLOCKTIME and
+	// BLOCKTIMEFW). eMule's global list waits less: 15 and 30 minutes.
+	deadSourceTime     = 30 * time.Minute
+	deadFileSourceTime = 45 * time.Minute
+	callbackDeadTime   = 15 * time.Minute
 	// banTime is CLIENTBANTIME (Constants.h:66), how long a source that sent
 	// corrupt data stays refused.
 	banTime = 2 * time.Hour
@@ -73,7 +81,8 @@ const (
 	// has not been answered yet.
 	stateReasking
 	stateDownloading
-	// stateFailed sources wait out deadSourceTime before they are tried again.
+	// stateFailed sources wait out their deadline before they are tried
+	// again.
 	stateFailed
 )
 
@@ -111,6 +120,8 @@ type Tick struct {
 	Server netip.AddrPort
 	// IsFirewalled is true when peers cannot connect to us (LowID).
 	IsFirewalled bool
+	// IsOffline: neither a server nor Kad is up.
+	IsOffline bool
 	// PublicIP is our address as the server or peers see it; invalid while
 	// unknown. Port is our TCP listen port.
 	PublicIP netip.Addr
@@ -146,6 +157,14 @@ type source struct {
 	udpFailed int
 
 	receivedBytes int64
+	// goodBytes and badBytes are what the source sent that a part or AICH
+	// hash proved good or corrupt, for aMule's corruption black box: a
+	// source is banned only when its share of corrupt data is too high.
+	goodBytes int64
+	badBytes  int64
+	// download is the source's own rate, which the endgame compares to
+	// find a source slow enough to hand its blocks over.
+	download meter
 }
 
 func buildKey(s Source) string {
@@ -317,7 +336,7 @@ func (t *Transfer) canReach(s *source) bool {
 func (t *Transfer) OnConnectFailed(endpoint netip.AddrPort, reason string, now time.Time) []Action {
 	for _, s := range t.sources {
 		if s.state == stateConnecting && s.Endpoint == endpoint {
-			event := t.setFailed(s, reason, now)
+			event := t.setFailed(s, deadSourceTime, reason, now)
 			if s.isDialledPlain && s.CanObfuscate {
 				s.state = stateNew
 			}
@@ -327,9 +346,19 @@ func (t *Transfer) OnConnectFailed(endpoint netip.AddrPort, reason string, now t
 	return nil
 }
 
-func (t *Transfer) setFailed(s *source, reason string, now time.Time) TraceEvent {
+// setFailed puts the source on the dead list for wait. Offline a failure
+// says nothing about the source, which only waits for its next reask, once
+// we are back online.
+func (t *Transfer) setFailed(s *source, wait time.Duration, reason string, now time.Time) TraceEvent {
 	s.state = stateFailed
-	s.deadline = now.Add(deadSourceTime)
+	s.deadline = now.Add(wait)
+	if s.ClientID != 0 || s.Buddy.IsValid() {
+		s.deadline = s.deadline.Add(callbackDeadTime)
+	}
+	if t.tick.IsOffline {
+		s.state = stateNew
+		s.lastAsked = now
+	}
 	event := t.buildTrace(now, s, EventFailed)
 	event.Reason = reason
 	return event
@@ -429,7 +458,11 @@ func (t *Transfer) isExchangeAllowed(s *source, now time.Time) bool {
 		isSourceDue(exchangeReaskSlow*commonPenalty) && isFileDue(exchangeReaskFast*commonPenalty)
 }
 
-// OnQueued records the queue rank a peer gave us.
+// OnQueued records the queue rank a peer gave us. A slot that ended keeps
+// the reask counted from when we last asked the source, not from the end of
+// the slot: aMule sets m_dwLastAskedTime only when it asks
+// (DownloadClient.cpp:138-140, 1230-1235), so a source whose reask came due
+// during the slot is asked again at once and queues up anew.
 func (t *Transfer) OnQueued(peer uint64, rank int, now time.Time) []Action {
 	s := t.peers[peer]
 	if !t.isDownloading() || s == nil {
@@ -439,23 +472,47 @@ func (t *Transfer) OnQueued(peer uint64, rank int, now time.Time) []Action {
 	if s.state == stateDownloading {
 		t.picker.cancel(peer)
 		actions = append(actions, t.sendReceived(s, now)...)
+	} else {
+		s.lastAsked = now
 	}
 	return append(actions, t.setQueued(s, rank, now))
 }
 
 func (t *Transfer) setQueued(s *source, rank int, now time.Time) TraceEvent {
 	s.state = stateQueued
-	s.lastAsked = now
 	event := t.buildTrace(now, s, EventQueued)
 	event.Rank = rank
 	return event
 }
 
-// OnReaskAnswered records the OP_REASKACK a source sent to our ReaskUDP.
-func (t *Transfer) OnReaskAnswered(endpoint netip.AddrPort, rank int, now time.Time) []Action {
+// OnReaskAnswered records a source's answer to our ReaskUDP: OP_REASKACK
+// with its rank; OP_QUEUEFULL, which aMule takes as rank 0
+// (ClientUDPSocket.cpp:516-525); or OP_FILENOTFOUND, after which the source
+// waits on the file's dead source list (aMule UDPReaskFNF,
+// DownloadClient.cpp:1237-1258).
+func (t *Transfer) OnReaskAnswered(endpoint netip.AddrPort, answer wire.Packet, now time.Time) []Action {
+	s := t.reaskingSource(endpoint)
+	if s == nil {
+		return nil
+	}
+	rank := 0
+	switch a := answer.(type) {
+	case client.ReaskAck:
+		rank = int(a.Rank)
+	case client.QueueFull:
+	case client.FileNotFound:
+		return []Action{t.setFailed(s, deadFileSourceTime, "file not found", now)}
+	default:
+		return nil
+	}
+	s.lastAsked = now
+	return []Action{t.setQueued(s, rank, now)}
+}
+
+func (t *Transfer) reaskingSource(endpoint netip.AddrPort) *source {
 	for _, s := range t.sources {
 		if s.state == stateReasking && netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort) == endpoint {
-			return []Action{t.setQueued(s, rank, now)}
+			return s
 		}
 	}
 	return nil
@@ -467,29 +524,27 @@ func (t *Transfer) OnSlotGranted(peer uint64, now time.Time) []Action {
 		return nil
 	}
 	s.state = stateDownloading
-	s.lastAsked = now
 	return []Action{t.buildTrace(now, s, EventSlot)}
 }
 
 // OnPeerGone detaches a closed connection. A source that answered our file
 // request keeps its place and is reasked a reask interval after we connected,
 // even when it closed before telling its queue rank, as a full upload queue
-// does; only one that never answered counts as failed (aMule
-// CUpDownClient::Disconnected, BaseClient.cpp:1280-1290: DS_ONQUEUE is set as
-// soon as OP_STARTUPLOADREQ is sent and is kept, DS_CONNECTED goes to the dead
-// list).
+// does, or closed during its slot; only one that never answered counts as
+// failed (aMule CUpDownClient::Disconnected, BaseClient.cpp:1280-1290:
+// DS_ONQUEUE is set as soon as OP_STARTUPLOADREQ is sent and is kept,
+// DS_CONNECTED goes to the dead list).
 func (t *Transfer) OnPeerGone(peer uint64, reason string, now time.Time) []Action {
 	s := t.peers[peer]
 	if s == nil {
 		return nil
 	}
-	actions := append(t.removePeer(peer, now), t.sendReceived(s, now)...)
+	actions := append(t.removePeer(peer), t.sendReceived(s, now)...)
 	switch s.state {
 	case stateAsking:
-		return append(actions, t.setFailed(s, reason, now))
+		return append(actions, t.setFailed(s, deadSourceTime, reason, now))
 	case stateDownloading:
 		s.state = stateQueued
-		s.lastAsked = now
 	}
 	event := t.buildTrace(now, s, EventClosed)
 	event.Reason = reason
@@ -525,20 +580,20 @@ func (t *Transfer) removeCorrupt(peer uint64, now time.Time) []Action {
 	actions := []Action{event}
 	if t.peers[peer] == s {
 		actions = append(actions, Close{Peer: peer, Reason: "corrupt data"})
-		actions = append(actions, t.removePeer(peer, now)...)
+		actions = append(actions, t.removePeer(peer)...)
 	}
 	return actions
 }
 
 // removePeer detaches a connection from its source and hands what was asked
 // of it to other peers.
-func (t *Transfer) removePeer(peer uint64, now time.Time) []Action {
+func (t *Transfer) removePeer(peer uint64) []Action {
 	delete(t.peers, peer)
 	t.picker.onPeerGone(peer)
 	if peer == t.hashSetPeer {
 		t.hashSetPeer = 0
 	}
-	return t.OnRecoveryFailed(peer, now)
+	return t.OnRecoveryFailed(peer)
 }
 
 // OnTick runs the timers: source reasks and connections within the budget,
@@ -583,11 +638,18 @@ func (t *Transfer) SetA4AF(found Source, until time.Time) {
 }
 
 // OnNoNeededParts records that a connected source has no part we still
-// need, or gave a slot with nothing left to request.
-func (t *Transfer) OnNoNeededParts(peer uint64) {
-	if s := t.peers[peer]; t.isDownloading() && s != nil {
-		s.isNoNeeded = true
+// need, or gave a slot with nothing left to request, and reports whether it
+// now counts as such. Near completion a source that has a part we need only
+// found every block of it asked of other peers, so it stays queued (aMule
+// 3.1.0 "requeue instead of self-banishing at endgame",
+// DownloadClient.cpp:647-652).
+func (t *Transfer) OnNoNeededParts(peer uint64) bool {
+	s := t.peers[peer]
+	if !t.isDownloading() || s == nil || t.isNearCompletion() && t.picker.hasNeededPart(peer) {
+		return false
 	}
+	s.isNoNeeded = true
+	return true
 }
 
 func (t *Transfer) removeNoNeeded(now time.Time) {
@@ -612,13 +674,19 @@ func (t *Transfer) runSource(s *source, budget *int) []Action {
 		s.lastAsked = time.Time{}
 	case stateConnecting:
 		if !s.deadline.IsZero() && !now.Before(s.deadline) {
-			return []Action{t.setFailed(s, "callback timeout", now)}
+			return []Action{t.setFailed(s, deadSourceTime, "callback timeout", now)}
 		}
 		return nil
 	case stateAsking, stateDownloading:
 		return nil
 	}
 	if t.isConnected(s) || now.Before(s.a4afUntil) {
+		return nil
+	}
+	// aMule asks sources only while connected to a server or Kad
+	// (PartFile.cpp:1739-1757): offline every ask fails and would mark the
+	// source dead. A source never asked, as a link's at startup, is tried.
+	if t.tick.IsOffline && !s.lastAsked.IsZero() {
 		return nil
 	}
 
@@ -632,7 +700,9 @@ func (t *Transfer) runSource(s *source, budget *int) []Action {
 	if !s.lastAsked.IsZero() {
 		untilReask = max(0, reaskTime-now.Sub(s.lastAsked))
 	}
-	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s) {
+	// A source due a Source Exchange is reasked over TCP, which can carry
+	// the exchange (aMule UDPReaskForDownload, DownloadClient.cpp:1275-1279).
+	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s) && !t.isExchangeAllowed(s, now) {
 		s.state = stateReasking
 		s.udpReasks++
 		return []Action{ReaskUDP{Endpoint: netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort), UserHash: s.UserHash, CanObfuscate: s.CanObfuscate}}

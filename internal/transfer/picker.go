@@ -13,18 +13,19 @@ func blockAt(size, offset int64) piece.Block {
 	return piece.BlockOf(size, int(offset/piece.PartSize), int(offset%piece.PartSize/piece.BlockSize))
 }
 
-// maxRequesters bounds endgame duplication: one original request plus one copy.
-const maxRequesters = 2
-
 // blockState tracks a block byte by byte, as aMule keeps byte-granular gaps
 // (DownloadClient.cpp:835-848), so a block cut off when a slot ends is
 // finished by asking only for its missing tail. Data arrives in order, so
 // what is received is always a prefix.
 type blockState struct {
-	received   int64
-	written    int64
-	requesters []uint64
-	senders    []uint64
+	received int64
+	written  int64
+	// requester is the peer asked for the rest of the block, 0 while none
+	// is: a block is never asked of two peers at once, as aMule 3.1.0 hands
+	// a block over only after cancelling its slow source
+	// (DownloadClient.cpp:624-697).
+	requester uint64
+	senders   []uint64
 }
 
 type partState struct {
@@ -182,41 +183,27 @@ func (p *picker) removeAvailability(peer uint64) {
 func (p *picker) cancel(peer uint64) {
 	for i := range p.parts {
 		for j := range p.parts[i].blocks {
-			block := &p.parts[i].blocks[j]
-			block.requesters = slices.DeleteFunc(block.requesters, func(r uint64) bool { return r == peer })
+			if block := &p.parts[i].blocks[j]; block.requester == peer {
+				block.requester = 0
+			}
 		}
 	}
 }
 
-// request picks up to n blocks to ask the peer for and records them as
-// requested; a partly received block is asked for from where it stops. It
-// prefers parts already in progress, then the rarest parts, breaking ties at
-// random. Only when no block is left unrequested anywhere it can be fetched
-// from does it hand out blocks already requested from one other peer
-// (endgame).
+// request picks up to n blocks no peer is asked for, to ask this peer for,
+// and records them as requested, in the order of candidateParts; a partly
+// received block is asked for from where it stops.
 func (p *picker) request(peer uint64, n int) []piece.Block {
-	parts := p.candidateParts(peer)
-	picked := p.addRequests(peer, parts, n, nil, func(requesters []uint64) bool { return len(requesters) == 0 })
-	if len(picked) == n || p.hasUnrequestedBlock() {
-		return picked
-	}
-	return p.addRequests(peer, parts, n, picked, func(requesters []uint64) bool {
-		return len(requesters) < maxRequesters && !slices.Contains(requesters, peer)
-	})
-}
-
-// addRequests fills picked up to n with the missing rest of each block of parts
-// whose requesters canJoin accepts, and records peer as requesting it.
-func (p *picker) addRequests(peer uint64, parts []int, n int, picked []piece.Block, canJoin func(requesters []uint64) bool) []piece.Block {
-	for _, part := range parts {
+	var picked []piece.Block
+	for _, part := range p.candidateParts(peer) {
 		for index := range piece.BlockCount(p.size, part) {
 			if len(picked) == n {
 				return picked
 			}
 			b := piece.BlockOf(p.size, part, index)
 			state := p.blockState(b)
-			if state.received < b.End-b.Begin && canJoin(state.requesters) {
-				state.requesters = append(state.requesters, peer)
+			if state.received < b.End-b.Begin && state.requester == 0 {
+				state.requester = peer
 				picked = append(picked, piece.Block{Begin: b.Begin + state.received, End: b.End})
 			}
 		}
@@ -224,43 +211,21 @@ func (p *picker) addRequests(peer uint64, parts []int, n int, picked []piece.Blo
 	return picked
 }
 
-func (p *picker) candidateParts(peer uint64) []int {
-	var parts []int
+// hasNeededPart tells whether the peer has a part not yet verified.
+func (p *picker) hasNeededPart(peer uint64) bool {
 	for i, has := range p.peerParts[peer] {
 		if has && !p.parts[i].isVerified {
-			parts = append(parts, i)
-		}
-	}
-	p.random.Shuffle(len(parts), func(i, j int) { parts[i], parts[j] = parts[j], parts[i] })
-	sort.SliceStable(parts, func(i, j int) bool {
-		a, b := parts[i], parts[j]
-		if isStartedA, isStartedB := p.isStarted(a), p.isStarted(b); isStartedA != isStartedB {
-			return isStartedA
-		}
-		return p.availability[a] < p.availability[b]
-	})
-	return parts
-}
-
-func (p *picker) isStarted(part int) bool {
-	for _, block := range p.parts[part].blocks {
-		if block.received > 0 || len(block.requesters) > 0 {
 			return true
 		}
 	}
 	return false
 }
 
-func (p *picker) hasUnrequestedBlock() bool {
-	for i, part := range p.parts {
-		if part.isVerified || p.availability[i] == 0 {
-			continue
-		}
-		if part.blocks == nil {
-			return true
-		}
-		for j, block := range part.blocks {
-			if b := piece.BlockOf(p.size, i, j); block.received < b.End-b.Begin && len(block.requesters) == 0 {
+// isRequesting tells whether the peer is asked for any block.
+func (p *picker) isRequesting(peer uint64) bool {
+	for _, part := range p.parts {
+		for _, block := range part.blocks {
+			if block.requester == peer {
 				return true
 			}
 		}
@@ -268,11 +233,82 @@ func (p *picker) hasUnrequestedBlock() bool {
 	return false
 }
 
+// hasBlocksFor tells whether a block owner is asked for lies in a part
+// other has (aMule HasUsefulBlocksFor, DownloadClient.cpp:1739-1754).
+func (p *picker) hasBlocksFor(owner, other uint64) bool {
+	for i, has := range p.peerParts[other] {
+		if !has {
+			continue
+		}
+		for _, block := range p.parts[i].blocks {
+			if block.requester == owner {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// candidateParts orders the parts the peer has and we need, simplifying
+// aMule's chunk rank (PartFile.cpp:2131-2316): the parts the peer is already
+// asked for, then very rare parts, then parts no peer is asked for, then the
+// rest; within each, rarer first, then the more received, then at random.
+// Spreading peers over parts nobody downloads spreads the rare parts before
+// their sources leave, and keeps the senders of each part few.
+func (p *picker) candidateParts(peer uint64) []int {
+	// aMule's very rare bound: a tenth of the sources, at least one.
+	veryRare := max(1, len(p.peerParts)/10)
+	type candidate struct {
+		part     int
+		rank     int
+		received int64
+	}
+	var candidates []candidate
+	for i, has := range p.peerParts[peer] {
+		if !has || p.parts[i].isVerified {
+			continue
+		}
+		c := candidate{part: i, rank: 3}
+		isAsked, isAskedOfOthers := false, false
+		for _, block := range p.parts[i].blocks {
+			c.received += block.received
+			isAsked = isAsked || block.requester == peer
+			isAskedOfOthers = isAskedOfOthers || block.requester != 0 && block.requester != peer
+		}
+		switch {
+		case isAsked:
+			c.rank = 0
+		case p.availability[i] <= veryRare:
+			c.rank = 1
+		case !isAskedOfOthers:
+			c.rank = 2
+		}
+		candidates = append(candidates, c)
+	}
+	p.random.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		if a.rank != b.rank {
+			return a.rank < b.rank
+		}
+		if p.availability[a.part] != p.availability[b.part] {
+			return p.availability[a.part] < p.availability[b.part]
+		}
+		return a.received > b.received
+	})
+	parts := make([]int, len(candidates))
+	for i, c := range candidates {
+		parts[i] = c.part
+	}
+	return parts
+}
+
 // onBlockReceived records that the data of b, a block or a leading piece of
 // what was requested of it, arrived from peer. It returns the bytes of b that
-// are new and should be written; false when another peer delivered them first
-// or the part is already verified. The block stays requested until it is
-// complete or the peer's requests are cancelled.
+// are new and should be written; false when another peer delivered them first,
+// as a slow source cancelled in the endgame may have, or the part is already
+// verified. The block stays requested until it is complete or the peer's
+// requests are cancelled.
 func (p *picker) onBlockReceived(peer uint64, b piece.Block) (piece.Block, bool) {
 	if p.parts[b.Part()].isVerified {
 		return piece.Block{}, false
@@ -288,7 +324,7 @@ func (p *picker) onBlockReceived(peer uint64, b piece.Block) (piece.Block, bool)
 		state.senders = append(state.senders, peer)
 	}
 	if b.End == whole.End {
-		state.requesters = nil
+		state.requester = 0
 	}
 	return piece.Block{Begin: next, End: b.End}, true
 }
@@ -300,16 +336,23 @@ func (p *picker) onBlockWritten(b piece.Block) bool {
 	return p.isWritten(b.Part())
 }
 
-func (p *picker) onPartVerified(part int) {
+// onPartVerified marks a part verified and returns how many of its bytes
+// each peer sent, a block counting whole for every peer that sent any of it.
+func (p *picker) onPartVerified(part int) map[uint64]int64 {
+	sent := map[uint64]int64{}
+	for i, block := range p.parts[part].blocks {
+		b := piece.BlockOf(p.size, part, i)
+		for _, sender := range block.senders {
+			sent[sender] += b.End - b.Begin
+		}
+	}
 	p.parts[part] = partState{isVerified: true}
+	return sent
 }
 
-// onPartFailed discards a part whose hash did not match and returns the peers
-// that sent any of its blocks, so the caller can ban the corrupt sender.
-func (p *picker) onPartFailed(part int) []uint64 {
-	senders := addSenders(nil, p.parts[part].blocks)
+// onPartFailed discards a part whose hash did not match.
+func (p *picker) onPartFailed(part int) {
 	p.parts[part] = partState{}
-	return senders
 }
 
 // senders lists the peers that sent any block of a part not yet verified.
@@ -338,5 +381,15 @@ func (p *picker) onBlockFailed(b piece.Block) []uint64 {
 	state := p.blockState(b)
 	senders := state.senders
 	*state = blockState{}
+	return senders
+}
+
+// onBlockVerified returns the senders of a block that AICH found good and
+// forgets them, so the block counts for them once, not again when its part
+// is verified.
+func (p *picker) onBlockVerified(b piece.Block) []uint64 {
+	state := p.blockState(b)
+	senders := state.senders
+	state.senders = nil
 	return senders
 }

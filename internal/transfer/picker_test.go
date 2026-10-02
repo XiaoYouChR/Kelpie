@@ -50,15 +50,57 @@ func TestRequestPrefersRarestPart(t *testing.T) {
 	}
 }
 
-func TestRequestPrefersPartInProgress(t *testing.T) {
+func TestRequestKeepsAPeerOnItsPart(t *testing.T) {
 	picker := buildEmptyPicker(t, 2*piece.PartSize, 1)
 	picker.onPeerParts(peerA, piece.Set{true, true})
-	picker.onPeerParts(peerB, piece.Set{true, false})
-	picker.request(peerB, 1)
+	picker.onPeerParts(peerB, piece.Set{true, true})
+	first := picker.request(peerA, 1)[0]
 
 	got := picker.request(peerA, 1)
-	if want := (piece.Block{Begin: piece.BlockSize, End: 2 * piece.BlockSize}); !slices.Equal(got, []piece.Block{want}) {
-		t.Fatalf("a got %v, want the next block of part 0 in progress, %v", got, want)
+	if want := (piece.Block{Begin: first.End, End: first.End + piece.BlockSize}); !slices.Equal(got, []piece.Block{want}) {
+		t.Fatalf("a got %v, want the next block of its part, %v", got, want)
+	}
+}
+
+func TestRequestSpreadsPeersOverPartsNobodyDownloads(t *testing.T) {
+	picker := buildEmptyPicker(t, 2*piece.PartSize, 1)
+	picker.onPeerParts(peerA, piece.Set{true, true})
+	picker.onPeerParts(peerB, piece.Set{true, true})
+	fromA := picker.request(peerA, 1)
+
+	if got := partsOf(picker.request(peerB, 1)); slices.Equal(got, partsOf(fromA)) {
+		t.Fatalf("b got part %v, which a downloads, while the other part has no peer", got)
+	}
+}
+
+// A very rare part goes first even when another part is half received
+// (aMule ranks it 0..xxxx, PartFile.cpp:2269-2275).
+func TestRequestPrefersVeryRarePartToStartedOne(t *testing.T) {
+	head := piece.Block{Begin: piece.PartSize, End: piece.PartSize + piece.BlockSize}
+	picker := buildResumedPicker(t, 2*piece.PartSize, nil, []piece.Block{head}, 1)
+	picker.onPeerParts(peerA, piece.Set{true, true})
+	picker.onPeerParts(peerB, piece.Set{false, true})
+	picker.onPeerParts(peerC, piece.Set{false, true})
+
+	if got := partsOf(picker.request(peerA, 1)); !slices.Equal(got, []int{0}) {
+		t.Fatalf("a got parts %v, want the very rare part 0", got)
+	}
+}
+
+// Peers join a very rare part another peer downloads rather than start a
+// common one: very rare parts are ranked alike whether requested or not.
+func TestRequestJoinsVeryRarePartInProgress(t *testing.T) {
+	picker := buildEmptyPicker(t, 2*piece.PartSize, 1)
+	picker.onPeerParts(peerA, piece.Set{true, true})
+	picker.onPeerParts(peerB, piece.Set{true, true})
+	for peer := range uint64(18) {
+		picker.onPeerParts(100+peer, piece.Set{false, true})
+	}
+	if got := partsOf(picker.request(peerB, 1)); !slices.Equal(got, []int{0}) {
+		t.Fatalf("b got parts %v, want the very rare part 0", got)
+	}
+	if got := partsOf(picker.request(peerA, 1)); !slices.Equal(got, []int{0}) {
+		t.Fatalf("a got parts %v, want the very rare part 0 b downloads", got)
 	}
 }
 
@@ -81,20 +123,7 @@ func TestRequestBreaksTiesWithInjectedRandom(t *testing.T) {
 	}
 }
 
-func TestRequestDuplicatesOnlyInEndgame(t *testing.T) {
-	picker := buildEmptyPicker(t, 2*piece.PartSize, 1)
-	picker.onPeerParts(peerA, piece.Set{true, false})
-	picker.onPeerParts(peerB, piece.Set{false, true})
-
-	if got := picker.request(peerA, 100); len(got) != 53 {
-		t.Fatalf("a got %d blocks, want all 53 of part 0", len(got))
-	}
-	if got := picker.request(peerA, 10); len(got) != 0 {
-		t.Fatalf("a got %v while part 1 is still unrequested", got)
-	}
-}
-
-func TestEndgameAllowsTwoRequestersPerBlock(t *testing.T) {
+func TestRequestNeverHandsOutARequestedBlock(t *testing.T) {
 	size := piece.PartSize
 	picker := buildEmptyPicker(t, size, 1)
 	for _, peer := range []uint64{peerA, peerB, peerC} {
@@ -103,29 +132,27 @@ func TestEndgameAllowsTwoRequestersPerBlock(t *testing.T) {
 	fromA := picker.request(peerA, 50)
 	fromB := picker.request(peerB, 10)
 
-	for _, b := range fromB[:3] {
+	if len(fromB) != 3 {
+		t.Fatalf("b got %d blocks, want the 3 a was not asked for", len(fromB))
+	}
+	for _, b := range fromB {
 		if slices.Contains(fromA, b) {
-			t.Fatalf("b got %v already requested from a while unrequested blocks remained", b)
+			t.Fatalf("b got %v, already asked of a", b)
 		}
 	}
-	for _, b := range fromB[3:] {
-		if !slices.Contains(fromA, b) {
-			t.Fatalf("b got endgame block %v that a was not asked for", b)
-		}
-	}
-	if got := picker.request(peerC, 100); len(got) != 53-7 {
-		t.Fatalf("c got %d endgame blocks, want %d (blocks with fewer than two requesters)", len(got), 53-7)
-	}
-	if got := picker.request(peerA, 100); len(got) != 0 {
-		t.Fatalf("a got %v, but every block already has two requesters or is a's", got)
+	if got := picker.request(peerC, 100); len(got) != 0 {
+		t.Fatalf("c got %v, but every block is asked of a or b", got)
 	}
 }
 
+// A block handed over from a cancelled peer may still arrive from it; only
+// the first delivery is written.
 func TestReceivedBlockIsWrittenOnce(t *testing.T) {
 	picker := buildEmptyPicker(t, piece.PartSize, 1)
 	picker.onPeerParts(peerA, piece.Set{true})
 	picker.onPeerParts(peerB, piece.Set{true})
 	picker.request(peerA, 53)
+	picker.cancel(peerA)
 	b := picker.request(peerB, 1)[0]
 
 	if written, ok := picker.onBlockReceived(peerB, b); !ok || written != b {
@@ -172,7 +199,7 @@ func TestOnPeerPartsReplacesAvailability(t *testing.T) {
 	}
 }
 
-func TestFailedPartReportsSendersAndStartsOver(t *testing.T) {
+func TestFailedPartStartsOver(t *testing.T) {
 	size := 2*piece.BlockSize + 10
 	picker := buildEmptyPicker(t, size, 1)
 	picker.onPeerParts(peerA, piece.Set{true})
@@ -196,11 +223,12 @@ func TestFailedPartReportsSendersAndStartsOver(t *testing.T) {
 		t.Fatalf("WrittenSize = %d, want %d", got, size)
 	}
 
-	senders := picker.onPartFailed(0)
+	senders := picker.senders()
 	slices.Sort(senders)
 	if !slices.Equal(senders, []uint64{peerA, peerB}) {
 		t.Fatalf("senders = %v, want [a b]", senders)
 	}
+	picker.onPartFailed(0)
 	if got := picker.writtenSize(); got != 0 {
 		t.Fatalf("WrittenSize after failure = %d, want 0", got)
 	}
@@ -316,8 +344,8 @@ func TestPartlyReceivedBlockKeepsItsBytes(t *testing.T) {
 	if !picker.onBlockWritten(rest) {
 		t.Fatal("part not reported written once every byte is on disk")
 	}
-	if senders := picker.onPartFailed(0); !slices.Equal(senders, []uint64{peerA, peerB}) {
-		t.Fatalf("senders of a failed part = %v, want both peers", senders)
+	if senders := picker.senders(); !slices.Equal(senders, []uint64{peerA, peerB}) {
+		t.Fatalf("senders of the part = %v, want both peers", senders)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
 	"github.com/XiaoYouChR/Kelpie/internal/transfer"
 	"github.com/XiaoYouChR/Kelpie/internal/wire"
+	"github.com/XiaoYouChR/Kelpie/internal/wire/client"
 )
 
 var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -83,7 +84,7 @@ func (h *harness) run(actions []transfer.Action) {
 			var hasher piece.MD4
 			r := piece.PartRange(int64(len(h.disk)), a.Part)
 			hasher.Write(h.disk[r.Begin:r.End])
-			actions = append(actions, h.transfer.OnPartHashed(a.Part, hasher.Digest(), h.now)...)
+			actions = append(actions, h.transfer.OnPartHashed(a.Part, hasher.Digest())...)
 		case transfer.HashBlocks:
 			var hasher aich.Hasher
 			r := piece.PartRange(int64(len(h.disk)), a.Part)
@@ -108,10 +109,18 @@ func (h *harness) connect(peer uint64, i int, parts piece.Set) {
 	h.run(h.transfer.OnSlotGranted(peer, h.now))
 }
 
+// request asks the transfer for up to n blocks for peer and runs the
+// actions that come with them.
+func (h *harness) request(peer uint64, n int) []piece.Block {
+	blocks, actions := h.transfer.Request(peer, n, h.now)
+	h.run(actions)
+	return blocks
+}
+
 // deliver requests up to n blocks for peer and answers each with data,
 // corrupted when isCorrupt is set. It reports how many blocks were sent.
 func (h *harness) deliver(peer uint64, n int, isCorrupt bool) int {
-	blocks := h.transfer.Request(peer, n)
+	blocks := h.request(peer, n)
 	for _, block := range blocks {
 		data := append([]byte(nil), h.data[block.Begin:block.End]...)
 		if isCorrupt {
@@ -254,7 +263,10 @@ func TestHashSetRequestedWhenMissing(t *testing.T) {
 	}
 }
 
-func TestCorruptPartBansSenderAndIsDownloadedAgain(t *testing.T) {
+// Without AICH a corrupt part is downloaded again whole and nobody is
+// banned: MD4 cannot tell which sender was corrupt (aMule
+// PartFile.cpp:3719-3732).
+func TestCorruptPartWithoutAICHIsDownloadedAgain(t *testing.T) {
 	data := buildData(2*piece.PartSize + 5000)
 	file := buildFile(data)
 	h := buildHarness(t, data, transfer.Options{File: file})
@@ -262,28 +274,17 @@ func TestCorruptPartBansSenderAndIsDownloadedAgain(t *testing.T) {
 	h.connect(2, 2, piece.Set{false, true, true})
 
 	before := len(h.actions)
-	for h.deliver(1, 10, true) > 0 {
+	if got := h.deliver(1, 100, true); got != piece.BlockCount(file.Size, 0) {
+		t.Fatalf("delivered %d blocks, want all of part 0", got)
 	}
-	actions := h.actions[before:]
-	closes := 0
-	for _, action := range actions {
-		if c, ok := action.(transfer.Close); ok {
-			closes++
-			if c.Peer != 1 {
-				t.Fatalf("closed peer %d, want 1", c.Peer)
-			}
-		}
+	if countActions[transfer.HashPart](h.actions[before:]) != 1 || h.transfer.ToState().VerifiedParts[0] {
+		t.Fatalf("corrupt part not hashed once and refused: %+v", h.actions[before:])
 	}
-	if closes != 1 || len(traces(actions, transfer.EventClosed)) != 1 {
-		t.Fatalf("closes = %d, closed traces = %d; want 1 each", closes, len(traces(actions, transfer.EventClosed)))
+	if closed := closedPeers(h.actions[before:]); len(closed) != 0 {
+		t.Fatalf("closed %v without AICH to tell the corrupt sender", closed)
 	}
-	if h.transfer.ToState().VerifiedParts[0] {
-		t.Fatal("corrupt part verified")
-	}
-
-	reconnect := h.transfer.OnPeerConnected(3, transfer.Source{Endpoint: endpoint(9), UserHash: userHash(1)}, h.now)
-	if len(reconnect) != 1 || reconnect[0] != (transfer.Close{Peer: 3, Reason: "banned"}) {
-		t.Fatalf("banned peer reconnecting: %+v", reconnect)
+	if !h.transfer.MatchSource(transfer.Source{UserHash: userHash(1)}) {
+		t.Fatal("sender of the corrupt part dropped")
 	}
 
 	h.transfer.OnPeerParts(2, piece.BuildFullSet(3))
@@ -302,7 +303,7 @@ func TestDiskFailure(t *testing.T) {
 		data := buildData(1000)
 		h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
 		h.connect(1, 1, piece.Set{true})
-		blocks := h.transfer.Request(1, 1)
+		blocks := h.request(1, 1)
 		actions := h.transfer.OnBlockReceived(1, blocks[0], data, h.now)
 		if countActions[transfer.Write](actions) != 1 {
 			t.Fatalf("no Write for a received block: %+v", actions)
@@ -312,7 +313,7 @@ func TestDiskFailure(t *testing.T) {
 		if got.Status != want {
 			t.Fatalf("isDiskFull=%v: outcome = %+v", isDiskFull, got)
 		}
-		if h.transfer.Request(1, 1) != nil {
+		if h.request(1, 1) != nil {
 			t.Fatal("failed transfer still hands out requests")
 		}
 	}
@@ -350,7 +351,7 @@ func TestReaskTiming(t *testing.T) {
 				if udp[0] != want {
 					t.Fatalf("reask %+v, want %+v: obfuscated with the Hello's user hash", udp[0], want)
 				}
-				h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, start.Add(fileReaskTime-20*time.Second+2*time.Second)))
+				h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), client.ReaskAck{Rank: 7}, start.Add(fileReaskTime-20*time.Second+2*time.Second)))
 				if got := at(fileReaskTime); countActions[transfer.Connect](got) != 0 {
 					t.Fatalf("TCP reask after a UDP answer: %+v", got)
 				}
@@ -366,19 +367,100 @@ func TestReaskTiming(t *testing.T) {
 	}
 }
 
-func TestFailedSourceBacksOff(t *testing.T) {
+// A source that failed waits 30 minutes, one reached by callback 45
+// (aMule's global DeadSourceList).
+// OP_QUEUEFULL answers a UDP reask as rank 0; OP_FILENOTFOUND puts the
+// source on the file's dead list for 45 minutes.
+func TestReaskRefusals(t *testing.T) {
+	data := buildData(1000)
+	udp := netip.AddrPortFrom(endpoint(1).Addr(), 4672)
+	reaskAt := fileReaskTime - 19*time.Second
+	for _, test := range []struct {
+		name     string
+		answer   func(*transfer.Transfer, time.Time) []transfer.Action
+		wantNext time.Duration
+	}{
+		{"queue full", func(tr *transfer.Transfer, now time.Time) []transfer.Action {
+			return tr.OnReaskAnswered(udp, client.QueueFull{}, now)
+		}, reaskAt + reaskAt},
+		{"file not found", func(tr *transfer.Transfer, now time.Time) []transfer.Action {
+			return tr.OnReaskAnswered(udp, client.FileNotFound{}, now)
+		}, reaskAt + 45*time.Minute},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
+			h.tick(transfer.Tick{ConnectBudget: 1})
+			h.run(h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, start))
+			h.run(h.transfer.OnQueued(1, 42, start))
+			h.run(h.transfer.OnPeerGone(1, "idle", start))
+			at := func(d time.Duration) []transfer.Action {
+				return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 1})
+			}
+			if got := at(reaskAt); countActions[transfer.ReaskUDP](got) != 1 {
+				t.Fatalf("no UDP reask: %+v", got)
+			}
+			h.run(test.answer(h.transfer, start.Add(reaskAt)))
+			if got := at(test.wantNext - time.Second); len(got) != 0 {
+				t.Fatalf("asked again early: %+v", got)
+			}
+			if got := at(test.wantNext); len(got) == 0 {
+				t.Fatal("not asked again")
+			}
+		})
+	}
+}
+
+// A source due a Source Exchange is reasked over TCP, which can carry it,
+// instead of over UDP.
+func TestReaskDueExchangeSkipsUDP(t *testing.T) {
 	data := buildData(1000)
 	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
 	h.tick(transfer.Tick{ConnectBudget: 1})
+	hello := transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true, CanExchange: true}
+	if got := h.transfer.OnPeerConnected(1, hello, start); countActions[transfer.RequestSources](got) != 1 {
+		t.Fatalf("no Source Exchange at the first connection: %+v", got)
+	}
+	h.run(h.transfer.OnQueued(1, 42, start))
+	h.run(h.transfer.OnPeerGone(1, "idle", start))
+	reaskAt := fileReaskTime - 10*time.Second
+	if got := h.tick(transfer.Tick{Now: start.Add(reaskAt), ConnectBudget: 1}); countActions[transfer.ReaskUDP](got) != 1 {
+		t.Fatalf("no UDP reask before the exchange is due: %+v", got)
+	}
+	answered := start.Add(reaskAt)
+	h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), client.ReaskAck{Rank: 7}, answered))
+
+	next := answered.Add(fileReaskTime - 10*time.Second)
+	if got := h.tick(transfer.Tick{Now: next, ConnectBudget: 1}); len(got) != 0 {
+		t.Fatalf("UDP reask while an exchange is due: %+v", got)
+	}
+	if got := h.tick(transfer.Tick{Now: answered.Add(fileReaskTime), ConnectBudget: 1}); countActions[transfer.Connect](got) != 1 {
+		t.Fatalf("no TCP reask: %+v", got)
+	}
+}
+
+func TestFailedSourceBacksOff(t *testing.T) {
+	data := buildData(1000)
+	server := endpoint(9999)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
+	h.transfer.OnSourcesFound([]transfer.Source{lowIDSource(2, server)}, transfer.ChannelServer, start)
+	h.tick(transfer.Tick{ConnectBudget: 2, Server: server})
 	failed := h.transfer.OnConnectFailed(endpoint(1), "refused", start)
 	if events := traces(failed, transfer.EventFailed); len(events) != 1 || events[0].Reason != "refused" {
 		t.Fatalf("failed trace: %+v", failed)
 	}
-	if got := h.tick(transfer.Tick{Now: start.Add(44 * time.Minute), ConnectBudget: 1}); countActions[transfer.Connect](got) != 0 {
-		t.Fatalf("Connect during backoff: %+v", got)
+	h.tick(transfer.Tick{Now: start.Add(40 * time.Second), ConnectBudget: 2, Server: server})
+
+	at := func(d time.Duration) []transfer.Action {
+		return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 2, Server: server})
 	}
-	if got := h.tick(transfer.Tick{Now: start.Add(45 * time.Minute), ConnectBudget: 1}); countActions[transfer.Connect](got) != 1 {
-		t.Fatalf("no Connect after backoff: %+v", got)
+	if got := at(30*time.Minute - time.Second); len(got) != 0 {
+		t.Fatalf("asked during backoff: %+v", got)
+	}
+	if got := at(30 * time.Minute); countActions[transfer.Connect](got) != 1 || countActions[transfer.RequestServerCallback](got) != 0 {
+		t.Fatalf("want only the HighID source asked after 30 minutes: %+v", got)
+	}
+	if got := at(40*time.Second + 45*time.Minute); countActions[transfer.RequestServerCallback](got) != 1 {
+		t.Fatalf("no callback 45 minutes after it timed out: %+v", got)
 	}
 }
 
@@ -418,7 +500,7 @@ func TestSourceCap(t *testing.T) {
 }
 
 // A peer is a known source by user hash or LowID while the transfer keeps
-// it, and no longer once a banned or refused source is gone.
+// it.
 func TestMatchSource(t *testing.T) {
 	data := buildData(1000)
 	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
@@ -451,11 +533,6 @@ func TestMatchSource(t *testing.T) {
 	h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(3), UserHash: userHash(3)}, start)
 	if !h.transfer.MatchSource(transfer.Source{UserHash: userHash(3)}) {
 		t.Fatal("user hash from the Hello not matched")
-	}
-	h.connect(2, 1, piece.BuildFullSet(1))
-	h.deliver(2, 1, true)
-	if h.transfer.MatchSource(transfer.Source{UserHash: userHash(1)}) {
-		t.Fatal("banned source still matched")
 	}
 }
 
@@ -651,22 +728,44 @@ func TestSlotAskedSourceStaysQueuedWhenClosedBeforeRank(t *testing.T) {
 
 // A source whose slot ended goes back to its queue and is reasked a whole
 // reask interval later, not after MIN_REQUESTTIME.
+// The reask after a slot counts from when we connected, not from the end of
+// the slot: a source whose reask came due meanwhile is asked again at once
+// (aMule sets m_dwLastAskedTime only when it asks).
 func TestEndedSlotIsReaskedAfterReaskTime(t *testing.T) {
-	data := buildData(piece.PartSize + 100)
-	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
-	h.connect(1, 1, piece.Set{true, true})
-	h.deliver(1, 1, false)
-	ended := start.Add(time.Minute)
-	h.run(h.transfer.OnPeerGone(1, "idle", ended))
+	for _, test := range []struct {
+		name     string
+		slot     time.Duration
+		reaskAt  time.Duration
+		isQueued bool
+	}{
+		{"short slot closed", time.Minute, fileReaskTime, false},
+		{"short slot queued", time.Minute, fileReaskTime, true},
+		{"long slot", fileReaskTime + time.Hour, fileReaskTime + time.Hour + 40*time.Second, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := buildData(piece.PartSize + 100)
+			h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
+			h.connect(1, 1, piece.Set{true, true})
+			h.deliver(1, 1, false)
+			ended := start.Add(test.slot)
+			if test.isQueued {
+				h.run(h.transfer.OnQueued(1, 0, ended))
+			}
+			closed := test.slot + 40*time.Second
+			h.run(h.transfer.OnPeerGone(1, "idle", start.Add(closed)))
 
-	at := func(d time.Duration) []transfer.Action {
-		return h.tick(transfer.Tick{Now: ended.Add(d), ConnectBudget: 1})
-	}
-	if got := at(fileReaskTime - time.Second); countActions[transfer.Connect](got) != 0 {
-		t.Fatalf("Connect before the reask interval: %+v", got)
-	}
-	if got := at(fileReaskTime); countActions[transfer.Connect](got) != 1 {
-		t.Fatalf("no Connect at the reask interval: %+v", got)
+			at := func(d time.Duration) []transfer.Action {
+				return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 1})
+			}
+			if before := test.reaskAt - time.Second; before >= closed {
+				if got := at(before); countActions[transfer.Connect](got) != 0 {
+					t.Fatalf("Connect before the reask: %+v", got)
+				}
+			}
+			if got := at(test.reaskAt); countActions[transfer.Connect](got) != 1 {
+				t.Fatalf("no Connect at the reask: %+v", got)
+			}
+		})
 	}
 }
 
@@ -732,7 +831,7 @@ func TestSlotEndKeepsPartOfBlock(t *testing.T) {
 	data := buildData(piece.BlockSize + 1000)
 	h := buildHarness(t, data, transfer.Options{File: buildFile(data)})
 	h.connect(1, 1, piece.Set{true})
-	block := h.transfer.Request(1, 1)[0]
+	block := h.request(1, 1)[0]
 	head := piece.Block{Begin: block.Begin, End: block.Begin + 400}
 	h.run(h.transfer.OnBlockReceived(1, head, data[head.Begin:head.End], h.now))
 	h.run(h.transfer.OnQueued(1, 0, h.now))
@@ -740,7 +839,7 @@ func TestSlotEndKeepsPartOfBlock(t *testing.T) {
 	h.connect(2, 2, piece.Set{true})
 	var rest []piece.Block
 	for {
-		blocks := h.transfer.Request(2, 3)
+		blocks := h.request(2, 3)
 		if len(blocks) == 0 {
 			break
 		}
@@ -764,7 +863,7 @@ func TestResumeKeepsPartOfBlock(t *testing.T) {
 	file := buildFile(data)
 	h := buildHarness(t, data, transfer.Options{File: file})
 	h.connect(1, 1, piece.Set{true})
-	block := h.transfer.Request(1, 1)[0]
+	block := h.request(1, 1)[0]
 	head := piece.Block{Begin: block.Begin, End: block.Begin + 400}
 	h.run(h.transfer.OnBlockReceived(1, head, data[head.Begin:head.End], h.now))
 
@@ -777,7 +876,7 @@ func TestResumeKeepsPartOfBlock(t *testing.T) {
 		t.Fatalf("resumed received = %d, want 400", got)
 	}
 	resumed.connect(1, 1, piece.Set{true})
-	if got := resumed.transfer.Request(1, 3); len(got) == 0 || got[0] != (piece.Block{Begin: head.End, End: block.End}) {
+	if got := resumed.request(1, 3); len(got) == 0 || got[0] != (piece.Block{Begin: head.End, End: block.End}) {
 		t.Fatalf("resumed transfer asked for %v, want the tail after the head first", got)
 	}
 }
@@ -799,8 +898,8 @@ func TestLateReaskAnswerKeepsSlot(t *testing.T) {
 	h.run(h.transfer.OnPeerConnected(2, transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true}, reaskAt))
 	h.transfer.OnPeerParts(2, piece.Set{true})
 	h.run(h.transfer.OnSlotGranted(2, reaskAt))
-	h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, reaskAt.Add(time.Second)))
-	if got := h.transfer.Request(2, 1); len(got) != 1 {
+	h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), client.ReaskAck{Rank: 7}, reaskAt.Add(time.Second)))
+	if got := h.request(2, 1); len(got) != 1 {
 		t.Fatalf("late UDP answer took the slot away: requested %v", got)
 	}
 }
@@ -894,5 +993,30 @@ func TestA4AFSourceWaits(t *testing.T) {
 	h.run(h.transfer.OnPeerGone(1, "idle", start.Add(11*time.Minute)))
 	if got := at(11*time.Minute + fileReaskTime); countActions[transfer.Connect](got) != 1 {
 		t.Fatalf("source connected for this Transfer still held: %+v", got)
+	}
+}
+
+// Offline, a source asked before waits for the network, and a failure does
+// not mark it dead; a link source never asked is still dialled.
+func TestOfflineSourcesWait(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1), endpoint(2))})
+	offline := func(d time.Duration) []transfer.Action {
+		return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 2, IsOffline: true})
+	}
+	if got := offline(0); countActions[transfer.Connect](got) != 2 {
+		t.Fatalf("link sources not dialled offline at startup: %+v", got)
+	}
+	h.run(h.transfer.OnConnectFailed(endpoint(1), "no route to host", start))
+	h.run(h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(2), UserHash: userHash(2)}, start))
+	h.run(h.transfer.OnQueued(1, 5, start))
+	h.run(h.transfer.OnPeerGone(1, "idle", start))
+
+	if got := offline(2 * time.Hour); len(got) != 0 {
+		t.Fatalf("sources asked offline: %+v", got)
+	}
+	back := start.Add(2 * time.Hour)
+	if got := h.tick(transfer.Tick{Now: back, ConnectBudget: 2}); countActions[transfer.Connect](got) != 2 {
+		t.Fatalf("want both sources asked once back online, the failed one too: %+v", got)
 	}
 }

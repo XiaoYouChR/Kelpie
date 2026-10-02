@@ -15,7 +15,8 @@ import (
 
 // A seeder whose file went bad in one block after it was hashed sends that
 // block corrupted but correct AICH recovery data. The downloader keeps the
-// other blocks, bans the seeder, and fetches only the bad block elsewhere.
+// other blocks and fetches only the bad block again; the seeder stays, as
+// that block is under aMule's 32% of what it sent.
 func TestAICHRepairRedownloadsOneBlock(t *testing.T) {
 	w := buildWorld(t)
 	bad, good, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.3"), w.addNode("198.51.100.2")
@@ -39,9 +40,6 @@ func TestAICHRepairRedownloadsOneBlock(t *testing.T) {
 	link := strings.Replace(f.link(bad.endpoint(), good.endpoint()), "|/|sources", "|h="+root.String()+"|/|sources", 1)
 	path := "/downloads/aich.bin"
 	b.engine.Post(RunCommand{ID: 2, Mode: ModeDownload, Link: link, File: path})
-	w.waitFor("the corrupt seeder to be banned", func() bool {
-		return hasBan(b.loadTrace(), bad.endpoint().String())
-	})
 	w.waitFor("progress to keep all but the bad block", func() bool {
 		p, _ := b.events.progressByRun(2)
 		return p.Received == int64(len(f.data))-piece.BlockSize
@@ -64,6 +62,9 @@ func TestAICHRepairRedownloadsOneBlock(t *testing.T) {
 	}
 	requireEndedOK(t, w.waitEnded(b, 2))
 	b.requireData(path, f.data)
+	if hasBan(b.loadTrace(), bad.endpoint().String()) {
+		t.Fatal("seeder of one bad block among good ones banned")
+	}
 	w.waitFor("the good seeder to count its upload", func() bool {
 		p, _ := good.events.progressByRun(1)
 		return p.Uploaded > 0

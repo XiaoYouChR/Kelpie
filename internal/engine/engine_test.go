@@ -487,7 +487,9 @@ func TestDownloadFromTwoSeedersViaServer(t *testing.T) {
 	}
 }
 
-func TestCorruptSeederIsBanned(t *testing.T) {
+// Without AICH a part that fails its MD4 check is downloaded again and its
+// senders stay: MD4 cannot tell which one was corrupt.
+func TestCorruptSeederWithoutAICHIsNotBanned(t *testing.T) {
 	w := buildWorld(t)
 	bad, good, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.3"), w.addNode("198.51.100.2")
 	bad.start()
@@ -505,11 +507,15 @@ func TestCorruptSeederIsBanned(t *testing.T) {
 
 	good.host.SetUnreachable(true)
 	path := b.download(2, f, bad.endpoint(), good.endpoint())
-	w.waitFor("the corrupt seeder to be banned", func() bool {
-		return matchTrace(b.loadTrace(), "closed", bad.endpoint().String()) && hasBan(b.loadTrace(), bad.endpoint().String())
+	w.waitFor("the corrupt part to be dropped", func() bool {
+		p, _ := b.events.progressByRun(2)
+		return matchTrace(b.loadTrace(), "received", bad.endpoint().String()) && p.Received == 0
 	})
+	if hasBan(b.loadTrace(), bad.endpoint().String()) {
+		t.Fatal("seeder banned without AICH to tell it sent the corrupt data")
+	}
 	good.host.SetUnreachable(false)
-	// The good seeder failed once and is retried after DeadSourceList's 45
+	// The good seeder failed once and is retried after DeadSourceList's 30
 	// minutes; skip ahead a minute at a time.
 	deadline := time.Now().Add(waitTimeout)
 	for {

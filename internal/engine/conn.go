@@ -566,7 +566,9 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		e.onNoNeededParts(c, ev.File)
 	case peer.BlocksWanted:
 		if r := e.downloadByHash(ev.File); r != nil {
-			e.runSession(c, c.session.Request(ev.File, r.transfer.Request(c.id, ev.Count)))
+			blocks, actions := r.transfer.Request(c.id, ev.Count, now)
+			e.runSession(c, c.session.Request(ev.File, blocks))
+			e.runTransferActions(r, actions)
 		}
 	case peer.BlockReceived:
 		e.ledger.OnTransferred(c.session.Capabilities().UserHash, c.remote.Addr(), 0, ev.Payload)
@@ -595,11 +597,11 @@ func (e *Engine) onPeerEvent(c *conn, event peer.Event) {
 		}
 	case peer.RecoveryReceived:
 		if r := e.downloadByHash(ev.File); r != nil {
-			e.runTransferActions(r, r.transfer.OnRecovery(c.id, ev.Part, ev.Root, ev.Entries, now))
+			e.runTransferActions(r, r.transfer.OnRecovery(c.id, ev.Part, ev.Root, ev.Entries))
 		}
 	case peer.RecoveryFailed:
 		if r := e.downloadByHash(ev.File); r != nil {
-			e.runTransferActions(r, r.transfer.OnRecoveryFailed(c.id, now))
+			e.runTransferActions(r, r.transfer.OnRecoveryFailed(c.id))
 		}
 	case peer.TreeWanted:
 		e.requestTree(ev.File)

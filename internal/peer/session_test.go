@@ -1039,18 +1039,39 @@ func TestHelloNamesBuddyAndKadVersion(t *testing.T) {
 	}
 }
 
-// eMule packs a block only when it shrinks (UploadDiskIOThread.cpp:581-583),
-// so a packed size beyond the block is a peer making us buffer without end.
-func TestCompressedPartLargerThanBlockCloses(t *testing.T) {
-	l := buildLink(t)
-	size := piece.BlockSize
-	file, _ := addShare(l.b, 1, size, true)
-	l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
-	l.run(l.b, l.b.s.StartUpload())
-	l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: size}}))
-	l.run(l.b, Output{Send: []wire.Packet{client.CompressedPart{Hash: file, Start: 0, PackedSize: 1 << 30, Data: make([]byte, 10)}}})
-	if l.a.closed != closeProtocol {
-		t.Fatalf("closed = %q, want protocol", l.a.closed)
+// A broken compressed block is given up and its rest ignored; the
+// connection stays and the next block arrives (aMule
+// DownloadClient.cpp:988-1015). eMule packs a block only when it shrinks
+// (UploadDiskIOThread.cpp:581-583), so a packed size beyond the block is
+// broken too.
+func TestBrokenCompressedBlockIsGivenUp(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		part client.CompressedPart
+	}{
+		{"larger than the block", client.CompressedPart{PackedSize: 1 << 30, Data: make([]byte, 10240)}},
+		{"not zlib", client.CompressedPart{PackedSize: 10, Data: make([]byte, 10)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			l := buildLink(t)
+			size := 2 * piece.BlockSize
+			file, data := addShare(l.b, 1, size, false)
+			l.run(l.a, l.a.s.Add(file, size, piece.Set{false}))
+			l.run(l.b, l.b.s.StartUpload())
+			second := piece.Block{Begin: piece.BlockSize, End: size}
+			l.run(l.a, l.a.s.Request(file, []piece.Block{{Begin: 0, End: piece.BlockSize}, second}))
+			part := test.part
+			part.Hash = file
+			l.run(l.b, Output{Send: []wire.Packet{part, part}})
+			l.run(l.b, Output{Send: []wire.Packet{client.SendingPart{Hash: file, Start: uint64(second.Begin), End: uint64(second.End), Data: data[second.Begin:second.End]}}})
+			if l.a.closed != "" {
+				t.Fatalf("closed %q over one broken block", l.a.closed)
+			}
+			got := eventsOf[BlockReceived](l.a)
+			if len(got) != 1 || got[0].Block != second {
+				t.Fatalf("received %+v, want only the second block", got)
+			}
+		})
 	}
 }
 

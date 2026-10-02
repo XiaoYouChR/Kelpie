@@ -308,10 +308,12 @@ func (e *Engine) onDatagram(from netip.AddrPort, data []byte) {
 		e.onReaskCallbackUDP(from, p)
 	case client.DirectCallbackReq:
 		e.onDirectCallbackReq(from, p)
-	case client.ReaskAck:
+	case client.ReaskAck, client.QueueFull, client.FileNotFound:
+		// The answer does not name the file: only the download reasking its
+		// sender takes it.
 		for _, r := range slices.Clone(e.runs) {
 			if e.downloadByHash(r.file.Hash) != nil {
-				e.runTransferActions(r, r.transfer.OnReaskAnswered(from, int(p.Rank), e.now()))
+				e.runTransferActions(r, r.transfer.OnReaskAnswered(from, p, e.now()))
 			}
 		}
 	}
