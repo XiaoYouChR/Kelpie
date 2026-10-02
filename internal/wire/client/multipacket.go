@@ -8,7 +8,7 @@ import (
 )
 
 // MultiPacket is OP_MULTIPACKET: several requests for one file in one frame.
-// Requests holds FileRequest, SetRequestFileID, RequestSources,
+// Requests holds FileRequest, SetRequestFileID, requestSources,
 // RequestSources2 and AICHFileHashRequest values, whose Hash is the MultiPacket's. Sub-requests are
 // not length-prefixed, so an unknown one ends parsing and is kept, with
 // everything after it, as a trailing wire.Unknown. A repeated opcode is read
@@ -159,7 +159,7 @@ func buildRequests(b []byte, requests []wire.Packet) []byte {
 			b = buildFileRequestExtension(append(b, opRequestFileName), p)
 		case SetRequestFileID:
 			b = append(b, opSetRequestFileID)
-		case RequestSources:
+		case requestSources:
 			b = append(b, opRequestSources)
 		case RequestSources2:
 			b = binary.LittleEndian.AppendUint16(append(b, opRequestSources2, p.Version), p.Options)
@@ -205,7 +205,7 @@ func parseRequests(r *wire.Reader, hash wire.Hash) []wire.Packet {
 		case opSetRequestFileID:
 			return SetRequestFileID{Hash: hash}
 		case opRequestSources:
-			return RequestSources{Hash: hash}
+			return requestSources{Hash: hash}
 		case opRequestSources2:
 			return RequestSources2{Version: r.Uint8(), Options: r.Uint16(), Hash: hash}
 		case opAICHFileHashRequest:

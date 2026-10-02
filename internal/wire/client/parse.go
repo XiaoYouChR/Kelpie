@@ -175,7 +175,7 @@ func parseEMule(r *wire.Reader, opcode byte) wire.Packet {
 	case opCompressedPart64:
 		return parseCompressedPart(r, true)
 	case opRequestSources:
-		return RequestSources{Hash: r.Hash()}
+		return requestSources{Hash: r.Hash()}
 	case opRequestSources2:
 		return RequestSources2{Version: r.Uint8(), Options: r.Uint16(), Hash: r.Hash()}
 	case opAnswerSources2:
