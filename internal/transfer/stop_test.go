@@ -142,8 +142,13 @@ func TestResumeAsksTheSenderAtOnceUntilItWouldCountAsAggressive(t *testing.T) {
 		t.Fatal("the sender was asked again at once on the second resume")
 	}
 	held := at(time.Minute + politeGap)
-	if p := r.transfer.Progress(at(2 * time.Minute)); p.HeldSources != 1 || !p.HeldUntil.Equal(held) {
+	p := r.transfer.Progress(at(2 * time.Minute))
+	if p.HeldSources != 1 || !p.HeldUntil.Equal(held) {
 		t.Fatalf("progress held %d until %v, want 1 until %v", p.HeldSources, p.HeldUntil, held)
+	}
+	want := []transfer.SourceProgress{{Address: endpoint(1).String(), Status: "held", Channel: "link"}}
+	if !slices.Equal(p.Sources, want) {
+		t.Fatalf("progress sources %+v, want %+v", p.Sources, want)
 	}
 	if r.ask(held.Add(-time.Second)) || !r.ask(held) {
 		t.Fatal("the held sender was not asked when its ask became polite")

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"maps"
+	"reflect"
 	"slices"
 	"time"
 
@@ -288,8 +289,18 @@ func (e *Engine) refreshProgress(r *run, isFirst bool) {
 			HeldSources:  p.HeldSources,
 			HeldUntil:    p.HeldUntil,
 		}
+		for _, s := range p.Sources {
+			progress.Sources = append(progress.Sources, Source{
+				Address:      s.Address,
+				Software:     s.Software,
+				Status:       s.Status,
+				Rank:         s.Rank,
+				DownloadRate: s.DownloadRate,
+				Channel:      string(s.Channel),
+			})
+		}
 	}
-	if !isFirst && progress == r.progress {
+	if !isFirst && reflect.DeepEqual(progress, r.progress) {
 		return
 	}
 	r.progress = progress

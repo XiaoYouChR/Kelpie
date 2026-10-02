@@ -129,9 +129,10 @@ type Source struct {
 	// IsDirectCallback: a firewalled source that takes callback requests
 	// itself, at the UDP endpoint in Buddy, as Kad or its Hello said.
 	IsDirectCallback bool
-	// CanReaskUDP and CanExchange are known only from the Hello.
+	// CanReaskUDP, CanExchange and Software are known only from the Hello.
 	CanReaskUDP bool
 	CanExchange bool
+	Software    string
 }
 
 // Tick carries what OnTick needs to know about the engine.
@@ -158,6 +159,10 @@ type Tick struct {
 type source struct {
 	key string
 	Source
+	// channel and rank exist only for Progress: where the source was first
+	// found, and the queue rank it last told us, 0 while unknown.
+	channel Channel
+	rank    int
 
 	state sourceState
 	// deadline is when a callback in stateConnecting gives up, zero for a
@@ -292,7 +297,7 @@ func (t *Transfer) addSource(found Source, channel Channel, now time.Time) []Act
 		s.CanObfuscate = s.CanObfuscate || found.CanObfuscate
 		return nil
 	}
-	s := t.addNew(found)
+	s := t.addNew(found, channel)
 	if s == nil {
 		return nil
 	}
@@ -303,7 +308,7 @@ func (t *Transfer) addSource(found Source, channel Channel, now time.Time) []Act
 
 // addNew makes room at the cap by dropping a failed source or one we cannot
 // reach; without one, the new source is refused.
-func (t *Transfer) addNew(found Source) *source {
+func (t *Transfer) addNew(found Source, channel Channel) *source {
 	if len(t.sources) >= maxSources {
 		i := slices.IndexFunc(t.sources, func(s *source) bool { return !t.isValid(s) })
 		if i < 0 {
@@ -311,7 +316,7 @@ func (t *Transfer) addNew(found Source) *source {
 		}
 		t.sources = slices.Delete(t.sources, i, i+1)
 	}
-	s := &source{key: buildKey(found), Source: found, aggressiveness: unknownAggressiveness}
+	s := &source{key: buildKey(found), Source: found, channel: channel, aggressiveness: unknownAggressiveness}
 	t.sources = append(t.sources, s)
 	return s
 }
@@ -419,7 +424,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Source, now time.Time) []A
 	s := t.connectedSource(hello)
 	var actions []Action
 	if s == nil {
-		s = t.addNew(found)
+		s = t.addNew(found, channelIncoming)
 		if s == nil {
 			return []Action{Close{Peer: peer, Reason: "too many sources"}}
 		}
@@ -440,6 +445,7 @@ func (t *Transfer) OnPeerConnected(peer uint64, hello Source, now time.Time) []A
 	s.CanReaskUDP = hello.CanReaskUDP
 	s.CanExchange = hello.CanExchange
 	s.CanObfuscate = hello.CanObfuscate
+	s.Software = hello.Software
 	if hello.IsDirectCallback {
 		s.Buddy, s.IsDirectCallback = hello.Buddy, true
 	}
@@ -518,7 +524,7 @@ func (t *Transfer) OnQueued(peer uint64, rank int, now time.Time) []Action {
 }
 
 func (t *Transfer) setQueued(s *source, rank int, now time.Time) TraceEvent {
-	s.state = stateQueued
+	s.state, s.rank = stateQueued, rank
 	event := t.buildTrace(now, s, EventQueued)
 	event.Rank = rank
 	return event
