@@ -99,6 +99,8 @@ Kelpie/
 
 ## 参与开发
 
+构建和测试需要不低于 [go.mod](go.mod) 中 `go` 一行的 Go 版本。
+
 ```sh
 go build -o build/kelpie ./cmd/kelpie
 go test -race ./...
