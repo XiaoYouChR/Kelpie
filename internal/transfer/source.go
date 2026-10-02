@@ -34,6 +34,11 @@ const (
 	// corrupt data stays refused.
 	banTime = 2 * time.Hour
 
+	// minRequestTime is MIN_REQUESTTIME (Constants.h:67): aMule 3.1.0 counts
+	// an OP_AICHREQUEST sooner than this after the client's last request as
+	// aggressive (ClientTCPSocket.cpp:1761-1771).
+	minRequestTime = 590 * time.Second
+
 	exchangeReaskSlow = 40 * time.Minute // SOURCECLIENTREASKS
 	exchangeReaskFast = 5 * time.Minute  // SOURCECLIENTREASKF
 	commonPenalty     = 4                // MINCOMMONPENALTY
@@ -141,6 +146,10 @@ type source struct {
 
 	lastAsked    time.Time
 	lastExchange time.Time
+	// lastRecovery is when we last asked the source for AICH recovery
+	// data: one bad part after another would otherwise ask it within
+	// minRequestTime.
+	lastRecovery time.Time
 
 	udpReasks int
 	udpFailed int

@@ -3,6 +3,7 @@ package transfer_test
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/aich"
 	"github.com/XiaoYouChR/Kelpie/internal/piece"
@@ -216,5 +217,39 @@ func TestRootIsTrustedByVotes(t *testing.T) {
 	h.fillPart(1, 2, 0)
 	if countActions[transfer.RequestRecovery](h.actions[before:]) != 1 {
 		t.Fatal("did not trust a root from ten prefixes")
+	}
+}
+
+// One bad part after another asks a source for recovery data at most once
+// per MIN_REQUESTTIME: aMule 3.1.0 counts a sooner OP_AICHREQUEST as
+// aggressive and bans at the fourth.
+func TestRecoveryAsksASourceOncePerMinRequestTime(t *testing.T) {
+	const minRequestTime = 590 * time.Second
+	for _, wait := range []time.Duration{minRequestTime - time.Second, minRequestTime} {
+		data := buildData(2*piece.PartSize + 5000)
+		tree := buildTree(data)
+		file := buildFile(data)
+		file.AICHHash = tree.Root()
+		h := buildHarness(t, data, transfer.Options{File: file})
+		for peer := range uint64(4) {
+			h.connect(peer+1, int(peer+1), nil)
+		}
+		h.transfer.OnRoot(3, tree.Root())
+		h.fillPart(1, 2, 4)
+		if got := lastRecovery(t, h.actions).Peer; got != 3 {
+			t.Fatalf("asked %d", got)
+		}
+		h.run(h.transfer.OnRecovery(3, 0, tree.Root(), tree.BuildRecovery(0), h.now))
+
+		h.now = h.now.Add(wait)
+		before := len(h.actions)
+		for index := range piece.BlockCount(int64(len(data)), 1) {
+			h.transfer.OnPeerParts(4, piece.Set{false, true, false})
+			h.deliver(4, 1, index == 0)
+		}
+		isAsked := countActions[transfer.RequestRecovery](h.actions[before:]) == 1
+		if isAsked != (wait >= minRequestTime) {
+			t.Fatalf("after %v asked again: %v", wait, isAsked)
+		}
 	}
 }

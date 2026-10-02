@@ -130,8 +130,9 @@ func toVotePrefix(addr netip.Addr) netip.Prefix {
 
 // requestRecovery asks a source for the recovery data of a part that failed its
 // MD4 check (aMule RequestAICHRecovery, PartFile.cpp:3813-3891): one that
-// reported the trusted root and has no request pending, HighID first, at
-// random. Without one the part is thrown away whole.
+// reported the trusted root, has no request pending and was not asked
+// within minRequestTime, HighID first, at random. Without one the part is
+// thrown away whole.
 func (t *Transfer) requestRecovery(part int, now time.Time) []Action {
 	root, isTrusted := t.aich.root()
 	if !isTrusted || piece.BlockCount(t.file.Size, part) == 1 {
@@ -140,7 +141,7 @@ func (t *Transfer) requestRecovery(part int, now time.Time) []Action {
 	var highIDs, lowIDs []uint64
 	for _, peer := range slices.Sorted(maps.Keys(t.aich.roots)) {
 		s := t.peers[peer]
-		if s == nil || t.aich.roots[peer] != root || t.isAsked(peer) {
+		if s == nil || t.aich.roots[peer] != root || t.isAsked(peer) || now.Sub(s.lastRecovery) < minRequestTime {
 			continue
 		}
 		if s.ClientID == 0 {
@@ -158,6 +159,7 @@ func (t *Transfer) requestRecovery(part int, now time.Time) []Action {
 	}
 	peer := candidates[t.aich.random.IntN(len(candidates))]
 	t.aich.asked[part] = peer
+	t.peers[peer].lastRecovery = now
 	return []Action{RequestRecovery{Peer: peer, Part: part, Root: root}}
 }
 
