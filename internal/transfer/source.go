@@ -119,6 +119,8 @@ type Tick struct {
 	Server netip.AddrPort
 	// IsFirewalled is true when peers cannot connect to us (LowID).
 	IsFirewalled bool
+	// IsOffline: neither a server nor Kad is up.
+	IsOffline bool
 	// PublicIP is our address as the server or peers see it; invalid while
 	// unknown. Port is our TCP listen port.
 	PublicIP netip.Addr
@@ -343,11 +345,18 @@ func (t *Transfer) OnConnectFailed(endpoint netip.AddrPort, reason string, now t
 	return nil
 }
 
+// setFailed puts the source on the dead list for wait. Offline a failure
+// says nothing about the source, which only waits for its next reask, once
+// we are back online.
 func (t *Transfer) setFailed(s *source, wait time.Duration, reason string, now time.Time) TraceEvent {
 	s.state = stateFailed
 	s.deadline = now.Add(wait)
 	if s.ClientID != 0 || s.Buddy.IsValid() {
 		s.deadline = s.deadline.Add(callbackDeadTime)
+	}
+	if t.tick.IsOffline {
+		s.state = stateNew
+		s.lastAsked = now
 	}
 	event := t.buildTrace(now, s, EventFailed)
 	event.Reason = reason
@@ -667,6 +676,12 @@ func (t *Transfer) runSource(s *source, budget *int) []Action {
 		return nil
 	}
 	if t.isConnected(s) || now.Before(s.a4afUntil) {
+		return nil
+	}
+	// aMule asks sources only while connected to a server or Kad
+	// (PartFile.cpp:1739-1757): offline every ask fails and would mark the
+	// source dead. A source never asked, as a link's at startup, is tried.
+	if t.tick.IsOffline && !s.lastAsked.IsZero() {
 		return nil
 	}
 

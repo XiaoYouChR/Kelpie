@@ -270,6 +270,7 @@ func (e *Engine) runTransfers(now time.Time) {
 	}
 	e.budgetCursor++
 	server, _ := e.server.Login()
+	isOffline := e.isOffline()
 	for _, r := range order {
 		if r.transfer == nil || e.runByHash[r.file.Hash] != r {
 			continue
@@ -279,6 +280,7 @@ func (e *Engine) runTransfers(now time.Time) {
 			ConnectBudget: budget,
 			Server:        server,
 			IsFirewalled:  e.isFirewalled(),
+			IsOffline:     isOffline,
 			PublicIP:      e.publicIP,
 			Port:          uint16(e.tcpPort),
 			LocalAddrs:    e.config.LocalAddrs,
@@ -291,6 +293,15 @@ func (e *Engine) runTransfers(now time.Time) {
 		}
 		e.runTransferActions(r, actions)
 	}
+}
+
+// isOffline: Kad has no verified node and no server is logged in, aMule's
+// !theApp->IsConnected(). Without Kad nothing tells when we are back: a
+// server that failed MAX_SERVERFAILCOUNT times is never tried again, and
+// the sources would wait forever, so then we never count as offline.
+func (e *Engine) isOffline() bool {
+	server, _ := e.server.Login()
+	return e.kad != nil && e.kadStatus.Nodes == 0 && !server.IsValid()
 }
 
 // connectBudget follows maxConnections and maxNewConnections.

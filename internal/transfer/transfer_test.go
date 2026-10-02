@@ -966,3 +966,28 @@ func TestA4AFSourceWaits(t *testing.T) {
 		t.Fatalf("source connected for this Transfer still held: %+v", got)
 	}
 }
+
+// Offline, a source asked before waits for the network, and a failure does
+// not mark it dead; a link source never asked is still dialled.
+func TestOfflineSourcesWait(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1), endpoint(2))})
+	offline := func(d time.Duration) []transfer.Action {
+		return h.tick(transfer.Tick{Now: start.Add(d), ConnectBudget: 2, IsOffline: true})
+	}
+	if got := offline(0); countActions[transfer.Connect](got) != 2 {
+		t.Fatalf("link sources not dialled offline at startup: %+v", got)
+	}
+	h.run(h.transfer.OnConnectFailed(endpoint(1), "no route to host", start))
+	h.run(h.transfer.OnPeerConnected(1, transfer.Source{Endpoint: endpoint(2), UserHash: userHash(2)}, start))
+	h.run(h.transfer.OnQueued(1, 5, start))
+	h.run(h.transfer.OnPeerGone(1, "idle", start))
+
+	if got := offline(2 * time.Hour); len(got) != 0 {
+		t.Fatalf("sources asked offline: %+v", got)
+	}
+	back := start.Add(2 * time.Hour)
+	if got := h.tick(transfer.Tick{Now: back, ConnectBudget: 2}); countActions[transfer.Connect](got) != 2 {
+		t.Fatalf("want both sources asked once back online, the failed one too: %+v", got)
+	}
+}
