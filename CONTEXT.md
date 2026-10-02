@@ -128,7 +128,8 @@ is not limited.
 
 Whether a server connection is established, whether the server gave a HighID
 (other peers can connect to us) or a LowID, whether Kad sees us as firewalled,
-how many Kad nodes are known, and whether a carrier NAT keeps us from a HighID.
+how many Kad nodes are known, whether a carrier NAT keeps us from a HighID,
+and what keeps the Proxy from carrying us.
 Kelpie hands each change to the caller, whether or not a Run is open, and
 hands it None when the Engine Process goes away.
 

@@ -87,6 +87,7 @@ type settingsLine struct {
 		ServerLists []string `json:"serverLists"`
 		NodeLists   []string `json:"nodeLists"`
 		TraceFile   string   `json:"traceFile"`
+		Proxy       string   `json:"proxy"`
 	} `json:"settings"`
 	RateLimits rateLimits `json:"rateLimits"`
 }
@@ -197,6 +198,7 @@ func toSettings(line settingsLine) (engine.Settings, error) {
 		EnableUPnP:    line.Settings.EnableUpnp,
 		DownloadLimit: limits.Download,
 		UploadLimit:   limits.Upload,
+		Proxy:         line.Settings.Proxy,
 	}, nil
 }
 

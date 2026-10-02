@@ -12,7 +12,7 @@ Engine Process writes diagnostics to stderr, never to stdout.
 {"type": "hello", "protocol": 1, "dataFolder": "/abs/path",
  "settings": {"port": 4662, "enableKad": true, "enableUpnp": true,
               "serverLists": ["/abs/server.met"], "nodeLists": ["/abs/nodes.dat"],
-              "traceFile": ""},
+              "traceFile": "", "proxy": ""},
  "rateLimits": {"download": 0, "upload": 0}}
 ```
 
@@ -25,6 +25,12 @@ Engine Process writes diagnostics to stderr, never to stdout.
 - `traceFile`, when not empty, receives one JSON line per source lifecycle event
   (see Trace).
 - Rate limits are bytes per second; 0 means unlimited.
+- `proxy` is a `socks5://` or `socks5h://` URL, with an optional
+  `user:password@`, or empty to go direct. Through a Proxy everything we send
+  goes through it and nothing falls back to direct; we still listen for TCP
+  directly. With `socks5h://` a server listed by host name is not resolved
+  and so not used (ADR-0006). Any other scheme fails `hello` with
+  `START_FAILED` and is ignored in `update`.
 
 ```json
 {"type": "run", "run": 1, "mode": "download", "link": "ed2k://|file|...|/", "file": "/abs/dir/name.iso"}
@@ -39,8 +45,10 @@ Engine Process writes diagnostics to stderr, never to stdout.
   link is ignored.
 - `stop` for an unknown or ended run is ignored.
 - `update` carries `settings` and `rateLimits` as `hello` does. The Engine
-  Process applies `enableKad`, `enableUpnp` and `rateLimits` at once, without
-  ending any run, and ignores the other fields. Turning Kad off keeps the
+  Process applies `enableKad`, `enableUpnp`, `proxy` and `rateLimits` at
+  once, without ending any run, and ignores the other fields. A changed
+  `proxy` applies to new connections, and Kad and server UDP move to it at
+  once; open connections keep their path. Turning Kad off keeps the
   nodes it knew for the next start and leaves the UDP port to eD2k; turning
   it on bootstraps from those nodes and the `nodeLists` of `hello`. Turning
   port mapping off deletes the mappings.
@@ -56,7 +64,7 @@ Engine Process writes diagnostics to stderr, never to stdout.
 ## Engine Process to Kelpie
 
 ```json
-{"type": "ready", "version": "v0.1.0", "protocol": 1}
+{"type": "ready", "version": "v0.2.0", "protocol": 1}
 {"type": "failed", "error": {"code": "START_FAILED", "message": "listen tcp :4662: address already in use"}}
 ```
 
@@ -73,7 +81,8 @@ After `failed` the Engine Process exits with a non-zero status. Kelpie waits
               "rank": 0, "downloadRate": 512, "channel": "server"}]}
 {"type": "ended", "run": 1, "error": null}
 {"type": "network", "isServerConnected": true, "isHighId": false,
- "isKadFirewalled": true, "kadNodes": 812, "isBehindCarrierNat": false}
+ "isKadFirewalled": true, "kadNodes": 812, "isBehindCarrierNat": false,
+ "proxyIssue": ""}
 ```
 
 - The first `progress` of a run is sent as soon as the run is admitted; after
@@ -118,6 +127,11 @@ After `failed` the Engine Process exits with a non-zero status. Kelpie waits
   or another reserved range) or differs from the address the server or a peer
   reported for us. Without a port mapping it is false: nothing tells the cases
   apart.
+- `proxyIssue` is empty without a Proxy or while it works. It is
+  `unreachable` when the last attempt to reach the Proxy failed, and `noUdp`
+  when the Proxy relays no UDP, so Kad, server UDP and UDP reasks wait while
+  the Engine Process asks again with backoff; `unreachable` wins when both
+  hold.
 
 ## Run rules
 

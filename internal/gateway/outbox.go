@@ -166,6 +166,7 @@ type networkLine struct {
 	IsKadFirewalled    bool   `json:"isKadFirewalled"`
 	KadNodes           int    `json:"kadNodes"`
 	IsBehindCarrierNat bool   `json:"isBehindCarrierNat"`
+	ProxyIssue         string `json:"proxyIssue"`
 }
 
 func toProgressLine(id engine.RunID, p engine.Progress) progressLine {
@@ -202,5 +203,6 @@ func toNetworkLine(n engine.Network) networkLine {
 		IsKadFirewalled:    n.IsKadFirewalled,
 		KadNodes:           n.KadNodes,
 		IsBehindCarrierNat: n.IsBehindCarrierNat,
+		ProxyIssue:         n.ProxyIssue,
 	}
 }

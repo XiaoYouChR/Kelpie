@@ -23,9 +23,9 @@ const kadLogTime = time.Minute
 // isServer marks the server socket.
 func (e *Engine) buildUDPTransport(isServer bool) transport.Transport {
 	if e.packetLog == nil {
-		return e.ports.Transport
+		return e.transport
 	}
-	return udpLogTransport{Transport: e.ports.Transport, log: e.packetLog, clock: e.ports.Clock, isServer: isServer}
+	return udpLogTransport{Transport: e.transport, log: e.packetLog, clock: e.ports.Clock, isServer: isServer}
 }
 
 type udpLogTransport struct {

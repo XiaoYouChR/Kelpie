@@ -39,6 +39,8 @@ type Settings struct {
 	EnableUPnP bool
 	// DownloadLimit and UploadLimit are bytes per second; 0 is unlimited.
 	DownloadLimit, UploadLimit int64
+	// Proxy is a socks5:// or socks5h:// URL, or "" to go direct (ADR-0006).
+	Proxy string
 }
 
 func (RunCommand) isCommand()    {}
@@ -94,6 +96,9 @@ type Network struct {
 	KadNodes          int
 	// IsBehindCarrierNat follows docs/protocol.md "network".
 	IsBehindCarrierNat bool
+	// ProxyIssue is "", "unreachable" or "noUdp", as docs/protocol.md
+	// "network" says.
+	ProxyIssue string
 }
 
 // Code is why a Run failed; the gateway names it on the wire

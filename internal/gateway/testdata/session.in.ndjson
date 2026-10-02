@@ -1,6 +1,6 @@
 {"type": "hello", "protocol": 1, "dataFolder": "/data/kelpie", "settings": {"port": 4662, "enableKad": true, "enableUpnp": true, "serverLists": ["/data/server.met"], "nodeLists": ["/data/nodes.dat"], "traceFile": ""}, "rateLimits": {"download": 0, "upload": 102400}}
 {"type": "run", "run": 1, "mode": "download", "link": "ed2k://|file|empty.bin|0|31D6CFE0D16AE931B73C59D7E0C089C0|/", "file": "/downloads/empty.bin"}
 {"type": "run", "run": 2, "mode": "seed", "link": "not a link", "file": "/downloads/other.bin"}
-{"type": "update", "settings": {"port": 4662, "enableKad": false, "enableUpnp": true, "serverLists": ["/data/server.met"], "nodeLists": ["/data/nodes.dat"], "traceFile": ""}, "rateLimits": {"download": 1048576, "upload": 0}}
+{"type": "update", "settings": {"port": 4662, "enableKad": false, "enableUpnp": true, "serverLists": ["/data/server.met"], "nodeLists": ["/data/nodes.dat"], "traceFile": "", "proxy": "socks5h://user:pass@127.0.0.1:1080"}, "rateLimits": {"download": 1048576, "upload": 0}}
 {"type": "remove", "hash": "31d6cfe0d16ae931b73c59d7e0c089c0"}
 {"type": "stop", "run": 1}

@@ -1,5 +1,5 @@
 {"type": "ready", "version": "v0.1.0", "protocol": 1}
-{"type": "network", "isServerConnected": true, "isHighId": false, "isKadFirewalled": true, "kadNodes": 812, "isBehindCarrierNat": true}
+{"type": "network", "isServerConnected": true, "isHighId": false, "isKadFirewalled": true, "kadNodes": 812, "isBehindCarrierNat": true, "proxyIssue": "noUdp"}
 {"type": "progress", "run": 1, "hash": "31D6CFE0D16AE931B73C59D7E0C089C0", "size": 2048, "received": 1024, "downloadRate": 512, "uploadRate": 0, "uploaded": 0, "peers": 12, "activePeers": 3, "heldSources": 1, "heldUntil": 1767226320000, "sources": [{"address": "1.2.3.4:4662", "software": "eMule 0.70b", "status": "transferring", "rank": 0, "downloadRate": 512, "channel": "server"}, {"address": "[2001:db8::1]:4662", "software": "aMule 2.3.3", "status": "queued", "rank": 17, "downloadRate": 0, "channel": "kad"}]}
 {"type": "ended", "run": 2, "error": {"code": "INVALID_LINK", "message": "not an eD2k file link"}}
 {"type": "ended", "run": 1, "error": null}
