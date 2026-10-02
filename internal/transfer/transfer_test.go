@@ -409,6 +409,34 @@ func TestReaskRefusals(t *testing.T) {
 	}
 }
 
+// A source due a Source Exchange is reasked over TCP, which can carry it,
+// instead of over UDP.
+func TestReaskDueExchangeSkipsUDP(t *testing.T) {
+	data := buildData(1000)
+	h := buildHarness(t, data, transfer.Options{File: buildFile(data, endpoint(1))})
+	h.tick(transfer.Tick{ConnectBudget: 1})
+	hello := transfer.Source{Endpoint: endpoint(1), UserHash: userHash(1), UDPPort: 4672, CanReaskUDP: true, CanExchange: true}
+	if got := h.transfer.OnPeerConnected(1, hello, start); countActions[transfer.RequestSources](got) != 1 {
+		t.Fatalf("no Source Exchange at the first connection: %+v", got)
+	}
+	h.run(h.transfer.OnQueued(1, 42, start))
+	h.run(h.transfer.OnPeerGone(1, "idle", start))
+	reaskAt := fileReaskTime - 10*time.Second
+	if got := h.tick(transfer.Tick{Now: start.Add(reaskAt), ConnectBudget: 1}); countActions[transfer.ReaskUDP](got) != 1 {
+		t.Fatalf("no UDP reask before the exchange is due: %+v", got)
+	}
+	answered := start.Add(reaskAt)
+	h.run(h.transfer.OnReaskAnswered(netip.AddrPortFrom(endpoint(1).Addr(), 4672), 7, answered))
+
+	next := answered.Add(fileReaskTime - 10*time.Second)
+	if got := h.tick(transfer.Tick{Now: next, ConnectBudget: 1}); len(got) != 0 {
+		t.Fatalf("UDP reask while an exchange is due: %+v", got)
+	}
+	if got := h.tick(transfer.Tick{Now: answered.Add(fileReaskTime), ConnectBudget: 1}); countActions[transfer.Connect](got) != 1 {
+		t.Fatalf("no TCP reask: %+v", got)
+	}
+}
+
 func TestFailedSourceBacksOff(t *testing.T) {
 	data := buildData(1000)
 	server := endpoint(9999)

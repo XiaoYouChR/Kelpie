@@ -695,7 +695,9 @@ func (t *Transfer) runSource(s *source, budget *int) []Action {
 	if !s.lastAsked.IsZero() {
 		untilReask = max(0, reaskTime-now.Sub(s.lastAsked))
 	}
-	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s) {
+	// A source due a Source Exchange is reasked over TCP, which can carry
+	// the exchange (aMule UDPReaskForDownload, DownloadClient.cpp:1275-1279).
+	if s.state == stateQueued && !s.isNoNeeded && untilReask < udpReaskLead && untilReask > 0 && t.canReaskUDP(s) && !t.isExchangeAllowed(s, now) {
 		s.state = stateReasking
 		s.udpReasks++
 		return []Action{ReaskUDP{Endpoint: netip.AddrPortFrom(s.Endpoint.Addr(), s.UDPPort), UserHash: s.UserHash, CanObfuscate: s.CanObfuscate}}
