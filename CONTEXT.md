@@ -98,11 +98,21 @@ may be asked.
 ## Settings
 
 What the caller chooses: port, Kad, port mapping on the home gateway, the
-local server list and node list files, an optional trace file, and the Rate
-Limits. Kelpie reads them each time it starts the Engine Process, and again
-when the caller asks it to update: Kad, port mapping, and the Rate Limits
-then change at once without ending any Run; the others wait for the next
-start.
+local server list and node list files, an optional trace file, the Rate
+Limits, and the Proxy. Kelpie reads them each time it starts the Engine
+Process, and again when the caller asks it to update: Kad, port mapping, the
+Rate Limits, and the Proxy then change at once without ending any Run; the
+others wait for the next start.
+
+## Proxy
+
+The SOCKS5 server, named in Settings, that carries everything we send. While
+a Proxy is set, nothing goes out directly: what the Proxy cannot carry stops
+instead. A changed Proxy applies to new connections, and UDP moves to it at
+once; open connections keep their path. Connections other peers open to us
+still arrive directly.
+
+_Avoid_: tunnel
 
 ## Rate Limit
 
