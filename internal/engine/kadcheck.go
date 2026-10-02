@@ -50,11 +50,13 @@ func (e *Engine) onKadMessage(m kad.Event) {
 
 // startFirewallCheck is ClientList::RequestTCP: connect to the asker, with
 // obfuscation when it supports it, and acknowledge after the handshake.
-// aMule also acknowledges over a connection the asker opened, which proves
-// nothing about its port; we skip that check instead.
+// Over a connection already up, whoever opened it, aMule acknowledges at
+// once without dialling (ClientList.cpp:874-887, BaseClient.cpp:1708-1716),
+// and the asker counts it (ClientTCPSocket.cpp:2019-2025); skipping it
+// would cost the asker an acknowledgement an aMule node gives.
 func (e *Engine) startFirewallCheck(r kad.FirewallCheck) {
 	if c := e.connByEndpoint(r.Addr); c != nil {
-		if c.isOutgoing && c.isHandshaken {
+		if c.isHandshaken {
 			e.sendFirewallAck(c, r.KadPort)
 		}
 		return
