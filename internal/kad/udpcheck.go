@@ -120,8 +120,12 @@ func (c *core) runUDPCheck(now time.Time) {
 		return
 	}
 	u.nextExternPing = now.Add(externPortGap)
+	// aMule picks a random contact each time, which in a network of
+	// thousands is never the same twice; we skip the ones that answered or
+	// have not yet, so a small table does not ping one node past the two a
+	// minute it accepts.
 	for _, ct := range c.table.closestContacts(buildRandomID(c.id, 0, 0, c.rng), len(c.table.byID), true) {
-		if ct.Version >= versionPingRange {
+		if ct.Version >= versionPingRange && !slices.Contains(u.externIPs, ct.Addr.Addr()) && !c.rpcs.hasPending(ct.Addr, rpcPing) {
 			c.sendTo(ct.Node, kadwire.Ping{})
 			c.rpcs.add(&rpc{kind: rpcPing, node: ct.Node, sent: now})
 			return

@@ -165,3 +165,17 @@ func TestUDPCheckSkipsClientsWeTested(t *testing.T) {
 		t.Fatalf("asked %+v, a client we sent test packets to", next)
 	}
 }
+
+// While our external port is unknown we ask for it every 15 s, but never a
+// node that has yet to answer: a small table would otherwise ping one node
+// past the two a minute it accepts, and get us banned.
+func TestExternPortPingsSpreadOverNodes(t *testing.T) {
+	h := buildHarness(t)
+	h.connect(fileHash, 1)
+	for range 90 {
+		h.tick(time.Second)
+	}
+	if got := len(packetsOf[kadwire.Ping](h)); got != 1 {
+		t.Fatalf("%d pings to the one silent node in 90 s, want 1", got)
+	}
+}
