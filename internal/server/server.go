@@ -2,6 +2,7 @@ package server
 
 import (
 	"cmp"
+	"maps"
 	"math/rand/v2"
 	"net/netip"
 	"slices"
@@ -272,6 +273,13 @@ func (s *Server) Login() (netip.AddrPort, uint32) {
 func (s *Server) OnTick(now time.Time, wanted []Wanted, publicIP netip.Addr) []Action {
 	s.wanted = wanted
 	s.publicIP = publicIP
+	// A file wanted again, as a download stopped and run again, is asked for
+	// in the next frame, as eMule and aMule ask for a resumed file
+	// (CPartFile::ResumeFile; aMule PartFile.cpp:2869, eMule
+	// PartFile.cpp:3923).
+	maps.DeleteFunc(s.askedAt, func(file wire.Hash, _ time.Time) bool {
+		return !slices.ContainsFunc(wanted, func(w Wanted) bool { return w.File == file })
+	})
 	var out []Action
 	for _, a := range slices.Clone(s.attempts) {
 		if now.Sub(a.since) > connectTimeout {
@@ -624,8 +632,8 @@ func (s *Server) send(p wire.Packet, out *[]Action) {
 }
 
 // runSourceRequests sends one frame of up to 15 OP_GETSOURCES, longest
-// waiting file first, and no file more often than SERVERREASKTIME. The
-// per-file times survive reconnects, as in eMule.
+// waiting file first, and no file more often than SERVERREASKTIME while it
+// stays wanted. The per-file times survive reconnects, as in eMule.
 func (s *Server) runSourceRequests(now time.Time, out *[]Action) {
 	if now.Before(s.nextSourceFrame) {
 		return
