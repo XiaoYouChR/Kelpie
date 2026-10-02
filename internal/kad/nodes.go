@@ -76,7 +76,7 @@ func toNode(ct kadwire.Contact) Node {
 }
 
 func toStoreNode(n Node) store.KadNode {
-	return store.KadNode{ID: n.ID, Addr: n.Addr, Version: n.Version}
+	return store.KadNode{ID: n.ID, Addr: n.Addr, TCPPort: n.TCPPort, Version: n.Version}
 }
 
 // matchGoodNode rejects Kad 1 nodes, which do not read Kad 2 requests, and

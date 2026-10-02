@@ -739,3 +739,13 @@ func TestUDPFirewalledNodeStoresNothing(t *testing.T) {
 		t.Fatal("stored a source while UDP firewalled")
 	}
 }
+
+// Saved nodes keep their TCP port, which UDP tests and buddies need from
+// the contacts we pass on.
+func TestStateKeepsTCPPort(t *testing.T) {
+	h := buildHarness(t)
+	n := h.connect(fileHash, 1)[0]
+	if got := h.c.state().Nodes; len(got) != 1 || got[0].TCPPort != n.TCPPort {
+		t.Fatalf("saved nodes %+v, want TCP port %d", got, n.TCPPort)
+	}
+}

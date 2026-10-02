@@ -163,7 +163,7 @@ func (k *Kad) Run(ctx context.Context) (State, error) {
 	}, now)
 	var nodes []Node
 	for _, n := range k.cfg.State.Nodes {
-		nodes = append(nodes, Node{ID: n.ID, Addr: n.Addr, Version: n.Version})
+		nodes = append(nodes, Node{ID: n.ID, Addr: n.Addr, TCPPort: n.TCPPort, Version: n.Version})
 	}
 	c.addNodes(append(nodes, k.cfg.Nodes...), now)
 	ticker := k.cfg.Clock.CreateTicker(tickInterval)

@@ -107,7 +107,7 @@ func buildSampleState(t testing.TB) State {
 		IsFirewalled: true,
 		UDPKey:       0xDEADBEEF,
 		Nodes: []KadNode{
-			{ID: mustHash(t, "54F4C64866EE9E505DB15D4B4785A0BA"), Addr: netip.MustParseAddrPort("195.32.118.142:4672"), Version: 8},
+			{ID: mustHash(t, "54F4C64866EE9E505DB15D4B4785A0BA"), Addr: netip.MustParseAddrPort("195.32.118.142:4672"), TCPPort: 4662, Version: 8},
 			{ID: mustHash(t, "00112233445566778899AABBCCDDEEFF"), Addr: netip.MustParseAddrPort("[2001:db8::1]:4672"), Version: 9},
 		},
 	}
