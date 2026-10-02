@@ -50,15 +50,57 @@ func TestRequestPrefersRarestPart(t *testing.T) {
 	}
 }
 
-func TestRequestPrefersPartInProgress(t *testing.T) {
+func TestRequestKeepsAPeerOnItsPart(t *testing.T) {
 	picker := buildEmptyPicker(t, 2*piece.PartSize, 1)
 	picker.onPeerParts(peerA, piece.Set{true, true})
-	picker.onPeerParts(peerB, piece.Set{true, false})
-	picker.request(peerB, 1)
+	picker.onPeerParts(peerB, piece.Set{true, true})
+	first := picker.request(peerA, 1)[0]
 
 	got := picker.request(peerA, 1)
-	if want := (piece.Block{Begin: piece.BlockSize, End: 2 * piece.BlockSize}); !slices.Equal(got, []piece.Block{want}) {
-		t.Fatalf("a got %v, want the next block of part 0 in progress, %v", got, want)
+	if want := (piece.Block{Begin: first.End, End: first.End + piece.BlockSize}); !slices.Equal(got, []piece.Block{want}) {
+		t.Fatalf("a got %v, want the next block of its part, %v", got, want)
+	}
+}
+
+func TestRequestSpreadsPeersOverPartsNobodyDownloads(t *testing.T) {
+	picker := buildEmptyPicker(t, 2*piece.PartSize, 1)
+	picker.onPeerParts(peerA, piece.Set{true, true})
+	picker.onPeerParts(peerB, piece.Set{true, true})
+	fromA := picker.request(peerA, 1)
+
+	if got := partsOf(picker.request(peerB, 1)); slices.Equal(got, partsOf(fromA)) {
+		t.Fatalf("b got part %v, which a downloads, while the other part has no peer", got)
+	}
+}
+
+// A very rare part goes first even when another part is half received
+// (aMule ranks it 0..xxxx, PartFile.cpp:2269-2275).
+func TestRequestPrefersVeryRarePartToStartedOne(t *testing.T) {
+	head := piece.Block{Begin: piece.PartSize, End: piece.PartSize + piece.BlockSize}
+	picker := buildResumedPicker(t, 2*piece.PartSize, nil, []piece.Block{head}, 1)
+	picker.onPeerParts(peerA, piece.Set{true, true})
+	picker.onPeerParts(peerB, piece.Set{false, true})
+	picker.onPeerParts(peerC, piece.Set{false, true})
+
+	if got := partsOf(picker.request(peerA, 1)); !slices.Equal(got, []int{0}) {
+		t.Fatalf("a got parts %v, want the very rare part 0", got)
+	}
+}
+
+// Peers join a very rare part another peer downloads rather than start a
+// common one: very rare parts are ranked alike whether requested or not.
+func TestRequestJoinsVeryRarePartInProgress(t *testing.T) {
+	picker := buildEmptyPicker(t, 2*piece.PartSize, 1)
+	picker.onPeerParts(peerA, piece.Set{true, true})
+	picker.onPeerParts(peerB, piece.Set{true, true})
+	for peer := range uint64(18) {
+		picker.onPeerParts(100+peer, piece.Set{false, true})
+	}
+	if got := partsOf(picker.request(peerB, 1)); !slices.Equal(got, []int{0}) {
+		t.Fatalf("b got parts %v, want the very rare part 0", got)
+	}
+	if got := partsOf(picker.request(peerA, 1)); !slices.Equal(got, []int{0}) {
+		t.Fatalf("a got parts %v, want the very rare part 0 b downloads", got)
 	}
 }
 

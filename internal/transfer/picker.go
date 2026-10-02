@@ -191,9 +191,8 @@ func (p *picker) cancel(peer uint64) {
 }
 
 // request picks up to n blocks no peer is asked for, to ask this peer for,
-// and records them as requested; a partly received block is asked for from
-// where it stops. It prefers parts already in progress, then the rarest
-// parts, breaking ties at random.
+// and records them as requested, in the order of candidateParts; a partly
+// received block is asked for from where it stops.
 func (p *picker) request(peer uint64, n int) []piece.Block {
 	var picked []piece.Block
 	for _, part := range p.candidateParts(peer) {
@@ -250,31 +249,58 @@ func (p *picker) hasBlocksFor(owner, other uint64) bool {
 	return false
 }
 
+// candidateParts orders the parts the peer has and we need, simplifying
+// aMule's chunk rank (PartFile.cpp:2131-2316): the parts the peer is already
+// asked for, then very rare parts, then parts no peer is asked for, then the
+// rest; within each, rarer first, then the more received, then at random.
+// Spreading peers over parts nobody downloads spreads the rare parts before
+// their sources leave, and keeps the senders of each part few.
 func (p *picker) candidateParts(peer uint64) []int {
-	var parts []int
+	// aMule's very rare bound: a tenth of the sources, at least one.
+	veryRare := max(1, len(p.peerParts)/10)
+	type candidate struct {
+		part     int
+		rank     int
+		received int64
+	}
+	var candidates []candidate
 	for i, has := range p.peerParts[peer] {
-		if has && !p.parts[i].isVerified {
-			parts = append(parts, i)
+		if !has || p.parts[i].isVerified {
+			continue
 		}
+		c := candidate{part: i, rank: 3}
+		isAsked, isAskedOfOthers := false, false
+		for _, block := range p.parts[i].blocks {
+			c.received += block.received
+			isAsked = isAsked || block.requester == peer
+			isAskedOfOthers = isAskedOfOthers || block.requester != 0 && block.requester != peer
+		}
+		switch {
+		case isAsked:
+			c.rank = 0
+		case p.availability[i] <= veryRare:
+			c.rank = 1
+		case !isAskedOfOthers:
+			c.rank = 2
+		}
+		candidates = append(candidates, c)
 	}
-	p.random.Shuffle(len(parts), func(i, j int) { parts[i], parts[j] = parts[j], parts[i] })
-	sort.SliceStable(parts, func(i, j int) bool {
-		a, b := parts[i], parts[j]
-		if isStartedA, isStartedB := p.isStarted(a), p.isStarted(b); isStartedA != isStartedB {
-			return isStartedA
+	p.random.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		if a.rank != b.rank {
+			return a.rank < b.rank
 		}
-		return p.availability[a] < p.availability[b]
+		if p.availability[a.part] != p.availability[b.part] {
+			return p.availability[a.part] < p.availability[b.part]
+		}
+		return a.received > b.received
 	})
-	return parts
-}
-
-func (p *picker) isStarted(part int) bool {
-	for _, block := range p.parts[part].blocks {
-		if block.received > 0 || block.requester != 0 {
-			return true
-		}
+	parts := make([]int, len(candidates))
+	for i, c := range candidates {
+		parts[i] = c.part
 	}
-	return false
+	return parts
 }
 
 // onBlockReceived records that the data of b, a block or a leading piece of
