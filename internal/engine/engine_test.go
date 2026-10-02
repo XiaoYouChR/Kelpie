@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/XiaoYouChR/Kelpie/internal/clock"
@@ -24,9 +25,8 @@ var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 const (
 	step = 100 * time.Millisecond
-	// stepPause is the real time each fake step leaves the goroutines, so
-	// fake time does not run far ahead of real work.
-	stepPause   = 2 * time.Millisecond
+	// waitLimit is the fake time a waitFor gives up after.
+	waitLimit   = time.Hour
 	waitTimeout = 90 * time.Second
 	peerPort    = 4662
 )
@@ -117,7 +117,8 @@ func (r *recorder) check(t *testing.T) {
 	}
 }
 
-// world is a fake internet with one shared fake clock.
+// world is a fake internet with one shared fake clock. A test using it runs
+// inside synctest.Test, so that time moves only once the engines are idle.
 type world struct {
 	t       *testing.T
 	network *transport.Network
@@ -191,17 +192,23 @@ func (n *node) close() {
 	n.events.check(n.w.t)
 }
 
-// waitFor advances the fake clock in small steps until cond holds.
+// waitFor advances the fake clock a step at a time until cond holds.
 func (w *world) waitFor(what string, cond func() bool) {
 	w.t.Helper()
-	deadline := time.Now().Add(waitTimeout)
+	begin := w.clock.Now()
 	for !cond() {
-		if time.Now().After(deadline) {
+		if w.clock.Now().Sub(begin) > waitLimit {
 			w.t.Fatalf("timed out waiting for %s at fake %v", what, w.clock.Now().Sub(start))
 		}
-		w.clock.Advance(step)
-		time.Sleep(stepPause)
+		w.advance(step)
 	}
+}
+
+// advance moves the fake clock by d and returns once every goroutine of
+// the test is blocked again, done reacting.
+func (w *world) advance(d time.Duration) {
+	w.clock.Advance(d)
+	synctest.Wait()
 }
 
 func (w *world) waitEnded(n *node, id RunID) *Error {
@@ -325,217 +332,246 @@ func runTwoEngineDownload(t *testing.T, w *world, size int) {
 }
 
 func TestDownloadFromSeeder(t *testing.T) {
-	w := buildWorld(t)
-	runTwoEngineDownload(t, w, int(piece.PartSize)+300_000)
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		runTwoEngineDownload(t, w, int(piece.PartSize)+300_000)
+	})
 }
 
 // TestChannelsOfOne runs the two-engine scenario with every channel the hub
 // uses at capacity one: a send that could block the hub deadlocks here.
 func TestChannelsOfOne(t *testing.T) {
-	w := buildWorld(t)
-	w.caps = capacities{inbox: 1, writer: 1, disk: 1, trace: 1}
-	runTwoEngineDownload(t, w, 2_000_000)
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		w.caps = capacities{inbox: 1, writer: 1, disk: 1, trace: 1}
+		runTwoEngineDownload(t, w, 2_000_000)
+	})
 }
 
 func TestDownloadWithKadOwningUDP(t *testing.T) {
-	w := buildWorld(t)
-	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
-	a.config.EnableKad, b.config.EnableKad = true, true
-	a.start()
-	b.start()
-	f := buildTestFile("kad.bin", 700_000, 2)
-	a.seed(1, f)
-	path := b.download(2, f, a.endpoint())
-	requireEndedOK(t, w.waitEnded(b, 2))
-	b.requireData(path, f.data)
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+		a.config.EnableKad, b.config.EnableKad = true, true
+		a.start()
+		b.start()
+		f := buildTestFile("kad.bin", 700_000, 2)
+		a.seed(1, f)
+		path := b.download(2, f, a.endpoint())
+		requireEndedOK(t, w.waitEnded(b, 2))
+		b.requireData(path, f.data)
+	})
 }
 
 func TestTransferBusy(t *testing.T) {
-	w := buildWorld(t)
-	b := w.addNode("198.51.100.2")
-	b.start()
-	f := buildTestFile("busy.bin", 1000, 3)
-	b.download(1, f)
-	b.engine.Post(RunCommand{ID: 2, Mode: ModeDownload, Link: f.link(), File: "/elsewhere/busy.bin"})
-	err := w.waitEnded(b, 2)
-	if err == nil || err.Code != CodeTransferBusy {
-		t.Fatalf("second run ended with %v, want TRANSFER_BUSY", err)
-	}
-	if _, ok := b.events.endedByRun(1); ok {
-		t.Fatal("the first run ended")
-	}
-	b.engine.Post(StopCommand{ID: 1})
-	requireEndedOK(t, w.waitEnded(b, 1))
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		b := w.addNode("198.51.100.2")
+		b.start()
+		f := buildTestFile("busy.bin", 1000, 3)
+		b.download(1, f)
+		b.engine.Post(RunCommand{ID: 2, Mode: ModeDownload, Link: f.link(), File: "/elsewhere/busy.bin"})
+		err := w.waitEnded(b, 2)
+		if err == nil || err.Code != CodeTransferBusy {
+			t.Fatalf("second run ended with %v, want TRANSFER_BUSY", err)
+		}
+		if _, ok := b.events.endedByRun(1); ok {
+			t.Fatal("the first run ended")
+		}
+		b.engine.Post(StopCommand{ID: 1})
+		requireEndedOK(t, w.waitEnded(b, 1))
+	})
 }
 
 func TestAdmissionErrors(t *testing.T) {
-	w := buildWorld(t)
-	b := w.addNode("198.51.100.2")
-	b.start()
-	f := buildTestFile("taken.bin", 1000, 4)
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		b := w.addNode("198.51.100.2")
+		b.start()
+		f := buildTestFile("taken.bin", 1000, 4)
 
-	b.engine.Post(RunCommand{ID: 1, Mode: ModeDownload, Link: "ed2k://|file|x|", File: "/x"})
-	if err := w.waitEnded(b, 1); err == nil || err.Code != CodeInvalidLink {
-		t.Fatalf("got %v, want INVALID_LINK", err)
-	}
+		b.engine.Post(RunCommand{ID: 1, Mode: ModeDownload, Link: "ed2k://|file|x|", File: "/x"})
+		if err := w.waitEnded(b, 1); err == nil || err.Code != CodeInvalidLink {
+			t.Fatalf("got %v, want INVALID_LINK", err)
+		}
 
-	b.disk.SetData("/downloads/taken.bin", []byte("someone else's"))
-	b.download(2, f)
-	if err := w.waitEnded(b, 2); err == nil || err.Code != CodeOutputExists {
-		t.Fatalf("got %v, want OUTPUT_EXISTS", err)
-	}
+		b.disk.SetData("/downloads/taken.bin", []byte("someone else's"))
+		b.download(2, f)
+		if err := w.waitEnded(b, 2); err == nil || err.Code != CodeOutputExists {
+			t.Fatalf("got %v, want OUTPUT_EXISTS", err)
+		}
 
-	b.disk.SetData("/downloads/taken.bin", nil)
-	b.download(3, f)
-	w.waitFor("placeholder takeover", func() bool {
-		_, ok := b.events.progressByRun(3)
-		return ok
+		b.disk.SetData("/downloads/taken.bin", nil)
+		b.download(3, f)
+		w.waitFor("placeholder takeover", func() bool {
+			_, ok := b.events.progressByRun(3)
+			return ok
+		})
+		b.engine.Post(StopCommand{ID: 3})
+		requireEndedOK(t, w.waitEnded(b, 3))
+
+		b.disk.SetData("/share/taken.bin", f.data[:500])
+		b.engine.Post(RunCommand{ID: 4, Mode: ModeSeed, Link: f.link(), File: "/share/taken.bin"})
+		if err := w.waitEnded(b, 4); err == nil || err.Code != CodeFileError {
+			t.Fatalf("seed of a partial file: got %v, want FILE_ERROR", err)
+		}
+
+		wrong := append([]byte(nil), f.data...)
+		wrong[0] ^= 1
+		b.disk.SetData("/share/wrong.bin", wrong)
+		b.engine.Post(RunCommand{ID: 5, Mode: ModeSeed, Link: f.link(), File: "/share/wrong.bin"})
+		if err := w.waitEnded(b, 5); err == nil || err.Code != CodeFileError {
+			t.Fatalf("seed of a different file: got %v, want FILE_ERROR", err)
+		}
 	})
-	b.engine.Post(StopCommand{ID: 3})
-	requireEndedOK(t, w.waitEnded(b, 3))
-
-	b.disk.SetData("/share/taken.bin", f.data[:500])
-	b.engine.Post(RunCommand{ID: 4, Mode: ModeSeed, Link: f.link(), File: "/share/taken.bin"})
-	if err := w.waitEnded(b, 4); err == nil || err.Code != CodeFileError {
-		t.Fatalf("seed of a partial file: got %v, want FILE_ERROR", err)
-	}
-
-	wrong := append([]byte(nil), f.data...)
-	wrong[0] ^= 1
-	b.disk.SetData("/share/wrong.bin", wrong)
-	b.engine.Post(RunCommand{ID: 5, Mode: ModeSeed, Link: f.link(), File: "/share/wrong.bin"})
-	if err := w.waitEnded(b, 5); err == nil || err.Code != CodeFileError {
-		t.Fatalf("seed of a different file: got %v, want FILE_ERROR", err)
-	}
 }
 
 func TestDiskFull(t *testing.T) {
-	w := buildWorld(t)
-	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
-	a.start()
-	b.start()
-	f := buildTestFile("full.bin", 600_000, 5)
-	a.seed(1, f)
-	b.disk.AddFault("/downloads/full.bin", disk.OpWrite, syscall.ENOSPC, 1)
-	b.download(2, f, a.endpoint())
-	if err := w.waitEnded(b, 2); err == nil || err.Code != CodeDiskFull {
-		t.Fatalf("got %v, want DISK_FULL", err)
-	}
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+		a.start()
+		b.start()
+		f := buildTestFile("full.bin", 600_000, 5)
+		a.seed(1, f)
+		b.disk.AddFault("/downloads/full.bin", disk.OpWrite, syscall.ENOSPC, 1)
+		b.download(2, f, a.endpoint())
+		if err := w.waitEnded(b, 2); err == nil || err.Code != CodeDiskFull {
+			t.Fatalf("got %v, want DISK_FULL", err)
+		}
+	})
 }
 
 func TestCompleteDownloadIsSyncedBeforeItEnds(t *testing.T) {
-	w := buildWorld(t)
-	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
-	a.start()
-	b.start()
-	f := buildTestFile("sync.bin", 600_000, 8)
-	a.seed(1, f)
-	b.disk.AddFault("/downloads/sync.bin", disk.OpSync, syscall.EIO, 1)
-	b.download(2, f, a.endpoint())
-	if err := w.waitEnded(b, 2); err == nil || err.Code != CodeFileError {
-		t.Fatalf("got %v, want FILE_ERROR from the failed sync", err)
-	}
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+		a.start()
+		b.start()
+		f := buildTestFile("sync.bin", 600_000, 8)
+		a.seed(1, f)
+		b.disk.AddFault("/downloads/sync.bin", disk.OpSync, syscall.EIO, 1)
+		b.download(2, f, a.endpoint())
+		if err := w.waitEnded(b, 2); err == nil || err.Code != CodeFileError {
+			t.Fatalf("got %v, want FILE_ERROR from the failed sync", err)
+		}
+	})
 }
 
 func TestSeederForgetsTheEndpointOfAGoneDownloader(t *testing.T) {
-	w := buildWorld(t)
-	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
-	a.start()
-	b.start()
-	f := buildTestFile("gone.bin", 600_000, 9)
-	a.seed(1, f)
-	b.download(2, f, a.endpoint())
-	requireEndedOK(t, w.waitEnded(b, 2))
-	b.close()
-	settle := w.clock.Now().Add(5 * time.Second)
-	w.waitFor("seeder ticks", func() bool { return !w.clock.Now().Before(settle) })
-	a.close()
-	// The hub has stopped, so its map is safe to read.
-	if n := len(a.engine.uploadEndpoints); n != 0 {
-		t.Fatalf("seeder keeps %d upload endpoints", n)
-	}
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+		a.start()
+		b.start()
+		f := buildTestFile("gone.bin", 600_000, 9)
+		a.seed(1, f)
+		b.download(2, f, a.endpoint())
+		requireEndedOK(t, w.waitEnded(b, 2))
+		b.close()
+		settle := w.clock.Now().Add(5 * time.Second)
+		w.waitFor("seeder ticks", func() bool { return !w.clock.Now().Before(settle) })
+		a.close()
+		// The hub has stopped, so its map is safe to read.
+		if n := len(a.engine.uploadEndpoints); n != 0 {
+			t.Fatalf("seeder keeps %d upload endpoints", n)
+		}
+	})
 }
 
 func TestDownloadFromTwoSeedersViaServer(t *testing.T) {
-	w := buildWorld(t)
-	srv := w.startFakeServer("198.51.100.100")
-	a1, a2, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.3"), w.addNode("198.51.100.2")
-	for _, n := range []*node{a1, a2, b} {
-		n.setServer(srv)
-		n.start()
-	}
-	f := buildTestFile("two.bin", int(piece.PartSize)+500_000, 6)
-	a1.seed(1, f)
-	a2.seed(1, f)
-	for _, n := range []*node{a1, a2, b} {
-		w.waitFor("server login", func() bool { return n.events.lastNetwork().IsServerConnected })
-	}
-	// The server offers each seed on its next tick.
-	settle := w.clock.Now().Add(10 * time.Second)
-	w.waitFor("both seeds offered", func() bool { return !w.clock.Now().Before(settle) })
-	path := b.download(2, f)
-	requireEndedOK(t, w.waitEnded(b, 2))
-	b.requireData(path, f.data)
-	if n := b.events.lastNetwork(); !n.IsHighID {
-		t.Errorf("network %+v, want HighID", n)
-	}
-	trace := b.loadTrace()
-	for _, seeder := range []*node{a1, a2} {
-		if !matchTrace(trace, "slot", seeder.endpoint().String()) {
-			t.Errorf("no slot from %v", seeder.endpoint())
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		srv := w.startFakeServer("198.51.100.100")
+		a1, a2, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.3"), w.addNode("198.51.100.2")
+		for _, n := range []*node{a1, a2, b} {
+			n.setServer(srv)
+			n.start()
 		}
-	}
+		f := buildTestFile("two.bin", int(piece.PartSize)+500_000, 6)
+		a1.seed(1, f)
+		a2.seed(1, f)
+		for _, n := range []*node{a1, a2, b} {
+			w.waitFor("server login", func() bool { return n.events.lastNetwork().IsServerConnected })
+		}
+		// The server offers each seed on its next tick.
+		settle := w.clock.Now().Add(10 * time.Second)
+		w.waitFor("both seeds offered", func() bool { return !w.clock.Now().Before(settle) })
+		path := b.download(2, f)
+		requireEndedOK(t, w.waitEnded(b, 2))
+		b.requireData(path, f.data)
+		if n := b.events.lastNetwork(); !n.IsHighID {
+			t.Errorf("network %+v, want HighID", n)
+		}
+		trace := b.loadTrace()
+		for _, seeder := range []*node{a1, a2} {
+			if !matchTrace(trace, "slot", seeder.endpoint().String()) {
+				t.Errorf("no slot from %v", seeder.endpoint())
+			}
+		}
+	})
 }
 
 // Without AICH a part that fails its MD4 check is downloaded again and its
 // senders stay: MD4 cannot tell which one was corrupt.
 func TestCorruptSeederWithoutAICHIsNotBanned(t *testing.T) {
-	w := buildWorld(t)
-	bad, good, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.3"), w.addNode("198.51.100.2")
-	bad.start()
-	good.start()
-	b.start()
-	f := buildTestFile("corrupt.bin", 900_000, 7)
-	bad.seed(1, f)
-	good.seed(1, f)
-	file, err := bad.disk.Open("/share/corrupt.bin", disk.Create)
-	if err != nil {
-		t.Fatal(err)
-	}
-	file.WriteAt([]byte("garbage"), 400_000)
-	file.Close()
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		bad, good, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.3"), w.addNode("198.51.100.2")
+		bad.start()
+		good.start()
+		b.start()
+		f := buildTestFile("corrupt.bin", 900_000, 7)
+		bad.seed(1, f)
+		good.seed(1, f)
+		file, err := bad.disk.Open("/share/corrupt.bin", disk.Create)
+		if err != nil {
+			t.Fatal(err)
+		}
+		file.WriteAt([]byte("garbage"), 400_000)
+		file.Close()
 
-	good.host.SetUnreachable(true)
-	path := b.download(2, f, bad.endpoint(), good.endpoint())
-	w.waitFor("the corrupt part to be dropped", func() bool {
-		p, _ := b.events.progressByRun(2)
-		return matchTrace(b.loadTrace(), "received", bad.endpoint().String()) && p.Received == 0
+		good.host.SetUnreachable(true)
+		path := b.download(2, f, bad.endpoint(), good.endpoint())
+		w.waitFor("the corrupt part to be dropped", func() bool {
+			p, _ := b.events.progressByRun(2)
+			return matchTrace(b.loadTrace(), "received", bad.endpoint().String()) && p.Received == 0
+		})
+		if hasBan(b.loadTrace(), bad.endpoint().String()) {
+			t.Fatal("seeder banned without AICH to tell it sent the corrupt data")
+		}
+		good.host.SetUnreachable(false)
+		// The good seeder failed once and is retried after DeadSourceList's 30
+		// minutes; skip ahead a minute at a time.
+		begin := w.clock.Now()
+		for {
+			if _, ok := b.events.endedByRun(2); ok {
+				break
+			}
+			if w.clock.Now().Sub(begin) > waitLimit {
+				t.Fatal("download never completed from the good seeder")
+			}
+			w.clock.Advance(time.Minute)
+			for range 20 {
+				w.advance(step)
+			}
+		}
+		requireEndedOK(t, w.waitEnded(b, 2))
+		b.requireData(path, f.data)
+		if !matchTrace(b.loadTrace(), "slot", good.endpoint().String()) {
+			t.Fatal("the good seeder never gave a slot")
+		}
 	})
-	if hasBan(b.loadTrace(), bad.endpoint().String()) {
-		t.Fatal("seeder banned without AICH to tell it sent the corrupt data")
-	}
-	good.host.SetUnreachable(false)
-	// The good seeder failed once and is retried after DeadSourceList's 30
-	// minutes; skip ahead a minute at a time.
-	deadline := time.Now().Add(waitTimeout)
-	for {
-		if _, ok := b.events.endedByRun(2); ok {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("download never completed from the good seeder")
-		}
-		w.clock.Advance(time.Minute)
-		for range 20 {
-			w.clock.Advance(step)
-			time.Sleep(stepPause)
-		}
-	}
-	requireEndedOK(t, w.waitEnded(b, 2))
-	b.requireData(path, f.data)
-	if !matchTrace(b.loadTrace(), "slot", good.endpoint().String()) {
-		t.Fatal("the good seeder never gave a slot")
-	}
 }
 
 func hasBan(lines []map[string]any, source string) bool {
@@ -548,59 +584,65 @@ func hasBan(lines []map[string]any, source string) bool {
 }
 
 func TestStopAndResumeAcrossRestart(t *testing.T) {
-	w := buildWorld(t)
-	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
-	a.start()
-	b.config.DownloadLimit = 1 << 20
-	b.start()
-	f := buildTestFile("resume.bin", int(piece.PartSize)+400_000, 8)
-	a.seed(1, f)
-	path := b.download(2, f, a.endpoint())
-	w.waitFor("a third of the file", func() bool {
-		p, _ := b.events.progressByRun(2)
-		return p.Received >= int64(len(f.data))/3
-	})
-	b.engine.Post(StopCommand{ID: 2})
-	requireEndedOK(t, w.waitEnded(b, 2))
-	stopped, _ := b.events.progressByRun(2)
-	b.close()
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+		a.start()
+		b.config.DownloadLimit = 1 << 20
+		b.start()
+		f := buildTestFile("resume.bin", int(piece.PartSize)+400_000, 8)
+		a.seed(1, f)
+		path := b.download(2, f, a.endpoint())
+		w.waitFor("a third of the file", func() bool {
+			p, _ := b.events.progressByRun(2)
+			return p.Received >= int64(len(f.data))/3
+		})
+		b.engine.Post(StopCommand{ID: 2})
+		requireEndedOK(t, w.waitEnded(b, 2))
+		stopped, _ := b.events.progressByRun(2)
+		b.close()
 
-	b.config.DownloadLimit = 0
-	b.start()
-	b.download(3, f, a.endpoint())
-	w.waitFor("the resumed run's first progress", func() bool {
-		_, ok := b.events.progressByRun(3)
-		return ok
+		b.config.DownloadLimit = 0
+		b.start()
+		b.download(3, f, a.endpoint())
+		w.waitFor("the resumed run's first progress", func() bool {
+			_, ok := b.events.progressByRun(3)
+			return ok
+		})
+		t.Logf("stopped at %d of %d bytes", stopped.Received, len(f.data))
+		if first := b.events.firstByRun(3); first.Received != stopped.Received || first.Received == 0 {
+			t.Fatalf("resumed at %d bytes, stopped at %d", first.Received, stopped.Received)
+		}
+		requireEndedOK(t, w.waitEnded(b, 3))
+		b.requireData(path, f.data)
 	})
-	t.Logf("stopped at %d of %d bytes", stopped.Received, len(f.data))
-	if first := b.events.firstByRun(3); first.Received != stopped.Received || first.Received == 0 {
-		t.Fatalf("resumed at %d bytes, stopped at %d", first.Received, stopped.Received)
-	}
-	requireEndedOK(t, w.waitEnded(b, 3))
-	b.requireData(path, f.data)
 }
 
 func TestRateLimitCapsDownload(t *testing.T) {
-	const limit = 200_000
-	w := buildWorld(t)
-	a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
-	a.start()
-	b.start()
-	f := buildTestFile("slow.bin", 1_500_000, 9)
-	a.seed(1, f)
-	b.engine.Post(Settings{DownloadLimit: limit})
-	began := w.clock.Now()
-	b.download(2, f, a.endpoint())
-	requireEndedOK(t, w.waitEnded(b, 2))
-	elapsed := w.clock.Now().Sub(began).Seconds()
-	t.Logf("%d bytes in %.1f fake seconds", len(f.data), elapsed)
-	// The limiter may let a quarter second of rate through at once.
-	if rate := float64(len(f.data)) / (elapsed + 0.25); rate > limit {
-		t.Fatalf("observed %.0f B/s over %.1f s, limit %d", rate, elapsed, limit)
-	}
-	if elapsed > 3*float64(len(f.data))/limit {
-		t.Fatalf("took %.1f s, far slower than the limit allows", elapsed)
-	}
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		const limit = 200_000
+		w := buildWorld(t)
+		a, b := w.addNode("198.51.100.1"), w.addNode("198.51.100.2")
+		a.start()
+		b.start()
+		f := buildTestFile("slow.bin", 1_500_000, 9)
+		a.seed(1, f)
+		b.engine.Post(Settings{DownloadLimit: limit})
+		began := w.clock.Now()
+		b.download(2, f, a.endpoint())
+		requireEndedOK(t, w.waitEnded(b, 2))
+		elapsed := w.clock.Now().Sub(began).Seconds()
+		t.Logf("%d bytes in %.1f fake seconds", len(f.data), elapsed)
+		// The limiter may let a quarter second of rate through at once.
+		if rate := float64(len(f.data)) / (elapsed + 0.25); rate > limit {
+			t.Fatalf("observed %.0f B/s over %.1f s, limit %d", rate, elapsed, limit)
+		}
+		if elapsed > 3*float64(len(f.data))/limit {
+			t.Fatalf("took %.1f s, far slower than the limit allows", elapsed)
+		}
+	})
 }
 
 // goed2kLink is the Transfer saved in the goed2k fixture, for goed2kPath.
@@ -621,85 +663,97 @@ func (n *node) setGoed2kState() {
 }
 
 func TestGoed2kStateResumes(t *testing.T) {
-	w := buildWorld(t)
-	b := w.addNode("198.51.100.2")
-	b.setGoed2kState()
-	e := b.start()
-	if got := e.self.UserHash.String(); got != "FD3887E9230E53F744E5CA8FAF1A6F31" {
-		t.Fatalf("user hash %s, want the goed2k one", got)
-	}
-	b.disk.SetData(goed2kPath, nil)
-	b.engine.Post(RunCommand{ID: 1, Mode: ModeDownload, Link: goed2kLink, File: goed2kPath})
-	w.waitFor("first progress", func() bool {
-		_, ok := b.events.progressByRun(1)
-		return ok
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		b := w.addNode("198.51.100.2")
+		b.setGoed2kState()
+		e := b.start()
+		if got := e.self.UserHash.String(); got != "FD3887E9230E53F744E5CA8FAF1A6F31" {
+			t.Fatalf("user hash %s, want the goed2k one", got)
+		}
+		b.disk.SetData(goed2kPath, nil)
+		b.engine.Post(RunCommand{ID: 1, Mode: ModeDownload, Link: goed2kLink, File: goed2kPath})
+		w.waitFor("first progress", func() bool {
+			_, ok := b.events.progressByRun(1)
+			return ok
+		})
+		if got, want := b.events.firstByRun(1).Received, piece.PartSize+4*piece.BlockSize; got != want {
+			t.Fatalf("resumed at %d bytes, want %d", got, want)
+		}
+		b.close()
+		var saved struct {
+			Version    int    `json:"version"`
+			UserHash   string `json:"userHash"`
+			PrivateKey []byte `json:"privateKey"`
+			Credits    []any  `json:"credits"`
+		}
+		raw, err := os.ReadFile(filepath.Join(b.folder, "state.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &saved); err != nil {
+			t.Fatal(err)
+		}
+		if saved.Version != 4 || saved.UserHash != "FD3887E9230E53F744E5CA8FAF1A6F31" || len(saved.PrivateKey) == 0 || len(saved.Credits) != 2 {
+			t.Fatalf("saved state %+v", saved)
+		}
 	})
-	if got, want := b.events.firstByRun(1).Received, piece.PartSize+4*piece.BlockSize; got != want {
-		t.Fatalf("resumed at %d bytes, want %d", got, want)
-	}
-	b.close()
-	var saved struct {
-		Version    int    `json:"version"`
-		UserHash   string `json:"userHash"`
-		PrivateKey []byte `json:"privateKey"`
-		Credits    []any  `json:"credits"`
-	}
-	raw, err := os.ReadFile(filepath.Join(b.folder, "state.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(raw, &saved); err != nil {
-		t.Fatal(err)
-	}
-	if saved.Version != 4 || saved.UserHash != "FD3887E9230E53F744E5CA8FAF1A6F31" || len(saved.PrivateKey) == 0 || len(saved.Credits) != 2 {
-		t.Fatalf("saved state %+v", saved)
-	}
 }
 
 // TestStateOfAnotherPathIsNotResumed: resume data belongs to the file it
 // was written for; a run to another path starts over (docs/protocol.md).
 func TestStateOfAnotherPathIsNotResumed(t *testing.T) {
-	w := buildWorld(t)
-	b := w.addNode("198.51.100.2")
-	b.setGoed2kState()
-	b.start()
-	const path = "/Users/alice/Downloads/elsewhere.iso"
-	b.disk.SetData(path, nil)
-	b.engine.Post(RunCommand{ID: 1, Mode: ModeDownload, Link: goed2kLink, File: path})
-	w.waitFor("first progress", func() bool {
-		_, ok := b.events.progressByRun(1)
-		return ok
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		b := w.addNode("198.51.100.2")
+		b.setGoed2kState()
+		b.start()
+		const path = "/Users/alice/Downloads/elsewhere.iso"
+		b.disk.SetData(path, nil)
+		b.engine.Post(RunCommand{ID: 1, Mode: ModeDownload, Link: goed2kLink, File: path})
+		w.waitFor("first progress", func() bool {
+			_, ok := b.events.progressByRun(1)
+			return ok
+		})
+		if got := b.events.firstByRun(1).Received; got != 0 {
+			t.Fatalf("started at %d bytes, want 0", got)
+		}
 	})
-	if got := b.events.firstByRun(1).Received; got != 0 {
-		t.Fatalf("started at %d bytes, want 0", got)
-	}
 }
 
 func TestCloseEndsOpenRuns(t *testing.T) {
-	w := buildWorld(t)
-	b := w.addNode("198.51.100.2")
-	b.start()
-	f := buildTestFile("open.bin", 1000, 10)
-	b.download(1, f)
-	w.waitFor("admission", func() bool {
-		_, ok := b.events.progressByRun(1)
-		return ok
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		b := w.addNode("198.51.100.2")
+		b.start()
+		f := buildTestFile("open.bin", 1000, 10)
+		b.download(1, f)
+		w.waitFor("admission", func() bool {
+			_, ok := b.events.progressByRun(1)
+			return ok
+		})
+		b.close()
+		if err, ok := b.events.endedByRun(1); !ok || err != nil {
+			t.Fatalf("ended %v, %v; want ended without error", ok, err)
+		}
 	})
-	b.close()
-	if err, ok := b.events.endedByRun(1); !ok || err != nil {
-		t.Fatalf("ended %v, %v; want ended without error", ok, err)
-	}
 }
 
 func TestStartFailsOnCorruptState(t *testing.T) {
-	w := buildWorld(t)
-	b := w.addNode("198.51.100.2")
-	if err := os.WriteFile(filepath.Join(b.folder, "state.json"), []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ports := seams{Transport: b.host, Disk: b.disk, Clock: w.clock, Rand: rand.New(rand.NewPCG(1, 1))}
-	_, err := build(b.config, ports, buildRecorder(), defaultCapacities, nil)
-	if e, ok := err.(*Error); !ok || e.Code != CodeStartFailed {
-		t.Fatalf("got %v, want START_FAILED", err)
-	}
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		w := buildWorld(t)
+		b := w.addNode("198.51.100.2")
+		if err := os.WriteFile(filepath.Join(b.folder, "state.json"), []byte("{not json"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ports := seams{Transport: b.host, Disk: b.disk, Clock: w.clock, Rand: rand.New(rand.NewPCG(1, 1))}
+		_, err := build(b.config, ports, buildRecorder(), defaultCapacities, nil)
+		if e, ok := err.(*Error); !ok || e.Code != CodeStartFailed {
+			t.Fatalf("got %v, want START_FAILED", err)
+		}
+	})
 }
