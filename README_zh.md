@@ -53,7 +53,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-每个 `async with` 代码块就是一次下载或做种。代码块打开时文件开始传输，离开代码块传输就停止。`runSeed` 用同样的方式做种。引擎程序由 Kelpie 按需启动，`close()` 关闭它。出错时，代码块抛出 `kelpie.Error`。设置改变后调用 `update()`，新设置生效且不中断任何下载或做种。删除恢复数据、网络状态分别用 `remove` 和 `network`。
+每个 `async with` 代码块就是一次下载或做种。代码块打开时文件开始传输，离开代码块传输就停止。`runSeed` 用同样的方式做种。引擎程序由 Kelpie 按需启动，`close()` 关闭它。出错时，代码块抛出 `kelpie.Error`。设置改变后调用 `update()`，新设置生效且不中断任何下载或做种。删除恢复数据用 `remove`；构造 `Kelpie` 时传入 `onNetwork` 回调，网络状态每次变化都会收到。
 
 各个概念的定义见 [CONTEXT.md](CONTEXT.md)（英文），设计理由见 [ADR-0004](docs/adr/0004-transfers-run-only-while-observed.md)。
 

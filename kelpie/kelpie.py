@@ -73,8 +73,6 @@ class EngineProcess:
     # download must not end the seed that follows it. Whoever pops a Run ends
     # it, and the `ended` that follows finds no route.
     routes: dict[int, Run] = field(default_factory=dict)
-    # Describes this process only, so it goes away with it.
-    network: Network | None = None
 
 
 class Kelpie:
@@ -83,10 +81,12 @@ class Kelpie:
         executable: Callable[[], Path],
         dataFolder: Path,
         settings: Callable[[], Settings],
+        onNetwork: Callable[[Network | None], None] = lambda _: None,
     ) -> None:
         self._executable = executable
         self._dataFolder = dataFolder
         self._settings = settings
+        self._onNetwork = onNetwork
         # None again once the process exits: only the next call starts another.
         self._engine: EngineProcess | None = None
         # Callers that arrive during a start wait for it instead of starting
@@ -100,10 +100,6 @@ class Kelpie:
         # The event loop keeps only weak references to tasks, and close() waits
         # for them.
         self._tasks: set[asyncio.Task[None]] = set()
-
-    @property
-    def network(self) -> Network | None:
-        return self._engine.network if self._engine is not None else None
 
     def runDownload(self, link: Link, file: Path) -> AbstractAsyncContextManager[Run]:
         return self._run("download", link, file)
@@ -232,7 +228,11 @@ class Kelpie:
             self._engine = engine
             ready.set_result(None)
             while line := await process.stdout.readline():
-                onMessage(engine, line)
+                network = onMessage(engine, line)
+                # After close() the old process may still report until it
+                # exits, and a new one may already run.
+                if network is not None and self._engine is engine:
+                    self._onNetwork(network)
         lastLine = await lastStderrLine
         exitCode = await process.wait()
         reason = lastLine if lastLine is not None else f"exit code {exitCode}"
@@ -241,14 +241,16 @@ class Kelpie:
                 Error(ErrorCode.START_FAILED, f"Engine Process exited during startup: {reason}")
             )
             return
-        if self._engine is engine:
+        # Unless a newer Engine Process already runs, none does now.
+        if self._engine is engine or self._engine is None:
             self._engine = None
+            self._onNetwork(None)
         exited = Error(ErrorCode.ENGINE_EXITED, reason)
         for run in engine.routes.values():
             run._setEnded(exited)
 
 
-def onMessage(engine: EngineProcess, line: bytes) -> None:
+def onMessage(engine: EngineProcess, line: bytes) -> Network | None:
     try:
         message = json.loads(line)
         match message.get("type"):
@@ -261,9 +263,10 @@ def onMessage(engine: EngineProcess, line: bytes) -> None:
                 if run is not None:
                     run._setEnded(parseError(message["error"]))
             case "network":
-                engine.network = parseNetwork(message)
+                return parseNetwork(message)
     except (ValueError, KeyError, TypeError, AttributeError) as error:
         logger.warning("ignored invalid Engine Process message %r: %s", line, error)
+    return None
 
 
 def send(process: asyncio.subprocess.Process, message: dict[str, Any]) -> None:

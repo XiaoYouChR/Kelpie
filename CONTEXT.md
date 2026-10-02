@@ -81,8 +81,9 @@ is not limited.
 
 Whether a server connection is established, whether the server gave a HighID
 (other peers can connect to us) or a LowID, whether Kad sees us as firewalled,
-how many Kad nodes are known, and whether a carrier NAT keeps us from a HighID,
-as last reported. It is absent while no Engine Process runs.
+how many Kad nodes are known, and whether a carrier NAT keeps us from a HighID.
+Kelpie hands each change to the caller, whether or not a Run is open, and
+hands it None when the Engine Process goes away.
 
 ## Durable State
 
