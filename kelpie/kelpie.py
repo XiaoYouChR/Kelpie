@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 class Run:
     def __init__(self, id: int) -> None:
-        self.id = id
+        self._id = id
         # Only the newest Progress: a slow consumer skips the stale ones.
         self._progress: Progress | None = None
         # Kept apart from _error, because a normal end has no error.
@@ -45,25 +45,25 @@ class Run:
                     raise self._error
                 return
 
-    def setProgress(self, progress: Progress) -> None:
+    def _setProgress(self, progress: Progress) -> None:
         if self._isEnded:
             return
         self._progress = progress
         self._changed.set()
 
-    def setEnded(self, error: BaseException | None) -> None:
+    def _setEnded(self, error: BaseException | None) -> None:
         if self._isEnded:
             return
         self._isEnded = True
         self._error = error
         self._changed.set()
 
-    def cancel(self) -> None:
+    def _cancel(self) -> None:
         # Ended by someone other than its caller: a normal end would read as a
         # finished download, so the caller sees a cancellation instead.
         if not self._isEnded:
             self._progress = None
-            self.setEnded(asyncio.CancelledError())
+            self._setEnded(asyncio.CancelledError())
 
 
 @dataclass
@@ -121,8 +121,8 @@ class Kelpie:
     async def remove(self, hash: str) -> None:
         run = self._runs.get(hash)
         engine = self._engine
-        if run is not None and engine is not None and engine.routes.pop(run.id, None) is not None:
-            run.cancel()
+        if run is not None and engine is not None and engine.routes.pop(run._id, None) is not None:
+            run._cancel()
         await self._start()
         if self._engine is not None:
             send(self._engine.process, {"type": "remove", "hash": hash})
@@ -136,7 +136,7 @@ class Kelpie:
             return
         self._engine = None
         for run in engine.routes.values():
-            run.cancel()
+            run._cancel()
         process = engine.process
         process.stdin.close()
         try:
@@ -157,17 +157,17 @@ class Kelpie:
             try:
                 await self._start()
             except Error as error:
-                run.setEnded(error)
+                run._setEnded(error)
             else:
                 if self._engine is None:
-                    run.setEnded(Error(ErrorCode.ENGINE_EXITED, "Engine Process exited"))
+                    run._setEnded(Error(ErrorCode.ENGINE_EXITED, "Engine Process exited"))
                 else:
-                    self._engine.routes[run.id] = run
+                    self._engine.routes[run._id] = run
                     send(
                         self._engine.process,
                         {
                             "type": "run",
-                            "run": run.id,
+                            "run": run._id,
                             "mode": mode,
                             "link": str(link),
                             "file": str(file),
@@ -177,8 +177,8 @@ class Kelpie:
         finally:
             del self._runs[link.hash]
             engine = self._engine
-            if engine is not None and engine.routes.pop(run.id, None) is not None:
-                send(engine.process, {"type": "stop", "run": run.id})
+            if engine is not None and engine.routes.pop(run._id, None) is not None:
+                send(engine.process, {"type": "stop", "run": run._id})
 
     async def _start(self) -> None:
         if self._engine is not None:
@@ -245,7 +245,7 @@ class Kelpie:
             self._engine = None
         exited = Error(ErrorCode.ENGINE_EXITED, reason)
         for run in engine.routes.values():
-            run.setEnded(exited)
+            run._setEnded(exited)
 
 
 def onMessage(engine: EngineProcess, line: bytes) -> None:
@@ -255,11 +255,11 @@ def onMessage(engine: EngineProcess, line: bytes) -> None:
             case "progress":
                 run = engine.routes.get(message["run"])
                 if run is not None:
-                    run.setProgress(parseProgress(message))
+                    run._setProgress(parseProgress(message))
             case "ended":
                 run = engine.routes.pop(message["run"], None)
                 if run is not None:
-                    run.setEnded(parseError(message["error"]))
+                    run._setEnded(parseError(message["error"]))
             case "network":
                 engine.network = parseNetwork(message)
     except (ValueError, KeyError, TypeError, AttributeError) as error:
